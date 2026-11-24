@@ -1,3 +1,12 @@
+# NATIVE-HOST-B6-THERMAL-01 round3 test ownership (2026-11-25)
+
+Mainline: same Native task/writer; original406 thermal failure, round1 beda source failure and round2_87 C2280 compile failure remain. Next repair round3; actual Core exports still0. A further failed repair/verification requires root arbitration before another repair.
+This round: only the test Export holder explicitly moves its GCodeProcessorResult through the existing move-assignment API; all13 inputs/assertions/order and production temperature code remain unchanged. Prior Win87 files/CL logs/generated/projects/source-header metadata captured before editing, without copying intermediate objects.
+Open: source-only fix, no rebuild/Core/SDK execution. v5 must bind Win's exact own failed87 predecessor and cumulative406 GCode change, while other three stages remain406; normal wait for an observed descendant must not invent a failure.
+Next: clean freeze, narrow source/tool review and necessary fixture QA then fresh root normal-build GO. No old saved verification matrix repeat or automatic source/package relabelling.
+Plan change: necessary compile-fixture ownership correction, no weaker thermal oracle/budget/GLBheld change; B5prepared needs future exact newsource/package binding.
+
+## Previous correction retained
 # NATIVE-HOST-B6-THERMAL-01 zero-delta correction (2026-11-25)
 
 Mainline: same Native dev writer/task; source fix1 independent review failed1 and dynamic repair-validation0 remain recorded.

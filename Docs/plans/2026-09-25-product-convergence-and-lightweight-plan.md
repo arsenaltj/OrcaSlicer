@@ -1,3 +1,12 @@
+# NATIVE-HOST-B6-THERMAL-01 round3 test ownership (2026-11-25)
+
+Mainline: same task/writer, stable B6 issue: initial406 missing heat; round1 beda source review failed; round2_87 actual C2280 fixture compile failed, Coreexports0. This is next round3; another failed repair/verification requires root arbitration, not another automatic repair.
+This round: only Export test-holder move ownership via GCodeProcessorResult's existing move-assignment. Preserve all13 real export inputs, assertions, order and production code. Before editing captured exact Win87 prior-live full3011-file hash/size and CL read/commands/generated/projects plus full unique source/header inputs, without archiving intermediate object bytes.
+Open: no new compile/SDK/Core; Win failed87 lineage differs from historical406 base. v5 will validate exact prior-live own87 bytes/source/header/flags/deps/argv before configure and record87-to-new plus cumulative406-to-new object hashes; unchanged GCode may reuse normally only with complete evidence. Other3producers retain406 premise. New actual raw marker remains mandatory.
+Next: newclean source and v5 narrow source/tool review/necessary fixtureQA/freshGO; owner waiting alone no longer creates failure, while exactownership/resource/cancel/IO/timeout failures remain. No kill/name whitelist or automatic retry; root handles any verified own auxiliary separately.
+Plan change: narrow source fixture and provenance/owner correction after preserved firstfailures; no product assertion, profile/config/temperature/budget or GLBheld change, originalB5 histories and pending futurebinding retained.
+
+## Previous correction retained
 # NATIVE-HOST-B6-THERMAL-01 zero-delta correction (2026-11-25)
 
 Mainline: task-20261124-v102-desktop-sdk-sync, original isolated Native dev writer; preserve original source fix1 reviewfailed1 and dynamic validation0, all product/tool histories and immutable406/851/411/192 evidence.

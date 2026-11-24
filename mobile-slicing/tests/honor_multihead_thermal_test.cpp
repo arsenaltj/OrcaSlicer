@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cctype>
 #include <vector>
+#include <utility>
 #include <tbb/global_control.h>
 
 using namespace Slic3r;
@@ -59,7 +60,20 @@ static DynamicPrintConfig config()
     c.set_key_value("flush_volumes_vector", new ConfigOptionFloats(std::vector<double>(8, 0.)));
     return c;
 }
-struct Export { std::string text; GCodeProcessorResult processed; std::vector<unsigned> ordered; };
+struct Export {
+    std::string text;
+    GCodeProcessorResult processed;
+    std::vector<unsigned> ordered;
+    Export() = default;
+    Export(const Export&) = delete;
+    Export& operator=(const Export&) = delete;
+    Export(Export&& other) : text(std::move(other.text)), ordered(std::move(other.ordered))
+    {
+        // GCodeProcessorResult exposes move assignment, not move construction.
+        // Default-construct this result then transfer through its supported API.
+        processed = std::move(other.processed);
+    }
+};
 static Export export_case(const fs::path& output, const DynamicPrintConfig& c, bool support=false, bool single=false)
 {
     Model model;
