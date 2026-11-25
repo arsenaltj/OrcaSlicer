@@ -69,7 +69,7 @@ def terminal_ok(stage, terminal, raw):
     require(terminal.get('actualExitCode', terminal.get('actualExit')) == 0, 'terminal failed')
     require(terminal.get('sourceBindings', 0) > 0, 'missing source closure')
     require(terminal.get('sdkExecuted') is False, 'unexpected SDK execution')
-    if 'records' in terminal:
+    if stage == 'model-android':
         records = terminal['records']
         require([r['name'] for r in records] == ['configure', 'actual-ninja-commands', 'build', 'actual-ninja-deps'],
                 'incomplete Android normal command family')
@@ -80,9 +80,11 @@ def terminal_ok(stage, terminal, raw):
         require(terminal.get('state') == 'SCOPED_SOURCE_RECOVERY_PASSED'
                 and terminal.get('ownerProcessAbsent') is True, 'unclosed recovery')
     elif stage == 'model-windows':
+        require('records' not in terminal, 'wrong Windows schema')
         require(terminal.get('fullSourceProvenancePassed') is True
                 and terminal.get('ownerPid16320Absent') is True, 'unclosed Model recovery')
     else:
+        require(stage == 'slicing-windows' and 'records' not in terminal, 'wrong Windows schema')
         require(terminal.get('buildAndSourcePassed') is True
                 and terminal.get('resourceReturned') is True, 'unbound Windows normal success')
 
@@ -144,11 +146,19 @@ def validate_binding(plan):
     require(plan['toolSource'] != SOURCE and re.fullmatch('[0-9a-f]{40}', plan['toolSource']), 'tool/source identities must be separate')
     inputs = {x['destination']: x['source'] for x in plan['stageInputs']}
     require(len(inputs) == len(plan['stageInputs']), 'duplicate stage destination')
+    for name in inputs:
+        relative(name)
+        require(not name.lower().endswith(('.obj', '.o', '.pch')), 'object staging forbidden')
     for stage, item in plan['producers'].items():
         raw = item['rawSource']['raw']
         name = Path(raw['path']).name
+        expected = {'model-windows': 'orca_model_sdk_c.dll', 'slicing-windows': 'orca_mobile_slicing_sdk_c.dll',
+                    'model-android': 'liborca_model_sdk_c.so', 'slicing-android': 'liborca_mobile_slicing_sdk_c.so'}
+        require(name == expected[stage], 'wrong canonical stage raw')
         dest = stage + ('/Release/' if stage.endswith('windows') else '/') + name
         require(inputs.get(dest) == raw, 'stage SDK must come from exact producer raw')
+    import contracts
+    contracts.check(plan, sys.modules[__name__])
     return roots
 
 
@@ -156,6 +166,7 @@ def verify_indexes(plan):
     """Stream full index files including GB execution records; no schema conversion."""
     for item in plan['producers'].values():
         verify(item['seal'])
+        require(small_json(item['seal']['path']) == item['fullIndex'], 'fullIndex differs from original seal')
         for ref in item['fullIndex'].get('files', item['fullIndex'].get('refs', [])):
             verify(ref)
         for ref in item['resourceProof'] + item['sourceProof']:
@@ -266,13 +277,27 @@ def argv_for(plan):
             '--output', plan['output']]
 
 
+def stream_copy(source, destination):
+    with Path(source).open('rb') as inp, Path(destination).open('xb') as out:
+        while block := inp.read(8 * 1024 * 1024):
+            IO_MONITOR()
+            out.write(block)
+
+
+def zip_copy(z, source, name):
+    with Path(source).open('rb') as inp, z.open(name, 'w', force_zip64=True) as out:
+        while block := inp.read(8 * 1024 * 1024):
+            IO_MONITOR()
+            out.write(block)
+
+
 def finish_manifest(plan):
     out, evidence, repo = (Path(plan[k]) for k in ('output', 'evidence', 'sdkRepository'))
     manifest_path = out / 'manifest.json'
     manifest = small_json(manifest_path)
     require(manifest['sourceCommit'] == manifest['packagingSourceCommit'] == SOURCE, 'packager source drift')
-    shutil.copyfile(manifest_path, evidence / 'upstream-manifest.json')
-    shutil.copyfile(out / 'source-snapshot.zip', evidence / 'upstream-source-snapshot.zip')
+    stream_copy(manifest_path, evidence / 'upstream-manifest.json')
+    stream_copy(out / 'source-snapshot.zip', evidence / 'upstream-source-snapshot.zip')
     # Explicit source list is derived from current frozen SDK git, not tool git.
     source_files = {i['path']: i for i in manifest['sourceFiles']}
     permanent = subprocess.check_output(['git', '-C', str(repo), 'ls-files', '-z', 'src',
@@ -290,10 +315,13 @@ def finish_manifest(plan):
         require(len(old_names) == len(old.namelist()), 'duplicate source ZIP names')
         for info in old.infolist():
             if info.filename != 'source-files.json':
-                z.writestr(info, old.read(info))
+                with old.open(info) as inp, z.open(info, 'w', force_zip64=True) as dest:
+                    while block := inp.read(8 * 1024 * 1024):
+                        IO_MONITOR()
+                        dest.write(block)
         for name in permanent:
             if name not in old_names:
-                z.write(repo / name, name)
+                zip_copy(z, repo / name, name)
         z.writestr('source-files.json', json.dumps(manifest['sourceFiles'], indent=2))
     for i in manifest['sourceFiles']:
         require(identity(repo / relative(i['path']))['sha256'] == i['sha256'], 'source mismatch')
@@ -307,11 +335,11 @@ def finish_manifest(plan):
                                     + list(item.get('originalRecords', {}).values())):
             dest = provenance / stage / (str(index) + '-' + Path(ref['path']).name)
             dest.parent.mkdir(exist_ok=True)
-            shutil.copyfile(verify(ref), dest)
-        shutil.copyfile(verify(item['seal']), provenance / stage / 'full-original-seal.json')
+            stream_copy(verify(ref), dest)
+        stream_copy(verify(item['seal']), provenance / stage / 'full-original-seal.json')
     for file in evidence.iterdir():
         if file.is_file():
-            shutil.copyfile(file, provenance / file.name)
+            stream_copy(file, provenance / file.name)
     manifest['sourceSnapshot'] = hashlib.sha256(json.dumps(manifest['sourceFiles'], sort_keys=True).encode()).hexdigest()
     # Upstream literal is preserved above. Caller has just checked actual clean
     # Git/source identity and all four sealed producer closures before assembly.
@@ -335,10 +363,21 @@ def finish_manifest(plan):
     with zipfile.ZipFile(archive, 'x', zipfile.ZIP_DEFLATED) as z:
         for file in sorted(out.rglob('*')):
             if file.is_file():
-                z.write(file, file.relative_to(out).as_posix())
-    write(evidence / 'candidate-result.json', dict(state='CANDIDATE_NOT_HOST_QUALIFIED',
+                zip_copy(z, file, file.relative_to(out).as_posix())
+    return dict(state='CANDIDATE_NOT_HOST_QUALIFIED',
         manifest=identity(manifest_path), archive=identity(archive), payloadCount=len(manifest['files']),
-        sourceCount=len(manifest['sourceFiles'])))
+        sourceCount=len(manifest['sourceFiles']))
+
+
+def publish_result(evidence, result, final_checks, save):
+    """Only a fully closed operation publishes the atomic completion receipt."""
+    pending = Path(evidence) / 'candidate-result.pending.json'
+    final = Path(evidence) / 'candidate-result.json'
+    require(not final.exists(), 'completion receipt already exists')
+    write(pending, result)
+    final_checks()
+    save()
+    os.replace(pending, final)
 
 
 def execute(plan, go, plan_sha):
@@ -348,6 +387,8 @@ def execute(plan, go, plan_sha):
             and go['allowModelCapabilitiesLoad'] is True, 'separate explicit artifact GO required')
     require(identity(go['planPath'])['sha256'] == plan_sha, 'GO plan path mismatch')
     validate_binding(plan)
+    import contracts
+    contracts.go_closure(plan, go, sys.modules[__name__])
     required_tools = {str(Path(plan['ownerDirectory']) / n) for n in
                       ('build_resources.py', 'build_owner.py', 'qa_owner_safety.py')}
     require(required_tools <= {x['path'] for x in plan['toolFiles']}, 'unpinned owner imports')
@@ -361,6 +402,7 @@ def execute(plan, go, plan_sha):
     cancel = Path(go['cancel'])
     admit_cancel(cancel)
     state = dict(source=SOURCE, commands=[], state='started')
+    published = False
     samples = []
     gate(samples, lambda: None)
     repo = Path(plan['sdkRepository'])
@@ -413,16 +455,22 @@ def execute(plan, go, plan_sha):
         command([plan['python'], str(verify(proof)), '--binding', go['planPath']], 'static-postprocess-proof')
         verify_indexes(plan)
         source_check()
-        finish_manifest(plan)
+        result = finish_manifest(plan)
+        verify_indexes(plan)
+        source_check()
         monitor(force=True)
         state['state'] = 'candidate_complete_independent_review_pending'
+        save()
+        publish_result(evidence, result, lambda: (source_check(), monitor(force=True)), save)
+        published = True
     except BaseException as exc:
         state['state'] = 'failed_partial_no_retry'
         state['error'] = repr(exc)
         raise
     finally:
         IO_MONITOR = lambda: None
-        save()
+        if not published:
+            save()
 
 
 def main():
