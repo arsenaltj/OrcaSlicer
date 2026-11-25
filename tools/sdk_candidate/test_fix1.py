@@ -145,8 +145,11 @@ class Fix1(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);plan=self.fixture(root)
             plan.update(source=a.SOURCE, staging=str(root/'stage'), output=str(root/'output'),
-                        evidence=str(root/'evidence'), debug=str(root/'debug'), ndk=str(root/'ndk'))
+                        evidence=str(root/'evidence'), debug=str(root/'debug'), ndk=str(root/'ndk'),git=str(root/'git'))
+            kernel=root/'owner/kernel_job.py';kernel.write_text('{}')
+            plan['toolFiles'].append(a.identity(kernel))
             planpath=root/'plan.json';planpath.write_text('{}')
+            plan['bindingPath']=str(planpath)
             digest=a.identity(planpath)['sha256']
             go=dict(source=a.SOURCE,planSha256=digest,planPath=str(planpath),artifactOnlyAuthorized=True,
                     allowModelCapabilitiesLoad=True,closure=[],cancel=str(root/'cancel'))
@@ -154,13 +157,14 @@ class Fix1(unittest.TestCase):
             resources.gate=lambda *x:None
             resources.sample=lambda:dict(freeKiB=1, processes=[])
             resources.heavy=lambda p:False
-            owner=types.ModuleType('build_owner')
+            owner=types.ModuleType('artifact_owner')
             owner.admit_cancel=lambda p:None
+            owner.commands=lambda p:[]
             def run(argv,path,record,*args,**kwargs):
                 Path(path).write_text('');record.update(exitCode=0)
             owner.run_owned=run
             def git(argv,**k):return (a.TREE if argv[-1]=='HEAD^{tree}' else a.SOURCE if argv[-1]=='HEAD' else '')+'\n'
-            with patch.dict(a.sys.modules, {'build_resources':resources,'build_owner':owner}), \
+            with patch.dict(a.sys.modules, {'build_resources':resources,'artifact_owner':owner}), \
                  patch.object(a,'validate_binding',lambda p:None),patch.object(contracts,'go_closure',lambda *x:None), \
                  patch.object(a,'verify_indexes',lambda p:None),patch.object(a,'copy_inputs',lambda *x:None), \
                  patch.object(a,'select_tbb',lambda *x:None),patch.object(a,'finish_manifest',lambda p:{'tiny':'candidate'}), \

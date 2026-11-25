@@ -178,6 +178,7 @@ def validate_binding(plan):
         require(inputs.get(dest) == raw, 'stage SDK must come from exact producer raw')
     import contracts
     contracts.check(plan, sys.modules[__name__])
+    contracts.owner_protocol(plan, sys.modules[__name__])
     return roots
 
 
@@ -405,18 +406,19 @@ def execute(plan, go, plan_sha):
             and go['artifactOnlyAuthorized'] is True
             and go['allowModelCapabilitiesLoad'] is True, 'separate explicit artifact GO required')
     require(identity(go['planPath'])['sha256'] == plan_sha, 'GO plan path mismatch')
+    require(Path(plan['bindingPath']).resolve() == Path(go['planPath']).resolve(), 'artifact binding argv differs')
     validate_binding(plan)
     import contracts
     contracts.go_closure(plan, go, sys.modules[__name__])
     required_tools = {str(Path(plan['ownerDirectory']) / n) for n in
-                      ('build_resources.py', 'build_owner.py', 'qa_owner_safety.py')}
+                      ('build_resources.py', 'kernel_job.py', 'qa_owner_safety.py')}
     require(required_tools <= {x['path'] for x in plan['toolFiles']}, 'unpinned owner imports')
     for ref in plan['toolFiles'] + go['closure']:
         verify(ref)
     # No import of owner (and hence no monitor) until the exact execution gate.
     sys.path.insert(0, plan['ownerDirectory'])
     from build_resources import gate, sample, heavy
-    from build_owner import run_owned, admit_cancel
+    from artifact_owner import run_owned, admit_cancel, commands
     evidence = Path(plan['evidence'])
     cancel = Path(go['cancel'])
     admit_cancel(cancel)
@@ -453,7 +455,9 @@ def execute(plan, go, plan_sha):
         try:
             if env:
                 os.environ.update(env)
-            run_owned(argv, evidence / (label + '.log'), step, save, cancel, lambda: None, mode='artifact')
+            run_owned(argv, evidence / (label + '.log'), step, save, cancel, lambda: None, mode='artifact',
+                      permitted_commands=commands(plan),
+                      permitted_images=[plan[k] for k in ('python','node','readobj','readelf','strip','git')])
         finally:
             os.environ.clear()
             os.environ.update(previous)

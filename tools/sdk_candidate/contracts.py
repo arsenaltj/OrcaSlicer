@@ -132,7 +132,7 @@ def check(plan, api):
         'src/orca_model_sdk/tools/strip_android_model.py', 'src/orca_model_sdk/repair_core/verify_approved_tbb.py',
         'src/orca_model_sdk/repair_core/approved_tbb.json', 'mobile-slicing/build_android_arm64.cjs')]
     required += [Path(plan['ownerDirectory']) / name for name in
-                 ('build_resources.py', 'build_owner.py', 'qa_owner_safety.py')]
+                 ('build_resources.py', 'qa_owner_safety.py')]
     required += [Path(plan[name]) for name in ('python', 'node', 'readobj', 'readelf', 'strip', 'cgalArchive', 'dependencyManifest')]
     tools = {str(Path(x['path']).resolve()): x for x in plan['toolFiles']}
     need(len(tools) == len(plan['toolFiles']), 'duplicate tool pins')
@@ -178,6 +178,9 @@ def check(plan, api):
 
 def go_closure(plan, go, api):
     expected = plan['toolFiles'] + [x['source'] for x in plan['stageInputs']]
+    expected += list(plan.get('ownerQualification', {}).values())
+    for ref in plan.get('ownerQualification', {}).values():
+        expected.append(api.small_json(api.verify(ref))['report'])
     for item in plan['producers'].values():
         expected += [item['seal']] + item['resourceProof'] + item['sourceProof']
         expected += item['fullIndex'].get('files', item['fullIndex'].get('refs', []))
@@ -192,3 +195,45 @@ def go_closure(plan, go, api):
     api.require(closure == expected_map, 'GO exact closure differs')
     for ref in expected:
         api.require(closure.get(str(Path(ref['path']).resolve())) == ref, 'GO input closure incomplete')
+
+
+def owner_protocol(plan, api):
+    """Exact local artifact protocol; old Native v5/v6 are never alternatives."""
+    import artifact_owner
+    import sys
+    import shutil
+    need = api.require
+    need(plan.get('ownerProtocol') == artifact_owner.PROTOCOL, 'artifact owner protocol required')
+    need(Path(plan['artifactOwner']).resolve() == Path(artifact_owner.__file__).resolve(), 'not actual artifact owner')
+    tools = {str(Path(x['path']).resolve()): x for x in plan['toolFiles']}
+    local = tools.get(str(Path(artifact_owner.__file__).resolve()))
+    need(local is not None, 'missing local artifact owner pin')
+    api.verify(local)
+    for name, digest in artifact_owner.SUPPORT.items():
+        ref = tools.get(str((Path(plan['ownerDirectory']) / name).resolve()))
+        need(ref is not None and ref['sha256'] == digest, 'API-v8 transitive owner identity differs: ' + name)
+        api.verify(ref)
+        loaded = sys.modules.get(Path(name).stem)
+        need(loaded is None or Path(getattr(loaded, '__file__', '')).resolve() == Path(ref['path']).resolve(),
+             'shadowed artifact owner transitive module')
+    for key, basename in [('python','python.exe'),('node','node.exe'),('readobj','llvm-readobj.exe'),
+                          ('readelf','llvm-readelf.exe'),('strip','llvm-strip.exe'),('git','git.exe')]:
+        need(Path(plan[key]).name.lower() == basename, 'unexpected artifact image role')
+        need(str(Path(plan[key]).resolve()) in tools, 'artifact image missing exact pin')
+    need(shutil.which('git') is not None and Path(shutil.which('git')).resolve() == Path(plan['git']).resolve(),
+         'canonical packager PATH git differs from pinned artifact image')
+    # Qualification is explicitly unknown until different review/QA. Metadata
+    # cannot substitute for root's later exact closure-bound execution grant.
+    need(plan.get('ownerQualification') is not None, 'artifact owner review/QA unbound')
+    for role in ('review', 'qa'):
+        ref = plan['ownerQualification'][role]
+        receipt = api.small_json(api.verify(ref))
+        need(receipt['schema'] == 'sdk-artifact-owner-qualification-v1'
+             and receipt['role'] == role and receipt['outcome'] == 'passed'
+             and receipt['protocol'] == artifact_owner.PROTOCOL
+             and receipt['toolSource'] == plan['toolSource']
+             and receipt['owner'] == local, 'artifact owner qualification/version mismatch')
+        need(receipt['support'] == {name: tools[str((Path(plan['ownerDirectory'])/name).resolve())]
+                                   for name in artifact_owner.SUPPORT}, 'qualification helper mismatch')
+        api.verify(receipt['report'])
+    return artifact_owner
