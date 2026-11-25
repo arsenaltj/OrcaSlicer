@@ -103,7 +103,8 @@ class ArtifactTests(unittest.TestCase):
             record=dict(commands=[])
             env=dict(source_check=lambda:None,admit_cancel=o.admit_cancel,cancel_file=None,
                      cancel=Path(d)/'cancel',state=record,gate=lambda *x:None,save=lambda:None,
-                     evidence=Path(d),os=o.os,run_owned=o.run_owned,commands=lambda p:[['exact-tool']],plan=plan)
+                     evidence=Path(d),os=o.os,run_owned=o.run_owned,commands=lambda p:[['exact-tool']],plan=plan,
+                     base_env=dict(o.os.environ),repo=Path(d))
             exec(compile(ast.Module(body=[command],type_ignores=[]),'actual-adapter-command','exec'),env)
             with patch.object(o,'runtime',return_value=runtime),patch.object(o.time,'sleep',lambda x:None):
                 env['command'](['exact-tool'],'direct')

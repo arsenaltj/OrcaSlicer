@@ -5,6 +5,8 @@ Uses the API-v8 KernelDomain unchanged; never enables Native build mode.
 from pathlib import Path
 import os
 import time
+import hashlib
+import json
 
 PROTOCOL = 'sdk-artifact-kernel-v1'
 SUPPORT = {
@@ -70,11 +72,14 @@ def runtime():
 
 
 def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=7200,
-              mode='artifact', *, permitted_commands, permitted_images):
+              mode='artifact', *, permitted_commands, permitted_images, env=None, cwd=None):
     global TRACE_CONTEXT
     assert mode == 'artifact', 'artifact protocol only'
     assert argv in permitted_commands, 'command outside exact artifact contract'
     admit_cancel(cancel_file)
+    launch_env=dict(os.environ) if env is None else dict(env)
+    launch_cwd=os.getcwd() if cwd is None else str(cwd)
+    assert all(isinstance(k,str) and isinstance(v,str) for k,v in launch_env.items()), 'explicit string environment required'
     images = {os.path.normcase(str(Path(x).resolve())) for x in permitted_images}
     assert os.path.normcase(str(Path(argv[0]).resolve())) in images, 'unbound root image'
     Domain, sample, heavy, identity, now, attempt, remember, wait = runtime()
@@ -88,6 +93,7 @@ def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=720
     failure = None
     started = time.monotonic()
     record.update(protocol=PROTOCOL, argv=argv, rawSamples=[], samples=[], state='started')
+    record.update(launchEnvironmentSha256=hashlib.sha256(json.dumps(launch_env,sort_keys=True).encode()).hexdigest(),launchCwd=launch_cwd)
     def persist():
         attempt(errors, 'record_save', save)
     def monitor():
@@ -124,7 +130,7 @@ def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=720
             admit_cancel(cancel_file)
             domain = Domain()
             TRACE_CONTEXT.phase = 'launch'
-            child = domain.launch(argv, os.getcwd(), dict(os.environ), log, log)
+            child = domain.launch(argv, launch_cwd, launch_env, log, log)
             TRACE_CONTEXT.call('domain.launch_receipt',lambda:dict(pid=child.pid,handle=str(child.h) if hasattr(child,'h') else None),
                                targetPID=child.pid,handle=str(child.h) if hasattr(child,'h') else None,handleRole='root')
             domain.prove_root()

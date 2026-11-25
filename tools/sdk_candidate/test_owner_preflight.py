@@ -64,7 +64,7 @@ class PreflightTests(unittest.TestCase):
                 with patch.dict(p.sys.modules,{'build_resources':resources,'artifact_owner':owner}),\
                      patch.object(p,'validate',return_value=(Path(plan['output']),dict(os.environ))),\
                      patch.object(p,'verify',lambda ref:None),patch.object(p,'fresh',lambda *x:None),\
-                     patch.object(p,'git_state',lambda *x:None):
+                     patch.object(p,'git_state',lambda *x,**kw:None):
                     if fail:
                         with self.assertRaises(ValueError):p.execute(plan,go,'pin')
                     else:p.execute(plan,go,'pin')
@@ -87,7 +87,7 @@ class PreflightTests(unittest.TestCase):
                 owner.run_owned=run
                 with patch.dict(p.sys.modules,{'build_resources':resources,'artifact_owner':owner}),\
                      patch.object(p,'validate',return_value=(Path(plan['output']),dict(os.environ))),\
-                     patch.object(p,'verify',lambda *x:None),patch.object(p,'git_state',lambda *x:None),\
+                     patch.object(p,'verify',lambda *x:None),patch.object(p,'git_state',lambda *x,**kw:None),\
                      patch.object(p,'fresh',check):
                     with self.assertRaises(ValueError):p.execute(plan,go,'pin')
                 self.assertEqual(state['calls'],2 if tail else 1)

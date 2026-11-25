@@ -23,11 +23,11 @@ GIT='C:/Program Files (x86)/Git/cmd/git.exe'
 PE='C:/Windows/System32/where.exe'
 PE_SHA='f51fab8041e5023d7290b540a2106f051ef0bd2bc3443c9daf318628b560fa29'
 PROTECTED={
- 'artifact_owner.py':'531de2eca002593358afb3700bcecb9f9df8dbbbe1430f508757aafcbbf55ecd',
+ 'artifact_owner.py':'6b9d5a98c1826ac6f18b0f64cf16ea207a65765a4d1f4791e4b4ef24d7509966',
  'api_context.py':'86366f0acb75b7d26f46f497c89faf08b8265a65b23d42a6fc86e010dbe798c9',
- 'adapter.py':'0d35d372938020632d2bb31e26d9af0b3073fe51cb887af5af4a03d53d2688ea',
+ 'adapter.py':'2f2a2ab02a0ad6daef59ccf8ead3accf0aa0dada20fa5599298d8e50d6a1b51b',
  'contracts.py':'eb71e6f108890435db0a39e0d8b4d3c2f0de4230b3967647763ae1ba044675f7',
- 'companion.py':'b5df64fe111106d021d36a0c88f10ac5a03ee5276f05348194062ba1b60ec33e',
+ 'companion.py':'ff11ddc10f7dee58f03abe22f7a2fab1cae303598c9679e28b369a522e9b8bb5',
  'static_proof.py':'811b15714d6ae0c8f18b57df5ceb519f2c7b9945cd6bad85c5006a5ce95b0175'}
 SUPPORT={
  'kernel_job.py':'492b7ac00096aaa0c05164010b9cc19e7a6a3273689d2ae61917b387ef93950e',
@@ -76,9 +76,11 @@ def fresh(go,now):
     require(issued<=now<expires and 0<(expires-issued).total_seconds()<=360,'expired or invalid preflight GO')
 
 
-def git_state(plan):
-    require(subprocess.check_output([GIT,'-C',str(REPO),'rev-parse','HEAD'],text=True).strip()==plan['toolCommit'],'preflight tool commit differs')
-    require(not subprocess.check_output([GIT,'-C',str(REPO),'status','--porcelain'],text=True).strip(),'preflight checkout dirty')
+def git_state(plan,env=None,cwd=None):
+    env=dict(os.environ) if env is None else env
+    cwd=plan['cwd'] if cwd is None else cwd
+    require(subprocess.check_output([GIT,'-C',str(REPO),'rev-parse','HEAD'],text=True,env=env,cwd=cwd).strip()==plan['toolCommit'],'preflight tool commit differs')
+    require(not subprocess.check_output([GIT,'-C',str(REPO),'status','--porcelain'],text=True,env=env,cwd=cwd).strip(),'preflight checkout dirty')
 
 
 def validate(plan,go,plan_sha,now):
@@ -109,7 +111,7 @@ def validate(plan,go,plan_sha,now):
     require(refs[key(PE)]['sha256']==PE_SHA and 0<refs[key(PE)]['bytes']<=1024*1024,'fixed OS fixture only')
     for ref in refs.values():verify(ref)
     # Check fixed source/Git before monitor import; no shell, no arbitrary probe.
-    git_state(plan)
+    git_state(plan,env=env,cwd=plan['cwd'])
     for name in SUPPORT:
         loaded=sys.modules.get(Path(name).stem)
         require(loaded is None or Path(getattr(loaded,'__file__','')).resolve()==Path(plan['supportDirectory'],name).resolve(),'shadowed support module')
@@ -133,28 +135,24 @@ def execute(plan,go,plan_sha):
     state=dict(state='started',source=SOURCE,toolCommit=plan['toolCommit'],admission=admission,commands=[],
         qualification='OWNER_COMPATIBILITY_ONLY_NOT_SDK',shortChildObservation='NOT_CLAIMED')
     def save():(out/'execution.json').write_text(json.dumps(state,indent=2),encoding='utf8')
-    oldenv=dict(os.environ);oldcwd=os.getcwd()
     try:
-        os.environ.clear();os.environ.update(env);os.chdir(plan['cwd'])
         for i,argv in enumerate(commands()):
             fresh(go,now());admit_cancel(go['cancel'])
-            git_state(plan)
+            git_state(plan,env=env,cwd=plan['cwd'])
             for ref in plan['files']:verify(ref)
             step=dict(index=i);state['commands'].append(step)
             gate(step.setdefault('admission',[]),save)
             fresh(go,now());admit_cancel(go['cancel'])
             run_owned(argv,out/(str(i)+'.log'),step,save,go['cancel'],lambda:None,
-                      timeout=60,mode='artifact',permitted_commands=commands(),permitted_images=[PYTHON,READOBJ])
+                      timeout=60,mode='artifact',permitted_commands=commands(),permitted_images=[PYTHON,READOBJ],env=env,cwd=plan['cwd'])
             require(step['state']=='returned' and step['exitCode']==0 and not step.get('monitorErrors'), 'owner did not return successfully')
         for ref in plan['files']:verify(ref)
-        git_state(plan)
+        git_state(plan,env=env,cwd=plan['cwd'])
         tail=sample();state['tailSample']=tail;save()
         require(tail['freeKiB']>3*1024**2 and not any(heavy(p) for p in tail['processes']),'tail resource first failure')
         state['state']='preflight_passed_not_sdk';save()
     except BaseException as exc:
         state.update(state='failed_first_error_no_retry',error=repr(exc));save();raise
-    finally:
-        os.chdir(oldcwd);os.environ.clear();os.environ.update(oldenv)
 
 
 if __name__=='__main__':

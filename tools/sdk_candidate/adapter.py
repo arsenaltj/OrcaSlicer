@@ -322,7 +322,7 @@ def finish_manifest(plan):
     source_files = {i['path']: i for i in manifest['sourceFiles']}
     permanent = subprocess.check_output(['git', '-C', str(repo), 'ls-files', '-z', 'src',
         'mobile-slicing', 'tests', 'docs/coordination/current-development.md',
-        'Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md']).decode('utf8').split('\0')
+        'Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md'],env=dict(os.environ),cwd=repo).decode('utf8').split('\0')
     permanent = sorted(set(filter(None, permanent)))
     require('mobile-slicing/tests/honor_multihead_thermal_test.cpp' in permanent,
             'missing permanent thermal source')
@@ -427,10 +427,11 @@ def execute(plan, go, plan_sha):
     samples = []
     gate(samples, lambda: None)
     repo = Path(plan['sdkRepository'])
+    base_env=dict(os.environ)
     def source_check():
-        require(subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip() == SOURCE, 'SDK source changed')
-        require(subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD^{tree}'], text=True).strip() == TREE, 'SDK tree changed')
-        require(not subprocess.check_output(['git', '-C', str(repo), 'status', '--porcelain'], text=True).strip(), 'SDK dirty')
+        require(subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True,env=base_env,cwd=repo).strip() == SOURCE, 'SDK source changed')
+        require(subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD^{tree}'], text=True,env=base_env,cwd=repo).strip() == TREE, 'SDK tree changed')
+        require(not subprocess.check_output(['git', '-C', str(repo), 'status', '--porcelain'], text=True,env=base_env,cwd=repo).strip(), 'SDK dirty')
     source_check()
     evidence.mkdir(parents=True)
     def save():
@@ -451,16 +452,11 @@ def execute(plan, go, plan_sha):
         step = dict(label=label, argv=argv)
         state['commands'].append(step)
         gate(step.setdefault('admission', []), save)
-        previous = os.environ.copy()
-        try:
-            if env:
-                os.environ.update(env)
-            run_owned(argv, evidence / (label + '.log'), step, save, cancel, lambda: None, mode='artifact',
-                      permitted_commands=commands(plan),
-                      permitted_images=[plan[k] for k in ('python','node','readobj','readelf','strip','git')])
-        finally:
-            os.environ.clear()
-            os.environ.update(previous)
+        child_env=dict(base_env)
+        if env:child_env.update(env)
+        run_owned(argv, evidence / (label + '.log'), step, save, cancel, lambda: None, mode='artifact',
+                  permitted_commands=commands(plan),
+                  permitted_images=[plan[k] for k in ('python','node','readobj','readelf','strip','git')],env=child_env,cwd=repo)
         return (evidence / (label + '.log')).read_text(encoding='utf8')
     try:
         IO_MONITOR = monitor
