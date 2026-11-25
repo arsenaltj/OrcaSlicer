@@ -1,0 +1,25 @@
+{
+  "schema": "artifact-owner-preflight-plan-v1",
+  "state": "PREPARED_UNBOUND_NO_GO_NOT_EXECUTED",
+  "source": "b5f078f52a8db9bb8eb3b347b155679c852d5c32",
+  "toolCommit": null,
+  "nonce": null,
+  "cwd": "D:\\Codex\\worktrees\\OrcaSlicer\\task-20261125-b5f-sdk-package-tooling",
+  "output": null,
+  "supportDirectory": "D:/Codex/artifacts/task-20261122-v102-api-upstream-integration/evidence/d3cc-validation-tools-v8",
+  "envOverrides": { "PYTHONNOUSERSITE": "1", "PYTHONPATH": "" },
+  "environmentSha256": null,
+  "commandTimeoutSeconds": 60,
+  "commands": [
+    ["C:/Users/1/AppData/Local/Programs/Python/Python312/python.exe", "-I", "-S", "D:\\Codex\\worktrees\\OrcaSlicer\\task-20261125-b5f-sdk-package-tooling\\tools\\sdk_candidate\\preflight_marker.py"],
+    ["C:/Users/1/AppData/Local/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/windows-x86_64/bin/llvm-readobj.exe", "--file-headers", "C:/Windows/System32/where.exe"]
+  ],
+  "files": [],
+  "goTemplate": {
+    "schema": "artifact-owner-preflight-go-v1", "rootConversation": "01a20286-30e2-7a20-a134-d11895959c44",
+    "authorized": false, "issuedUtc": null, "expiresUtc": null, "planSha256": null,
+    "nonce": null, "source": "b5f078f52a8db9bb8eb3b347b155679c852d5c32", "output": null,
+    "cancel": null, "cwd": null, "commands": null, "environmentSha256": null,
+    "commandTimeoutSeconds": 60, "files": []
+  }
+}
