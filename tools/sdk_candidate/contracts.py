@@ -57,6 +57,8 @@ def check(plan, api):
                  and summary['source'] == api.SOURCE and summary['stage'] == stage, 'wrong proof schema/stage')
             need(summary['seal'] == item['seal'] and summary['rawSource'] == item['rawSource'], 'proof source/raw/seal mismatch')
         resource, source = summaries
+        import companion
+        companions=companion.accepted(source,item,stage)
         if stage == 'model-android':
             need(item['terminal'].get('owner29816Absent') is True
                  and item['terminal'].get('sourceClean') is True, 'unclosed Model Android owner/source')
@@ -110,7 +112,7 @@ def check(plan, api):
                     return True
                 return any(contains(x, target) for x in value.values())
             return isinstance(value, list) and any(contains(x, target) for x in value)
-        need(contains(source_inputs, cache), 'cache not bound by actual source input closure')
+        need(contains(source_inputs, cache) or cache in companions, 'cache not bound by actual source/companion closure')
         item_cache = next((x['source'] for x in plan['stageInputs']
                            if x['destination'] == stage + '/CMakeCache.txt'), None)
         need(item_cache == cache, 'staged cache differs from actual source')
@@ -128,6 +130,8 @@ def check(plan, api):
          == plan['toolSource'], 'running tool commit differs')
     need(not subprocess.check_output(['git', '-C', str(tool_repo), 'status', '--porcelain'], text=True).strip(), 'tool checkout dirty')
     required = [Path(__file__), Path(api.__file__), Path(__file__).with_name('static_proof.py')]
+    if any('companion' in load(pin(x['sourceProof'][0])) for x in plan['producers'].values()):
+        required.append(Path(__file__).with_name('companion.py'))
     required += [repo / name for name in ('src/orca_model_sdk/tools/package_sdk.py',
         'src/orca_model_sdk/tools/strip_android_model.py', 'src/orca_model_sdk/repair_core/verify_approved_tbb.py',
         'src/orca_model_sdk/repair_core/approved_tbb.json', 'mobile-slicing/build_android_arm64.cjs')]
@@ -164,6 +168,7 @@ def check(plan, api):
         allowed = item['fullIndex'].get('files', item['fullIndex'].get('refs', []))
         source_file = next(x for x in allowed if Path(x['path']).name == 'actual-compiler-inputs.json')
         source_graph = load(pin(source_file))
+        companions=companion.accepted(load(pin(item['sourceProof'][0])),item,stage)
         def bound(value, target):
             if isinstance(value, dict):
                 if all(value.get(k) == v for k, v in target.items()): return True
@@ -171,7 +176,7 @@ def check(plan, api):
             return isinstance(value, list) and any(bound(x, target) for x in value)
         for name, ref in inputs.items():
             if name.startswith(stage + '/'):
-                need(ref == item['rawSource']['raw'] or ref in allowed or bound(source_graph, ref),
+                need(ref == item['rawSource']['raw'] or ref in allowed or bound(source_graph, ref) or ref in companions,
                      'stage input outside actual source graph: ' + name)
     return tools
 
@@ -185,6 +190,8 @@ def go_closure(plan, go, api):
         expected += [item['seal']] + item['resourceProof'] + item['sourceProof']
         expected += item['fullIndex'].get('files', item['fullIndex'].get('refs', []))
         expected += list(item.get('originalRecords', {}).values())
+        import companion
+        expected += companion.closure(api.small_json(api.verify(item['sourceProof'][0])))
     closure = {str(Path(x['path']).resolve()): x for x in go['closure']}
     api.require(len(closure) == len(go['closure']), 'duplicate GO closure member')
     expected_map = {}
