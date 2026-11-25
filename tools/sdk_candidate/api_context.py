@@ -14,8 +14,71 @@ class Context:
         self.raw_index = None
         self.targets = {}
         self.handles = {}
+        self.closed_history = []
         self.job = None
         self.frame = {}
+
+    def closed(self, handle):
+        key = str(handle)
+        previous = self.handles.pop(key,None)
+        if previous is not None or key == self.job:
+            self.closed_history.append(dict(handle=key,status='closed',historyOnly=True,
+                previousIdentity=list(previous) if previous is not None else None,
+                role='job' if key==self.job else previous[2]))
+        if key == self.job:
+            self.job = None
+        self.record['closedHandleHistory'] = list(self.closed_history)
+        last = self.last_error()
+        self.persist()
+        self.restore_error(last)
+
+    def scalars(self, name, args):
+        """Only input scalars/roles; never dereference private env or output buffers."""
+        def arg(i):return args[i] if i < len(args) else None
+        def scalar(i):
+            value=arg(i)
+            return value if value is None or isinstance(value,(str,int,bool,float)) else getattr(value,'value',None)
+        def handle(i):return str(arg(i)) if arg(i) is not None else None
+        def pointer(i):
+            value=arg(i)
+            null=value is None or (isinstance(value,int) and value==0)
+            return dict(present=not null,type=type(value).__name__ if value is not None else 'null',identityProven=False)
+        def count(i):
+            value=getattr(arg(i),'_obj',None)
+            return getattr(value,'value',None)
+        if name=='OpenProcess':
+            return dict(desiredAccess=scalar(0),inheritHandle=scalar(1),processId=scalar(2))
+        if name=='WaitForSingleObject':return dict(processHandle=handle(0),timeoutMilliseconds=scalar(1))
+        if name=='QueryInformationJobObject':
+            return dict(jobHandle=handle(0),informationClass=scalar(1),buffer=pointer(2),bufferBytes=scalar(3),returnLength=pointer(4))
+        if name=='DuplicateHandle':
+            return dict(sourceProcessHandle=handle(0),sourceHandle=handle(1),targetProcessHandle=handle(2),
+                targetHandleOutput=pointer(3),desiredAccess=scalar(4),inheritHandle=scalar(5),options=scalar(6))
+        if name=='CreateProcessW':
+            command=scalar(1)
+            return dict(application=scalar(0),commandLine=command,
+                processSecurity=pointer(2),threadSecurity=pointer(3),inheritHandles=scalar(4),creationFlags=scalar(5),
+                environment=dict(present=arg(6) is not None,contents='PRIVATE_NOT_RECORDED'),
+                currentDirectory=scalar(7),startupInfo=pointer(8),processReceiptOutput=pointer(9))
+        if name=='CreateJobObjectW':return dict(security=pointer(0),name=scalar(1))
+        if name=='InitializeProcThreadAttributeList':
+            return dict(attributeList=pointer(0),attributeCount=scalar(1),flags=scalar(2),sizeOutput=pointer(3),sizeInput=count(3))
+        if name=='UpdateProcThreadAttribute':
+            return dict(attributeList=pointer(0),flags=scalar(1),attribute=scalar(2),value=pointer(3),
+                        valueBytes=scalar(4),previousValue=pointer(5),returnSize=pointer(6))
+        if name=='DeleteProcThreadAttributeList':return dict(attributeList=pointer(0))
+        if name=='GetCurrentProcess':return {}
+        if name=='GetStdHandle':return dict(standardHandleId=scalar(0))
+        if name=='QueryFullProcessImageNameW':
+            return dict(processHandle=handle(0),flags=scalar(1),imageOutput=pointer(2),sizeInOut=pointer(3),capacityCharacters=count(3))
+        if name=='GetProcessTimes':
+            return dict(processHandle=handle(0),creationTimeOutput=pointer(1),exitTimeOutput=pointer(2),
+                        kernelTimeOutput=pointer(3),userTimeOutput=pointer(4))
+        if name=='GetProcessId':return dict(processHandle=handle(0))
+        if name=='IsProcessInJob':return dict(processHandle=handle(0),jobHandle=handle(1),memberOutput=pointer(2))
+        if name=='GetExitCodeProcess':return dict(processHandle=handle(0),exitCodeOutput=pointer(1))
+        if name=='CloseHandle':return dict(handle=handle(0))
+        return dict(parameterContract='unknown')
 
     def persist(self):
         try:
@@ -36,7 +99,9 @@ class Context:
         event['status'] = 'attempt'
         calls = self.record.setdefault('apiCalls', [])
         calls.append(event)
+        prior = self.last_error()
         self.persist()  # failure remains sticky but cannot block native cleanup/wait
+        self.restore_error(prior)
         try:
             result = action()
             last = self.last_error()  # capture before serialization/diagnostics/another API
@@ -84,26 +149,33 @@ class Context:
                 self.job = str(result)
             elif name == 'launch' and isinstance(result,tuple):
                 self.handles[str(result[0])] = (result[1],None,'root')
+            elif name == 'close':
+                self.closed(args[0])
             return result
         finally:
             self.frame = before
 
     def native(self, name, action):
         def invoke(*args):
-            target = {}
+            target = dict(actualParameters=self.scalars(name,args))
             if name == 'OpenProcess':
-                target = dict(targetPID=args[2],knownBirth=None,observedBirth=self.targets.get(args[2]),
+                target.update(targetPID=args[2],knownBirth=None,observedBirth=self.targets.get(args[2]),
                               handle=None,handleRole='candidate',requestedAccess=args[0])
+            elif name=='DuplicateHandle':
+                target.update(targetPID=None,knownBirth=None,handle=str(args[1]),handleRole='duplicate-source',
+                              requestedAccess=args[4])
             elif name in ('QueryInformationJobObject','CreateJobObjectW'):
-                target = dict(targetPID=None,knownBirth=None,observedBirth=None,handleRole='job',
+                target.update(targetPID=None,knownBirth=None,observedBirth=None,handleRole='job',
                               handle=str(args[0]) if name=='QueryInformationJobObject' else None,
                               job=str(args[0]) if name=='QueryInformationJobObject' else None,requestedAccess=None)
             elif name in ('GetProcessTimes','GetProcessId','IsProcessInJob','WaitForSingleObject','GetExitCodeProcess','CloseHandle'):
                 h=str(args[0]);pid,birth,role=self.handles.get(h,(None,None,'unknown'))
-                target=dict(handle=h,targetPID=pid,knownBirth=birth,observedBirth=None,handleRole=role,requestedAccess=None)
+                target.update(handle=h,targetPID=pid,knownBirth=birth,observedBirth=None,handleRole=role,requestedAccess=None)
                 if h==self.job:target.update(targetPID=None,knownBirth=None,handleRole='job',job=h)
                 if name=='IsProcessInJob':target['job']=str(args[1])
             result = self.call(name, lambda: action(*args), **target)
+            if name=='CloseHandle' and result:
+                self.closed(args[0])
             if name == 'CreateProcessW':
                 receipt = getattr(args[-1],'_obj',None)
                 if receipt is not None and getattr(receipt,'process',None):

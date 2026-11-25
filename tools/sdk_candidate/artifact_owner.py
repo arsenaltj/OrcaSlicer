@@ -37,7 +37,7 @@ def runtime():
             fn.restype = C.c_int
             size = U32(32768)
             buf = C.create_unicode_buffer(size.value)
-            value = TRACE_CONTEXT.call('QueryFullProcessImageNameW',lambda:fn(handle, 0, buf, C.byref(size)))
+            value = TRACE_CONTEXT.native('QueryFullProcessImageNameW',fn)(handle, 0, buf, C.byref(size))
             self.ok(value)
             return buf.value
 
