@@ -93,7 +93,8 @@ class ContextTests(unittest.TestCase):
                     self.assertTrue(failures and state['wait'] and state['closed'])
                     for event in failures:
                         self.assertEqual(event['targetPID'],target)
-                        self.assertEqual(event['knownBirth'],'birth-'+str(target))
+                        self.assertIsNone(event['knownBirth'])
+                        self.assertEqual(event['observedBirth'],'birth-'+str(target))
                         self.assertEqual(event['requestedAccess'],0x101000)
                         self.assertIsNotNone(event['rawSampleIndex'])
                         self.assertIn('Traceback',event['traceback'])
@@ -117,7 +118,8 @@ class ContextTests(unittest.TestCase):
                     context.phase='family-test';context.rows([dict(ProcessId=target,CreationDate='b'+str(target))],3)
                     context.handles[str(target)]=(target,'b'+str(target),'member')
                     def fail(*args):last[0]=code;raise OSError(code,'failure')
-                    args=() if high in ('job','launch','receipt','recover','pid') else (target,)
+                    args=() if high in ('job','launch','receipt','recover') else (target,)
+                    if high=='member':args=(target,'job')
                     def actual(*args):
                         native_args=(0x101000,False,target) if high=='opened' else args
                         return context.native(low,fail)(*native_args)
@@ -127,9 +129,9 @@ class ContextTests(unittest.TestCase):
                     self.assertEqual(last[0],code)
                     self.assertEqual(event['rawSampleIndex'],3)
                     self.assertTrue(event['traceback'] and errors and saves)
-                    if high in ('image','info','member','signaled','code','close'):
+                    if high in ('image','info','member','signaled','code','close','pid'):
                         self.assertEqual(event['targetPID'],target)
-                    elif high in ('job','launch','receipt','recover','pid'):
+                    elif high in ('job','launch','receipt','recover'):
                         self.assertIsNone(event['targetPID'])
 
     def test_success_preserves_last_error_after_record_io(self):
@@ -140,6 +142,23 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(c.call('OpenProcess',call,targetPID=7),0)
         self.assertEqual(last[0],5)
         self.assertEqual(record['apiCalls'][-1]['lastError'],5)
+
+    def test_fresh_targets_rawindex_job_and_member_never_inherit(self):
+        record={};c=Context(record,lambda:None,[],['root'],lambda:5)
+        c.handles['11']=(77,123,'member');c.handles['22']=(88,456,'member');c.job='99'
+        c.frame=dict(targetPID=77,knownBirth=123,handle='11',handleRole='member',job='old')
+        c.rows([dict(ProcessId=88,CreationDate='raw88')],8)
+        c.method('active',lambda h:c.native('QueryInformationJobObject',lambda *x:0)(h,1),'99')
+        event=[x for x in record['apiCalls'] if x['operation']=='QueryInformationJobObject'][-1]
+        self.assertIsNone(event['targetPID']);self.assertIsNone(event['knownBirth'])
+        self.assertEqual((event['job'],event['handleRole'],event['rawSampleIndex']),('99','job',8))
+        c.method('member',lambda h,j:c.native('IsProcessInJob',lambda *x:1)(h,j),'22','100')
+        event=[x for x in record['apiCalls'] if x['operation']=='IsProcessInJob'][-1]
+        self.assertEqual((event['targetPID'],event['knownBirth'],event['handle'],event['job']),(88,456,'22','100'))
+        c.method('opened',lambda p:c.native('OpenProcess',lambda *x:None)(0x101000,False,p),88)
+        event=[x for x in record['apiCalls'] if x['operation']=='OpenProcess'][-1]
+        self.assertEqual(event['targetPID'],88);self.assertIsNone(event['knownBirth'])
+        self.assertIsNone(event['handle']);self.assertEqual(event['observedBirth'],'raw88')
 
 
 if __name__=='__main__':unittest.main()

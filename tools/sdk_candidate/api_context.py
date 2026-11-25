@@ -55,24 +55,29 @@ class Context:
 
     def method(self, name, action, *args, **kwargs):
         before = self.frame
-        frame = dict(before)
+        frame = dict(targetPID=None,knownBirth=None,observedBirth=None,handle=None,
+                     handleRole='unknown',requestedAccess=None,job=self.job)
         if name == 'opened':
             pid = args[0]
-            frame.update(targetPID=pid, knownBirth=self.targets.get(pid), handle=None,
+            frame.update(targetPID=pid, knownBirth=None, observedBirth=self.targets.get(pid),handle=None,
                          handleRole='candidate', requestedAccess=0x101000)
         elif name in ('info','image','member','signaled','code','close') and args:
             handle = args[0]
             pid, birth, role = self.handles.get(str(handle), (None,None,'unknown'))
             frame.update(targetPID=pid, knownBirth=birth, handle=str(handle),handleRole=role)
+            if str(handle)==self.job:
+                frame.update(targetPID=None,knownBirth=None,handleRole='job',job=str(handle))
+            if name=='member':frame['job']=str(args[1])
         elif name in ('job','active'):
-            frame.update(handleRole='job',handle=str(args[0]) if args else None)
+            frame.update(handleRole='job',handle=str(args[0]) if args else None,
+                         job=str(args[0]) if args else None)
         elif name == 'launch':
             frame.update(handleRole='root-create',targetPID=None,knownBirth=None)
         self.frame = frame
         try:
             result = self.call('api.'+name, lambda: action(*args, **kwargs))
             if name == 'opened' and result:
-                self.handles[str(result)] = (args[0],self.targets.get(args[0]),'member-candidate')
+                self.handles[str(result)] = (args[0],None,'member-candidate')
             elif name == 'info':
                 self.handles[str(args[0])] = (result[0],result[1],frame.get('handleRole','unknown'))
             elif name == 'job':
@@ -87,7 +92,17 @@ class Context:
         def invoke(*args):
             target = {}
             if name == 'OpenProcess':
-                target = dict(targetPID=args[2],knownBirth=self.targets.get(args[2]),requestedAccess=args[0])
+                target = dict(targetPID=args[2],knownBirth=None,observedBirth=self.targets.get(args[2]),
+                              handle=None,handleRole='candidate',requestedAccess=args[0])
+            elif name in ('QueryInformationJobObject','CreateJobObjectW'):
+                target = dict(targetPID=None,knownBirth=None,observedBirth=None,handleRole='job',
+                              handle=str(args[0]) if name=='QueryInformationJobObject' else None,
+                              job=str(args[0]) if name=='QueryInformationJobObject' else None,requestedAccess=None)
+            elif name in ('GetProcessTimes','GetProcessId','IsProcessInJob','WaitForSingleObject','GetExitCodeProcess','CloseHandle'):
+                h=str(args[0]);pid,birth,role=self.handles.get(h,(None,None,'unknown'))
+                target=dict(handle=h,targetPID=pid,knownBirth=birth,observedBirth=None,handleRole=role,requestedAccess=None)
+                if h==self.job:target.update(targetPID=None,knownBirth=None,handleRole='job',job=h)
+                if name=='IsProcessInJob':target['job']=str(args[1])
             result = self.call(name, lambda: action(*args), **target)
             if name == 'CreateProcessW':
                 receipt = getattr(args[-1],'_obj',None)
