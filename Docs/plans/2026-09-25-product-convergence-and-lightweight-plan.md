@@ -1,3 +1,13 @@
+<a id="mainline-bugfix-workbench-slicing-handoff-20261125"></a>
+
+# MAINLINE-BUGFIX-001｜去切片画面交接（2026-11-25）
+
+`task/mainline-bugfix` 沿用基线 `f40e37345c`。从耗材核对开始保留当前工作台和进度卡。需要确认配色时回到工作台。提交工程后按最终窗口尺寸准备切片页，以请求、视口尺寸、DPI 和取景后的新帧确认显示条件。Windows 在同一批窗口更新中撤下保留画面与进度卡。主动切页撤销展示资格，提交后的视图重试复用已导入对象。
+
+固定 Windows Release 已同步原运行目录并使用原配置启动，300 项定向测试通过。200% 最大化小模型录像中，第 108 帧仍显示工作台及进度卡，第 109 帧显示模型、打印盘和切片设置。日志核对该请求提交工程一次。用户接手实窗验收，狮子手办切页与 125% 窄窗待验证。[验收记录](/D:/TEST/artifacts/mainline-bugfix/evidence/workbench-slicing-handoff-20261125/validation.json)
+
+---
+
 <a id="mainline-bugfix-workbench-manual-retain-startup-20261125"></a>
 
 # MAINLINE-BUGFIX-001｜手动试色保留与启动首帧（2026-11-25）

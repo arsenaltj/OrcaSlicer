@@ -1,7 +1,10 @@
 #pragma once
+#include "../../Presentation/UiLifecycle.hpp"
 #include <wx/gdicmn.h>
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 
 namespace Slic3r::GUI {
 // The AI settings are a sibling of the content host. Retain their union,
@@ -61,5 +64,36 @@ public:
 private:
     wxRect m_viewport;
     wxRect m_owner;
+};
+
+class WorkbenchImportFrameGate {
+public:
+    enum class Status { Waiting, FitCamera, Ready };
+
+    void reset(std::size_t frames)
+    {
+        m_baseline = frames;
+        m_fitted.reset();
+    }
+
+    Status observe(const Presentation::PresentationStamp& layout, bool ready, std::size_t frames)
+    {
+        if (m_fitted && (!ready || !(layout == *m_fitted))) {
+            reset(frames);
+            return Status::Waiting;
+        }
+        if (!ready || frames <= m_baseline) return Status::Waiting;
+        return m_fitted ? Status::Ready : Status::FitCamera;
+    }
+
+    void camera_fitted(const Presentation::PresentationStamp& layout, std::size_t frames)
+    {
+        m_fitted = layout;
+        m_baseline = frames;
+    }
+
+private:
+    std::size_t m_baseline {0};
+    std::optional<Presentation::PresentationStamp> m_fitted;
 };
 } // namespace Slic3r::GUI

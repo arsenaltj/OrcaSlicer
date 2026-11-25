@@ -674,16 +674,30 @@ void ModelGenerationPanel::complete_return_overview()
     refresh_post_generation_workbench();
 }
 
-bool ModelGenerationPanel::request_workbench_color_matching(const BeautyColorGateResult* prepared_match)
+bool ModelGenerationPanel::request_workbench_color_matching()
 {
     const auto state = workbench_snapshot();
     if (!state.can_import_for_slicing || (!m_color_matching && !m_workbench_import)) return false;
-    if (m_workbench_import && !prepared_match) {
-        wxWeakRef<ModelGenerationPanel> weak(this);
-        return request_workbench_filament_match([weak](BeautyColorGateResult match) {
-            if (weak && !weak->m_shutdown) weak->request_workbench_color_matching(&match);
-        });
-    }
+    if (!m_workbench_import) return finish_workbench_color_matching(nullptr, {});
+
+    // A floating palette should not be part of the retained workbench frame.
+    m_model_preview->close_workbench_palette_details();
+    wxWeakRef<ModelGenerationPanel> weak(this);
+    return m_workbench_import([weak](std::shared_ptr<WorkbenchImportSession> session, WorkbenchImportPrepared prepared) {
+        const auto discard = [prepared] { prepared(std::nullopt); };
+        return weak && weak->request_workbench_filament_match(
+            [weak, session, prepared](BeautyColorGateResult match) {
+                if (!weak || session->cancelled() || !weak->finish_workbench_color_matching(&match, prepared))
+                    prepared(std::nullopt);
+            }, discard, session);
+    });
+}
+
+bool ModelGenerationPanel::finish_workbench_color_matching(const BeautyColorGateResult* prepared_match,
+    WorkbenchImportPrepared prepared)
+{
+    const auto state = workbench_snapshot();
+    if (!state.can_import_for_slicing) return false;
     if (!state.check.model_sha256.empty() &&
         m_model_preview->model_sha256() != state.check.model_sha256) {
         m_workbench_check_result = {};
@@ -698,7 +712,7 @@ bool ModelGenerationPanel::request_workbench_color_matching(const BeautyColorGat
     artifact.format = m_artifact_format;
     artifact.color_encoding = m_artifact_color_encoding;
     artifact.generation_palette = m_displayed_model_palette;
-    if (m_workbench_import) {
+    if (prepared_match) {
         AI::ModelImportRequest request;
         request.artifact = artifact;
         request.color_mode = AI::ImportColorMode::NativeMatch;
@@ -721,9 +735,10 @@ bool ModelGenerationPanel::request_workbench_color_matching(const BeautyColorGat
                 style_workbench_color_confirmation(options);
                 options.actions = {{map_to_model, _L("将耗材色映射到模型"), true},
                                    {return_to_workbench, _L("返回工作台"), false}};
+                prepared(std::nullopt);
                 const int answer = show_redesign_confirmation(this, message, _L("套装与打印机不兼容"), options);
                 if (answer == map_to_model) apply_workbench_printer_filaments(true);
-                return false;
+                return true;
             }
         }
         const auto& match = *prepared_match;
@@ -756,10 +771,11 @@ bool ModelGenerationPanel::request_workbench_color_matching(const BeautyColorGat
             style_workbench_color_confirmation(options);
             options.actions = {{map_to_model, _L("将耗材色映射到模型"), true},
                                {import_to_filaments, _L("将模型配色导入到耗材"), false}};
+            prepared(std::nullopt);
             const int answer = show_redesign_confirmation(this, message, _L("配色不匹配"), options);
             if (answer == map_to_model) apply_workbench_printer_filaments();
             else if (answer == import_to_filaments) toggle_printer_filament_trial();
-            return false;
+            return true;
         }
         request.matched_colors = *match.matched;
         if (m_beauty_manual_color_dirty || (m_beauty_controls && m_beauty_controls->has_changes())) {
@@ -782,7 +798,7 @@ bool ModelGenerationPanel::request_workbench_color_matching(const BeautyColorGat
             refresh_post_generation_workbench();
             return false;
         }
-        m_workbench_import(request);
+        prepared(std::move(request));
     } else m_color_matching(artifact);
     return true;
 }

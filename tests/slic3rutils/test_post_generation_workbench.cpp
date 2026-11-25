@@ -1407,8 +1407,9 @@ TEST_CASE("cancelled decoding leaves no model or texture to commit", "[PostGener
 
 TEST_CASE("cancelling model preparation prevents a late project commit", "[PostGenerationWorkbench][UiRedesign]")
 {
-    const auto phase = GENERATE(WorkbenchImportPhase::Reading, WorkbenchImportPhase::Colors, WorkbenchImportPhase::Placement);
-    WorkbenchImportSession session;
+    const auto phase = GENERATE(WorkbenchImportPhase::CheckingFilaments, WorkbenchImportPhase::Reading,
+        WorkbenchImportPhase::Colors, WorkbenchImportPhase::Placement);
+    WorkbenchImportSession session(WorkbenchImportPhase::CheckingFilaments);
     REQUIRE(session.advance(phase));
     REQUIRE(session.can_cancel());
     REQUIRE(session.cancel());
@@ -1430,6 +1431,19 @@ TEST_CASE("project import commits once and cannot cancel an adopted model", "[Po
     CHECK_FALSE(session.advance(WorkbenchImportPhase::Colors));
     REQUIRE(session.advance(WorkbenchImportPhase::Completed));
     CHECK_FALSE(session.advance(WorkbenchImportPhase::Committing));
+}
+
+TEST_CASE("Retrying a committed import view cannot enter project preparation or commit",
+          "[PostGenerationWorkbench][UiRedesign][WorkbenchImportPresentation]")
+{
+    WorkbenchImportSession retry(WorkbenchImportPhase::UpdatingView);
+    CHECK_FALSE(retry.can_cancel());
+    CHECK_FALSE(retry.cancel());
+    CHECK_FALSE(retry.advance(WorkbenchImportPhase::CheckingFilaments));
+    CHECK_FALSE(retry.advance(WorkbenchImportPhase::Reading));
+    CHECK_FALSE(retry.advance(WorkbenchImportPhase::Committing));
+    REQUIRE(retry.advance(WorkbenchImportPhase::Completed));
+    CHECK_FALSE(retry.advance(WorkbenchImportPhase::Completed));
 }
 
 TEST_CASE("closed import sessions reject queued UI updates and commits", "[PostGenerationWorkbench][UiRedesign]")

@@ -859,23 +859,6 @@ void RedesignShell::build_model_workflow()
         });
     });
 
-    // A separate owned native window keeps the retained workbench above both
-    // GL swap chains. Sibling child-window z-order and Freeze() cannot do this
-    // atomically on Windows. The target stays in its final sizer throughout.
-    m_import_transition_cover = new wxFrame(wxGetTopLevelParent(this), wxID_ANY, wxEmptyString,
-        wxDefaultPosition, wxDefaultSize,
-        wxBORDER_NONE | wxFRAME_NO_TASKBAR | wxFRAME_FLOAT_ON_PARENT | wxCLIP_CHILDREN);
-    m_import_transition_cover->SetName("workbench-import-transition");
-    m_import_transition_cover->SetBackgroundColour(RedesignTheme::background_colour());
-    m_import_transition_cover->SetBackgroundStyle(wxBG_STYLE_PAINT);
-    m_import_transition_cover->SetSizer(new wxBoxSizer(wxVERTICAL));
-    m_import_transition_cover->Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
-        wxPaintDC dc(m_import_transition_cover);
-        dc.SetBackground(wxBrush(RedesignTheme::background_colour()));
-        dc.Clear();
-    });
-    m_import_transition_cover->Bind(wxEVT_CLOSE_WINDOW, [](wxCloseEvent& event) { event.Veto(); });
-
     const auto make_cancel = [](wxWindow* parent) { return command(parent, _L("取消")); };
     const auto import_card = create_model_loading_card(wxGetTopLevelParent(this),
         _L("正在读取与验证模型…"), make_cancel);
@@ -915,6 +898,7 @@ void RedesignShell::build_model_workflow()
     m_content_host->Bind(wxEVT_SIZE, [weak](wxSizeEvent& event) {
         event.Skip();
         if (weak) {
+            if (weak->m_import_target_staged) ++weak->m_import_layout_generation;
             weak->CallAfter([weak] { if (weak) {
                 weak->request_viewport_frame();
                 if (!weak->m_import_loading || !weak->m_import_in_progress) return;
@@ -925,12 +909,15 @@ void RedesignShell::build_model_workflow()
     });
     m_import_timer.SetOwner(this, wxWindow::NewControlId());
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
+        if (!m_import_in_progress || !m_import_transition || m_import_navigation_detached) return;
         const auto elapsed = wxString::Format(_L("已用时 %.1f 秒"),
             std::chrono::duration<double>(std::chrono::steady_clock::now() - m_import_started).count());
         if (m_import_elapsed->GetLabel() != elapsed) m_import_elapsed->SetLabel(elapsed);
         layout_import_transition_cover();
         layout_import_loading();
-        check_import_first_frame();
+        if (m_import_project_committed && !m_import_target_staged)
+            stage_import_target_view();
+        if (m_import_transition) check_import_first_frame(*m_import_transition);
     }, m_import_timer.GetId());
     m_slice_camera_retry_timer.SetOwner(this, wxWindow::NewControlId());
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
@@ -979,8 +966,10 @@ void RedesignShell::build_model_workflow()
 
     m_plater->get_view3D_canvas3D()->get_wxglcanvas()->Bind(wxEVT_PAINT, [weak](wxPaintEvent& event) {
         event.Skip();
-        if (weak && weak->m_import_awaiting_frame)
-            weak->CallAfter([weak] { if (weak) weak->check_import_first_frame(); });
+        if (weak && weak->m_import_target_staged && weak->m_import_transition) {
+            const auto token = *weak->m_import_transition;
+            weak->CallAfter([weak, token] { if (weak) weak->check_import_first_frame(token); });
+        }
     });
     m_plater->get_preview_canvas3D()->get_wxglcanvas()->Bind(wxEVT_PAINT, [weak](wxPaintEvent& event) {
         event.Skip();
@@ -1066,7 +1055,9 @@ void RedesignShell::build_model_workflow()
     m_model_generation_host->set_workbench_return_to_design_handler([weak] {
         if (weak) weak->return_to_image_design();
     });
-    m_model_generation_host->set_workbench_import_handler([weak](const auto& request) { if (weak) weak->confirm_workbench_import(request); });
+    m_model_generation_host->set_workbench_import_handler([weak](WorkbenchImportPreparation prepare) {
+        return weak && weak->begin_workbench_import(std::move(prepare));
+    });
     if (m_slicing_host) m_slicing_host->set_workbench_listener([weak](const auto& state) { if (weak) weak->apply_slicing_state(state); });
 }
 
@@ -1390,6 +1381,16 @@ void RedesignShell::present_restore_frame()
         if (m_model_generation_host) m_model_generation_host->present_workbench_restore_frame();
         return;
     }
+    if (m_import_in_progress && !m_import_navigation_detached) {
+        layout_import_transition_cover();
+        layout_import_loading();
+        if (m_import_target_staged) {
+            auto* canvas = m_plater->get_view3D_canvas3D();
+            m_import_frame_gate.reset(canvas->rendered_frames());
+            ++m_import_layout_generation;
+            request_viewport_frame();
+        }
+    }
     using Presentation::Dirty;
     m_surface_refresh.flush(Dirty::Visibility | Dirty::Layout | Dirty::Overlay | Dirty::Viewport | Dirty::Paint);
     m_creation_history_refresh.flush(Dirty::Layout | Dirty::Overlay | Dirty::Paint);
@@ -1404,20 +1405,19 @@ void RedesignShell::refresh_workflow_layout()
     if (!owns_model_workflow()) return;
     const bool model = m_page_coordinator.page() == Page::Model;
     const bool slicing = model && (m_page_coordinator.view() == ModelView::Slicing || m_page_coordinator.view() == ModelView::Preview);
-    const bool render_slicing = slicing || m_import_target_staged;
     const bool render_print = m_page_coordinator.page() == Page::Print && m_print_canvas_mounted;
-    m_workbench_page->Show(presenting_workbench || m_import_target_staged || (model && m_page_coordinator.view() == ModelView::Workbench));
-    m_slicing_page->Show(render_slicing);
-    m_plater->Show(render_slicing || render_print);
+    m_workbench_page->Show(presenting_workbench || (model && m_page_coordinator.view() == ModelView::Workbench));
+    m_slicing_page->Show(slicing);
+    m_plater->Show(slicing || render_print);
     m_slicing_settings->Show();
-    m_plater->get_current_canvas3D()->enable_render(render_slicing || render_print);
-    if (render_slicing || render_print) m_plater->get_current_canvas3D()->set_as_dirty();
+    m_plater->get_current_canvas3D()->enable_render(slicing || render_print);
+    if (slicing || render_print) m_plater->get_current_canvas3D()->set_as_dirty();
     m_slice_export->Hide();
     m_slice_print->Show();
     m_slice_start->Show();
     m_return_slice->Hide();
-    if (m_slicing_host) m_slicing_host->set_workbench_active(slicing, !m_native_slicing);
-    const bool compact = render_print || render_slicing;
+    if (m_slicing_host) m_slicing_host->set_workbench_active(slicing && !m_import_target_staged, !m_native_slicing);
+    const bool compact = render_print || slicing;
     if (compact && !m_plater->is_sidebar_collapsed()) m_plater->collapse_sidebar(true);
     m_plater->get_view3D_canvas3D()->use_compact_slicing_tools(compact);
     m_plater->get_preview_canvas3D()->use_compact_slicing_tools(compact);
@@ -1425,8 +1425,8 @@ void RedesignShell::refresh_workflow_layout()
     // model-editing Gizmo row and its numeric transform panel in AI slicing.
     m_plater->get_view3D_canvas3D()->set_slicing_gizmos_visible(compact && !render_print);
     m_plater->get_preview_canvas3D()->set_slicing_gizmos_visible(compact && !render_print);
-    m_plater->get_view3D_canvas3D()->suppress_gcode_window(render_slicing || render_print);
-    m_plater->get_preview_canvas3D()->suppress_gcode_window(render_slicing || render_print);
+    m_plater->get_view3D_canvas3D()->suppress_gcode_window(compact);
+    m_plater->get_preview_canvas3D()->suppress_gcode_window(compact);
     if (compact && !m_saved_collapse_toolbar) {
         m_saved_collapse_toolbar = m_plater->get_collapse_toolbar().is_enabled();
         m_plater->get_collapse_toolbar().set_enabled(false);
@@ -1434,9 +1434,9 @@ void RedesignShell::refresh_workflow_layout()
         m_plater->get_collapse_toolbar().set_enabled(*m_saved_collapse_toolbar); m_saved_collapse_toolbar.reset();
     }
     mount_custom_process(slicing && m_native_slicing);
-    if (auto* frame = dynamic_cast<MainFrame*>(wxGetTopLevelParent(this))) {
-        if (frame->topbar()) frame->topbar()->SetSlicingTitlebarMode(compact, false);
-    }
+    if (!m_import_target_staged)
+        if (auto* frame = dynamic_cast<MainFrame*>(wxGetTopLevelParent(this)))
+            if (frame->topbar()) frame->topbar()->SetSlicingTitlebarMode(compact, false);
     m_slice_return_overview->Enable(slicing_mode_switch_allowed());
     if (m_native_return_ai) {
         const bool can_switch = slicing_mode_switch_allowed();
@@ -1452,7 +1452,7 @@ void RedesignShell::refresh_workflow_layout()
     // the slicing page changes visibility so its canvas receives the new size.
     Layout();
     m_content_host->Layout();
-    if (render_slicing) {
+    if (slicing) {
         m_slicing_page->Layout();
         m_native_plater_host->Layout();
         m_plater->Layout();
@@ -1542,7 +1542,7 @@ void RedesignShell::commit_active_page(Presentation::Dirty flags)
             if (Presentation::has(flags, Presentation::Dirty::Barrier)) viewport->Update();
         }
     }
-    m_page_coordinator.presented_current();
+    if (!m_import_target_staged) m_page_coordinator.presented_current();
 }
 
 void RedesignShell::apply_workbench_state(const PostGenerationWorkbenchState& state)
@@ -1627,42 +1627,83 @@ bool RedesignShell::return_to_image_design()
     return true;
 }
 
+bool RedesignShell::begin_workbench_import(WorkbenchImportPreparation prepare)
+{
+    if (m_import_in_progress || m_presentation_stopping || !m_model_generation_host || !owns_model_workflow() ||
+        m_page_coordinator.page() != Page::Model || m_page_coordinator.view() != ModelView::Workbench)
+        return false;
+
+    if (retry_import_target_view()) return true;
+    if (!begin_import_presentation(WorkbenchImportPhase::CheckingFilaments)) return false;
+    m_import_project_committed = false;
+    m_import_committed_object_id = 0;
+    m_import_committed_model_path.clear();
+    m_import_committed_model_sha256.clear();
+    const auto session = m_import_session;
+    const auto token = *m_import_transition;
+    wxWeakRef<RedesignShell> weak(this);
+    try {
+        if (prepare(session, [weak, session, token](std::optional<AI::ModelImportRequest> request) {
+            if (!weak || !session->valid() || weak->m_import_session != session || weak->m_import_transition != token)
+                return;
+            if (session->cancelled() || !request || !weak->m_page_coordinator.transition().current(token))
+                weak->finish_import_loading();
+            else
+                weak->confirm_workbench_import(*request);
+        })) return true;
+    } catch (const std::exception& error) {
+        finish_import_loading();
+        wxMessageBox(wxString::FromUTF8(error.what()), _L("模型导入"), wxOK | wxICON_ERROR, this);
+        return false;
+    }
+    finish_import_loading();
+    return false;
+}
+
+bool RedesignShell::begin_import_presentation(WorkbenchImportPhase phase)
+{
+    const auto transition = m_page_coordinator.transition().begin(
+        {int(m_page_coordinator.page()), int(m_page_coordinator.view())}, {int(Page::Model), int(ModelView::Slicing)});
+    if (!transition) return false;
+    remember_active_page_focus();
+    m_import_transition = *transition;
+    m_import_navigation_detached = false;
+    m_import_in_progress = true;
+    m_import_session = std::make_shared<WorkbenchImportSession>(phase);
+    m_import_started = std::chrono::steady_clock::now();
+    retain_import_source_page();
+    update_import_loading(phase);
+    show_import_loading();
+    BOOST_LOG_TRIVIAL(info) << "[WorkbenchImport] token=" << *transition << " retained=" << m_import_source_retained
+        << " feedback_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - m_import_started).count();
+    return true;
+}
+
 void RedesignShell::confirm_workbench_import(const AI::ModelImportRequest& request)
 {
-    if (m_import_view_retry_available && request.artifact.local_path == m_import_committed_model_path) {
-        retry_import_target_view();
-        return;
-    }
-    if (m_import_in_progress || !m_model_generation_host) return;
+    if (!m_import_session || m_import_session->phase() != WorkbenchImportPhase::CheckingFilaments) return;
     // A view snapshot may still contain the busy state from asynchronous colour
     // preparation. Admission belongs to the live workbench, not the cached UI.
     const auto current = current_workbench_import_source(request,
         [this] { return m_model_generation_host->workbench_snapshot(); });
     if (!current) {
         BOOST_LOG_TRIVIAL(warning) << "[WorkbenchImport] rejected stage=admission asset=" << request.artifact.job_id;
+        finish_import_loading();
         return;
     }
     m_workbench_state = *current;
-    const auto transition = m_page_coordinator.transition().begin(
-        {int(m_page_coordinator.page()), int(m_page_coordinator.view())}, {int(Page::Model), int(ModelView::Slicing)});
-    if (!transition) return;
-    m_import_transition = *transition;
-    m_import_navigation_detached = false;
-    m_import_in_progress = true;
-    m_import_project_committed = false;
-    m_import_view_retry_available = false;
-    m_import_committed_model_path.clear();
-    m_import_session = std::make_shared<WorkbenchImportSession>();
-    show_import_loading();
+    m_import_session->advance(WorkbenchImportPhase::Reading);
     update_import_loading(WorkbenchImportPhase::Reading);
-    BOOST_LOG_TRIVIAL(info) << "[WorkbenchImport] feedback_ms=" <<
-        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - m_import_started).count();
     wxWeakRef<RedesignShell> weak(this);
     const auto session = m_import_session;
-    const auto token = *transition;
+    const auto token = *m_import_transition;
     CallAfter([weak, session, request, token] {
         if (!weak || !session->valid() || weak->m_import_session != session || weak->m_import_transition != token) return;
-        if (session->cancelled()) { weak->finish_import_loading(); return; }
+        if (session->cancelled() || !weak->m_page_coordinator.transition().current(token)) {
+            weak->finish_import_loading();
+            return;
+        }
         try {
             const bool started = weak->m_model_generation_host && weak->m_model_generation_host->import_workbench_model_async(request, session,
                 [weak, session, token](auto phase, const auto& message) {
@@ -1673,14 +1714,16 @@ void RedesignShell::confirm_workbench_import(const AI::ModelImportRequest& reque
                     if (!weak || !session->valid() || weak->m_import_session != session || weak->m_import_transition != token) return;
                     if (!result.imported()) {
                         weak->finish_import_loading();
-                        if (result.outcome != AI::ModelImportOutcome::Cancelled)
+                        if (!weak->m_import_navigation_detached && result.outcome != AI::ModelImportOutcome::Cancelled)
                             wxMessageBox(wxString::FromUTF8(result.error.empty() ? "模型导入失败，工作副本已保留。" : result.error),
                                 _L("模型导入"), wxOK | wxICON_ERROR, weak.get());
                         return;
                     }
                     weak->m_import_project_committed = true;
-                    weak->m_import_view_retry_available = true;
+                    weak->m_import_committed_object_id = weak->m_plater->model().objects.back()->id().id;
                     weak->m_import_committed_model_path = request.artifact.local_path;
+                    weak->m_import_committed_model_sha256 = request.topology_check_sha256;
+                    BOOST_LOG_TRIVIAL(info) << "[WorkbenchImport] project committed token=" << token;
                     weak->update_import_loading(WorkbenchImportPhase::UpdatingView);
                     weak->request_initial_slicing_camera();
                     weak->stage_import_target_view();
@@ -1700,14 +1743,12 @@ void RedesignShell::confirm_workbench_import(const AI::ModelImportRequest& reque
 
 void RedesignShell::show_import_loading()
 {
-    m_import_started = std::chrono::steady_clock::now();
     const auto* owner = wxGetTopLevelParent(this);
     const wxRect owner_bounds(owner->ClientToScreen(wxPoint()), owner->GetClientSize());
     const auto* viewport = m_model_generation_host->workbench_import_viewport();
     const auto viewport_bounds = viewport && viewport->IsShownOnScreen() ? viewport->GetScreenRect() : wxRect{};
     m_import_loading_anchor = WorkbenchLoadingCardAnchor(viewport_bounds, workbench_transition_bounds(), owner_bounds);
     m_model_generation_host->set_workbench_import_feedback(true);
-    m_slicing_settings->Disable();
     if (m_import_elapsed->GetLabel() != _L("已用时 0.0 秒"))
         m_import_elapsed->SetLabel(_L("已用时 0.0 秒"));
     if (m_import_activity && !m_import_activity->IsRunning()) m_import_activity->Start();
@@ -1722,6 +1763,7 @@ void RedesignShell::update_import_loading(WorkbenchImportPhase phase, const std:
     if (!m_import_in_progress) return;
     wxString label;
     switch (phase) {
+    case WorkbenchImportPhase::CheckingFilaments: label = _L("正在核对耗材配色…"); break;
     case WorkbenchImportPhase::Reading: label = _L("正在读取与验证模型…"); break;
     case WorkbenchImportPhase::Colors: label = _L("正在准备配色…"); break;
     case WorkbenchImportPhase::Placement: label = _L("正在校验模型摆放…"); break;
@@ -1760,7 +1802,7 @@ void RedesignShell::layout_import_loading()
         m_import_loading->Layout();
         apply_workbench_floating_card_shape(m_import_loading, 8, wxColour(72, 72, 78));
     }
-    if (!m_import_loading->IsShown()) m_import_loading->Show();
+    if (!m_import_loading->IsShown()) m_import_loading->ShowWithoutActivating();
     // A native colour-review dialog may be modal while this transaction is
     // still active. wxDialog disables sibling top-level windows in that case;
     // do not repeatedly raise this disabled card over the dialog the user must
@@ -1772,45 +1814,34 @@ void RedesignShell::stage_import_target_view()
 {
     if (m_import_navigation_detached) { finish_import_loading(true); return; }
     if (!m_import_in_progress || !m_import_project_committed || m_import_target_staged ||
+        !m_import_transition || !m_page_coordinator.transition().current(*m_import_transition) ||
         !m_plater || !m_slicing_page || !m_workbench_page) return;
-    auto* content_sizer = m_content_host->GetSizer();
-    if (!content_sizer || !m_import_transition_cover || !m_import_source_mount.mount(m_workbench_page, m_import_transition_cover)) {
-        finish_import_loading(true);
-        wxMessageBox(_L("模型已导入工程，但无法准备切片视图。可再次点击“去切片”重试视图，无需重复导入。"),
-            _L("模型视口"), wxOK | wxICON_WARNING, this);
-        return;
-    }
+    const auto* owner = wxDynamicCast(wxGetTopLevelParent(this), wxTopLevelWindow);
+    if (!owner || owner->IsIconized() || !IsShownOnScreen()) return;
 
-    // Lift the source into an owned window before showing the target. This
-    // preserves the live source frame without copying screen pixels or placing
-    // two independently presenting GL pages in the same child-window stack.
+    // Lay out the final route behind the retained frame. The workbench and its
+    // GL canvas stay under their original parent for the entire handoff.
     m_import_target_staged = true;
-    m_import_target_presenting = false;
     layout_import_transition_cover();
-    m_import_transition_cover->Update();
     layout_import_loading();
     {
         wxWindowUpdateLocker layout_lock(m_content_host);
-        m_slicing_settings->Show();
+        m_page_coordinator.select_view(ModelView::Slicing);
         m_plater->select_view_3D("3D");
         auto* canvas = m_plater->get_current_canvas3D();
         canvas->use_workbench_appearance();
-        m_plater->collapse_sidebar(true);
-        canvas->use_compact_slicing_tools(true);
-        canvas->set_slicing_gizmos_visible(true);
-        canvas->suppress_gcode_window(true);
         refresh_workflow_layout();
+        if (m_slicing_host) apply_slicing_state(m_slicing_host->workbench_snapshot());
     }
-    auto* canvas = m_plater->get_current_canvas3D();
-    m_import_waiting_post_fit_frame = false;
-    m_import_awaiting_frame = true;
-    m_import_frame_baseline = canvas->rendered_frames();
-    m_import_view_started = std::chrono::steady_clock::now();
+    auto* canvas = m_plater->get_view3D_canvas3D();
+    m_import_frame_gate.reset(canvas->rendered_frames());
+    m_import_frame_paused = false;
+    m_import_presentation_deadline.begin(RedesignPresentationDeadline::Clock::now());
     canvas->set_as_dirty();
-    canvas->get_wxglcanvas()->Refresh(false);
-    layout_import_loading();
+    present_active_page(true);
+    m_surface_refresh.flush();
     BOOST_LOG_TRIVIAL(info) << "[WorkbenchImportView] staged token=" << *m_import_transition
-        << " frame=" << m_import_frame_baseline << " cover=" << m_import_transition_cover->IsShown();
+        << " frame=" << canvas->rendered_frames() << " cover=" << m_import_transition_cover->IsShown();
 }
 
 void RedesignShell::layout_import_transition_cover()
@@ -1819,7 +1850,7 @@ void RedesignShell::layout_import_transition_cover()
         if (m_import_transition_cover) m_import_transition_cover->Hide();
         return;
     }
-    if (!m_import_target_staged || !m_import_transition_cover || !m_content_host) return;
+    if ((!m_import_source_retained && !m_import_target_staged) || !m_import_transition_cover || !m_content_host) return;
     auto* owner = dynamic_cast<wxTopLevelWindow*>(wxGetTopLevelParent(this));
     if (!owner || owner->IsIconized() || !m_content_host->IsShownOnScreen()) {
         m_import_transition_cover->Hide();
@@ -1828,23 +1859,14 @@ void RedesignShell::layout_import_transition_cover()
     }
     const wxRect bounds(m_content_host->ClientToScreen(wxPoint(0, 0)), m_content_host->GetClientSize());
     if (bounds.IsEmpty()) return;
-    if (m_import_transition_cover->GetRect() != bounds) {
-        m_import_transition_cover->SetSize(bounds);
-        m_import_transition_cover->Layout();
+    const bool resized = m_import_transition_cover->GetSize() != bounds.GetSize();
+    const bool showing = !m_import_transition_cover->IsShown();
+    if (m_import_transition_cover->GetRect() != bounds) m_import_transition_cover->SetSize(bounds);
+    if (showing) m_import_transition_cover->ShowWithoutActivating();
+    if (showing || resized) {
+        m_import_transition_cover->Refresh(false);
+        m_import_transition_cover->Update();
     }
-    if (!m_import_transition_cover->IsShown()) m_import_transition_cover->ShowWithoutActivating();
-}
-
-void RedesignShell::restore_import_source_page()
-{
-    if (!m_import_transition_cover || !m_workbench_page ||
-        m_workbench_page->GetParent() != m_import_transition_cover) return;
-    // The fully painted target is already in place when the cover goes away.
-    // Restore the hidden source without hiding or remounting the target.
-    m_import_transition_cover->Hide();
-    m_workbench_page->Hide();
-    m_import_source_mount.restore();
-    m_workbench_page->Hide();
 }
 
 void RedesignShell::rollback_import_target_view()
@@ -1856,17 +1878,13 @@ void RedesignShell::rollback_import_target_view()
         m_plater->Hide();
         m_plater->get_current_canvas3D()->enable_render(false);
     }
-    if (m_import_target_presenting && m_import_transition) {
+    if (m_import_transition) {
         const auto source = m_page_coordinator.transition().source();
         m_page_coordinator.select_page(static_cast<Page>(source.page));
         m_page_coordinator.select_view(static_cast<ModelView>(source.view));
         m_active_tab_id = TAB_ID_GENERATE_3D;
     }
-    restore_import_source_page();
     m_import_target_staged = false;
-    m_import_target_presenting = false;
-    m_import_waiting_post_fit_frame = false;
-    m_import_awaiting_frame = false;
     if (m_workbench_page && m_page_coordinator.page() == Page::Model && m_page_coordinator.view() == ModelView::Workbench) {
         m_workbench_page->Show();
         m_workbench_page->Raise();
@@ -1882,82 +1900,73 @@ void RedesignShell::commit_import_target_view()
     }
 
     const auto token = *m_import_transition;
-    if (!m_import_target_presenting) {
-        // Activate the route behind the cover, including native controls and
-        // the ordinary page-paint path. These can change the viewport layout;
-        // require a new fitted frame afterwards before revealing anything.
-        {
-            wxWindowUpdateLocker lock(this);
-            m_import_target_presenting = true;
-            m_page_coordinator.select_page(Page::Model);
-            m_last_workbench_page = Page::Model;
-            m_page_coordinator.select_view(ModelView::Slicing);
-            m_active_tab_id = TAB_ID_PREPARE;
-            refresh_navigation();
-            if (m_image_settings_panel) m_image_settings_panel->Hide();
-            refresh_workflow_layout();
-            if (m_slicing_host) apply_slicing_state(m_slicing_host->workbench_snapshot());
-        }
-        present_active_page(true);
-        m_import_waiting_post_fit_frame = false;
-        m_import_frame_baseline = m_plater->get_current_canvas3D()->rendered_frames();
-        m_plater->get_current_canvas3D()->set_as_dirty();
-        BOOST_LOG_TRIVIAL(info) << "[WorkbenchImportView] route prepared token=" << token
-            << " frame=" << m_import_frame_baseline;
+    if (!m_page_coordinator.transition().mark_ready(token) || !m_page_coordinator.transition().commit(token)) {
+        finish_import_loading(true);
         return;
     }
-
-    if (!m_page_coordinator.transition().mark_ready(token)) { finish_import_loading(true); return; }
-    // No target Show/Hide, reparent or sizer edits occur at this reveal.
-    m_page_coordinator.transition().commit(token);
     m_import_timer.Stop();
     m_import_in_progress = false;
-    m_import_awaiting_frame = false;
-    m_import_waiting_post_fit_frame = false;
     m_import_target_staged = false;
-    m_import_target_presenting = false;
     m_import_transition.reset();
     if (m_import_session) m_import_session->advance(WorkbenchImportPhase::Completed);
     m_import_session.reset();
-    m_import_view_retry_available = false;
+    m_import_committed_object_id = 0;
     m_import_project_committed = false;
     m_import_committed_model_path.clear();
+    m_import_committed_model_sha256.clear();
+    m_slice_camera_loading_pending = false;
+    m_last_workbench_page = Page::Model;
+    m_active_tab_id = TAB_ID_PREPARE;
     if (m_import_activity) m_import_activity->Stop();
     m_model_generation_host->set_workbench_presented(false);
     m_model_generation_host->set_workbench_import_feedback(false);
-    m_slicing_settings->Enable();
-    m_plater->Enable();
-    if (m_slicing_host) apply_slicing_state(m_slicing_host->workbench_snapshot());
-    m_import_loading->Hide();
-    restore_import_source_page();
-    // Enable()/the last state snapshot may invalidate native labels. Flush
-    // them after uncovering as well: Windows can clip GDI paints while the
-    // independent transition window still occludes the page.
+    if (auto* frame = dynamic_cast<MainFrame*>(wxGetTopLevelParent(this))) {
+        if (auto* topbar = frame->topbar()) topbar->SetSlicingTitlebarMode(true, false);
+    }
+    // Apply the released controls and paint while the source is still covered.
+    // The queued scheduler callback is consumed by this presentation barrier.
     present_active_page(true);
+    m_surface_refresh.flush();
+#ifdef __WXMSW__
+    // Submit both owned windows' visibility changes together. Hiding them
+    // separately gives the compositor a frame of the source without progress.
+    if (m_import_transition_cover && m_import_transition_cover->IsShown()) {
+        constexpr UINT flags = SWP_HIDEWINDOW | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
+        auto handoff = ::BeginDeferWindowPos(2);
+        if (handoff)
+            handoff = ::DeferWindowPos(handoff, m_import_loading->GetHandle(), nullptr, 0, 0, 0, 0, flags);
+        if (handoff)
+            handoff = ::DeferWindowPos(handoff, m_import_transition_cover->GetHandle(), nullptr, 0, 0, 0, 0, flags);
+        if (handoff) ::EndDeferWindowPos(handoff);
+    }
+#endif
+    m_import_loading->Hide();
+    release_import_source_page();
     restore_active_page_focus();
+    if (m_slicing_host) m_slicing_host->set_workbench_active(true, !m_native_slicing);
+    const auto size = m_plater->get_view3D_canvas3D()->get_canvas_size();
     BOOST_LOG_TRIVIAL(info) << "[WorkbenchImportView] revealed token=" << token
-        << " frame=" << m_plater->get_current_canvas3D()->rendered_frames()
-        << " viewport=" << m_import_fitted_viewport.x << "x" << m_import_fitted_viewport.y;
+        << " frame=" << m_plater->get_view3D_canvas3D()->rendered_frames()
+        << " viewport=" << size.get_width() << "x" << size.get_height();
 }
 
-void RedesignShell::retry_import_target_view()
+bool RedesignShell::retry_import_target_view()
 {
-    if (m_import_in_progress || !m_import_view_retry_available || !m_plater ||
-        m_page_coordinator.page() != Page::Model || m_page_coordinator.view() != ModelView::Workbench) return;
-    const auto transition = m_page_coordinator.transition().begin(
-        {int(m_page_coordinator.page()), int(m_page_coordinator.view())}, {int(Page::Model), int(ModelView::Slicing)});
-    if (!transition) return;
-    m_import_transition = *transition;
-    m_import_navigation_detached = false;
-    m_import_in_progress = true;
+    if (m_import_in_progress || m_import_committed_object_id == 0 || !m_plater ||
+        m_page_coordinator.page() != Page::Model || m_page_coordinator.view() != ModelView::Workbench) return false;
+    const auto current = m_model_generation_host->workbench_snapshot();
+    const auto& objects = m_plater->model().objects;
+    if (current.model_path != m_import_committed_model_path.string() ||
+        current.check.model_sha256 != m_import_committed_model_sha256 ||
+        std::none_of(objects.begin(), objects.end(), [this](const auto* object) {
+            return object && object->id().id == m_import_committed_object_id;
+        }) || !begin_import_presentation(WorkbenchImportPhase::UpdatingView)) return false;
     m_import_project_committed = true;
-    m_import_session = std::make_shared<WorkbenchImportSession>();
-    m_import_session->advance(WorkbenchImportPhase::UpdatingView);
-    show_import_loading();
     update_import_loading(WorkbenchImportPhase::UpdatingView,
         "正在重新准备切片视图；不会重复导入模型……");
     request_initial_slicing_camera();
     stage_import_target_view();
+    return true;
 }
 
 void RedesignShell::finish_import_loading(bool retain_view_retry)
@@ -1974,60 +1983,65 @@ void RedesignShell::finish_import_loading(bool retain_view_retry)
     m_import_loading->Hide();
     m_model_generation_host->restore_workbench_import_history();
     m_model_generation_host->set_workbench_import_feedback(false);
-    m_slicing_settings->Enable();
-    m_plater->Enable();
     if (m_import_transition) m_page_coordinator.transition().rollback(*m_import_transition);
     m_import_transition.reset();
     m_import_project_committed = false;
     if (!retain_view_retry) {
-        m_import_view_retry_available = false;
+        m_import_committed_object_id = 0;
         m_import_committed_model_path.clear();
+        m_import_committed_model_sha256.clear();
     }
     {
         wxWindowUpdateLocker lock(this);
         refresh_workflow_layout();
     }
     if (m_slicing_host) apply_slicing_state(m_slicing_host->workbench_snapshot());
+    if (!m_import_navigation_detached && m_page_coordinator.page() == Page::Model &&
+        m_page_coordinator.view() == ModelView::Workbench) {
+        present_active_page(true);
+        m_surface_refresh.flush();
+    }
+    release_import_source_page();
+    if (!m_import_navigation_detached) restore_active_page_focus();
 }
 
-void RedesignShell::check_import_first_frame()
+void RedesignShell::check_import_first_frame(RedesignPageTransition::Token token)
 {
-    if (!m_import_awaiting_frame || !m_plater) return;
-    auto* canvas = m_plater->get_current_canvas3D();
+    if (!m_import_in_progress || !m_import_target_staged || !m_plater || m_import_transition != token ||
+        !m_page_coordinator.transition().current(token)) return;
+    auto* canvas = m_plater->get_view3D_canvas3D();
+    const auto* owner = wxDynamicCast(wxGetTopLevelParent(this), wxTopLevelWindow);
+    const bool paused = !owner || owner->IsIconized() || !IsShownOnScreen();
+    const bool expired = m_import_presentation_deadline.observe(RedesignPresentationDeadline::Clock::now(), paused);
+    if (paused || m_import_frame_paused) m_import_frame_gate.reset(canvas->rendered_frames());
+    m_import_frame_paused = paused;
+    if (paused) return;
+
     const auto canvas_size = canvas->get_canvas_size();
     const wxSize viewport(canvas_size.get_width(), canvas_size.get_height());
-    const auto& rendered_viewport = m_plater->get_camera().get_viewport();
-    const bool layout_ready = viewport.x > 0 && viewport.y > 0 &&
+    const auto& camera = m_plater->get_camera();
+    const auto& rendered_viewport = camera.get_viewport();
+    const bool layout_ready = m_plater->get_current_canvas3D() == canvas && canvas->is_initialized() &&
+        canvas->get_wxglcanvas()->IsShownOnScreen() && viewport.x > 0 && viewport.y > 0 &&
         rendered_viewport[2] == viewport.x && rendered_viewport[3] == viewport.y &&
-        !canvas->is_reload_delayed();
-    if (m_import_waiting_post_fit_frame &&
-        (!layout_ready || viewport != m_import_fitted_viewport ||
-         m_plater->get_camera().requires_zoom_to_bed || m_plater->get_camera().requires_zoom_to_volumes ||
-         m_plater->get_camera().requires_zoom_to_plate > REQUIRES_ZOOM_TO_PLATE_IDLE)) {
-        m_import_waiting_post_fit_frame = false;
-        m_import_frame_baseline = canvas->rendered_frames();
-        BOOST_LOG_TRIVIAL(info) << "[WorkbenchImportView] layout changed; refit token=" << *m_import_transition;
-    }
-    if (!m_import_waiting_post_fit_frame) {
-        if (canvas->is_initialized() && layout_ready && canvas->rendered_frames() > m_import_frame_baseline &&
-            fit_slicing_camera(*m_plater)) {
-            m_slice_camera_fitted = true;
-            m_import_waiting_post_fit_frame = true;
-            m_import_frame_baseline = canvas->rendered_frames();
-            m_import_fitted_viewport = viewport;
-            canvas->set_as_dirty();
-            canvas->get_wxglcanvas()->Refresh(false);
-        } else {
-            canvas->set_as_dirty();
-            canvas->get_wxglcanvas()->Refresh(false);
-        }
-    } else if (canvas->rendered_frames() > m_import_frame_baseline) {
+        !canvas->is_reload_delayed() && !camera.requires_zoom_to_bed && !camera.requires_zoom_to_volumes &&
+        camera.requires_zoom_to_plate <= REQUIRES_ZOOM_TO_PLATE_IDLE;
+    const Presentation::PresentationStamp layout {m_page_coordinator.epoch(), token, m_import_layout_generation,
+        viewport.x, viewport.y, canvas->get_wxglcanvas()->GetDPI().x};
+    using Status = WorkbenchImportFrameGate::Status;
+    const auto status = m_import_frame_gate.observe(layout, layout_ready, canvas->rendered_frames());
+    if (status == Status::Ready) {
+        BOOST_LOG_TRIVIAL(info) << "[WorkbenchImportView] fitted frame token=" << token
+            << " frame=" << canvas->rendered_frames() << " viewport=" << viewport.x << "x" << viewport.y
+            << " dpi=" << layout.dpi;
         commit_import_target_view();
         return;
     }
-    if (m_import_in_progress &&
-        std::chrono::steady_clock::now() - m_import_view_started > std::chrono::seconds(15)) {
-        m_import_view_retry_available = m_import_project_committed;
+    if (status == Status::FitCamera && fit_slicing_camera(*m_plater)) {
+        m_slice_camera_fitted = true;
+        m_import_frame_gate.camera_fitted(layout, canvas->rendered_frames());
+    }
+    if (expired) {
         finish_import_loading(true);
         RedesignConfirmationOptions options;
         options.actions = {{wxID_YES, _L("进入切片重试"), true},
@@ -2037,7 +2051,10 @@ void RedesignShell::check_import_first_frame()
                 _L("模型已导入工程，但切片视口尚未完成首帧。可只重试视图准备，不会再次导入模型。"),
                 _L("模型视口"), options) == wxID_YES)
             retry_import_target_view();
+        return;
     }
+    canvas->set_as_dirty();
+    canvas->get_wxglcanvas()->Refresh(false);
 }
 
 bool RedesignShell::can_open_print_preparation(bool gcode_ready) const

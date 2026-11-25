@@ -121,15 +121,39 @@ void RedesignShell::release_navigation_waits()
     }
     if (m_import_in_progress && !m_import_navigation_detached) {
         m_import_navigation_detached = true;
+        if (m_import_session && m_import_session->phase() == WorkbenchImportPhase::CheckingFilaments)
+            m_import_session->cancel();
+        rollback_import_target_view();
         if (m_import_transition) m_page_coordinator.transition().rollback(*m_import_transition);
-        restore_import_source_page();
-        m_import_target_staged = false;
-        m_import_target_presenting = false;
-        m_import_awaiting_frame = false;
         if (m_import_loading) m_import_loading->Hide();
-        if (m_import_transition_cover) m_import_transition_cover->Hide();
+        release_import_source_page();
         if (m_import_project_committed) finish_import_loading(true);
     }
+}
+
+void RedesignShell::retain_import_source_page()
+{
+    auto* owner = wxDynamicCast(wxGetTopLevelParent(this), wxTopLevelWindow);
+    if (!m_import_transition_cover) {
+        m_import_transition_cover = new RetainedWorkbenchPageFrame(owner);
+        m_import_transition_cover->SetName("workbench-import-transition");
+        m_import_transition_cover->Bind(wxEVT_CLOSE_WINDOW, [](wxCloseEvent& event) { event.Veto(); });
+    }
+    auto* cover = static_cast<RetainedWorkbenchPageFrame*>(m_import_transition_cover);
+    m_import_source_retained = owner && owner->IsActive() && m_workbench_page->IsShownOnScreen() &&
+        cover->retain(workbench_transition_bounds());
+    m_import_input_filter = std::make_unique<RetainedPageInputFilter>(m_content_host, m_workbench_page, m_import_loading);
+    layout_import_transition_cover();
+}
+
+void RedesignShell::release_import_source_page()
+{
+    if (m_import_transition_cover) {
+        m_import_transition_cover->Hide();
+        static_cast<RetainedWorkbenchPageFrame*>(m_import_transition_cover)->release();
+    }
+    m_import_source_retained = false;
+    m_import_input_filter.reset();
 }
 
 bool RedesignShell::begin_workbench_presentation(bool history_loading)
