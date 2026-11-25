@@ -254,18 +254,30 @@ inline BeautyColorGateIdentity beauty_color_gate_identity(const BeautyColorGateR
             request.configuration_signature};
 }
 
+struct WorkbenchImportColorComparison {
+    std::vector<uint32_t> missing;
+    std::vector<PrinterFilamentPreview::NativeColorSlot> matched;
+    std::vector<PrinterFilamentPreview::NativeColorSlot> unused;
+};
+
 struct BeautyColorGateResult {
     std::optional<AI::ModelMatchedColors> matched;
     std::vector<std::string> missing_colors;
     std::vector<std::string> ambiguous_colors;
     std::string error;
     bool canceled {false};
+    WorkbenchImportColorComparison import_comparison;
 
     bool compatible() const { return matched.has_value() && !canceled && error.empty(); }
+    bool can_show_import_comparison() const
+    {
+        return !matched && !canceled && error.empty() && !import_comparison.missing.empty();
+    }
 };
 
 inline BeautyColorGateResult match_beauty_workbench_colors(
-    const BeautyColorGateRequest& request, const std::atomic<bool>* canceled = nullptr)
+    const BeautyColorGateRequest& request, const std::atomic<bool>* canceled = nullptr,
+    bool include_import_comparison = false)
 {
     BeautyColorGateResult result;
     const auto stopped = [&] { return canceled && canceled->load(); };
@@ -360,25 +372,33 @@ inline BeautyColorGateResult match_beauty_workbench_colors(
         return binding;
     };
 
-    const auto faces = bind(request.faces);
+    auto faces = bind(request.faces);
     if (faces.canceled) { result.canceled = true; return result; }
-    const auto subfaces = bind(request.subfaces);
+    auto subfaces = bind(request.subfaces);
     if (subfaces.canceled) { result.canceled = true; return result; }
+    faces.missing.merge(subfaces.missing);
+    faces.ambiguous.merge(subfaces.ambiguous);
     for (uint32_t key : faces.missing) result.missing_colors.push_back(PrinterFilamentPreview::rgb8_hex(key));
-    for (uint32_t key : subfaces.missing) result.missing_colors.push_back(PrinterFilamentPreview::rgb8_hex(key));
-    std::sort(result.missing_colors.begin(), result.missing_colors.end());
-    result.missing_colors.erase(std::unique(result.missing_colors.begin(), result.missing_colors.end()),
-                                result.missing_colors.end());
     for (uint32_t key : faces.ambiguous) result.ambiguous_colors.push_back(PrinterFilamentPreview::rgb8_hex(key));
-    for (uint32_t key : subfaces.ambiguous) result.ambiguous_colors.push_back(PrinterFilamentPreview::rgb8_hex(key));
-    std::sort(result.ambiguous_colors.begin(), result.ambiguous_colors.end());
-    result.ambiguous_colors.erase(std::unique(result.ambiguous_colors.begin(), result.ambiguous_colors.end()),
-                                  result.ambiguous_colors.end());
     if (!result.ambiguous_colors.empty()) {
         result.error = "模型中存在相同 RGB 但槽位身份不明确的区域，请先用当前耗材适配模型或恢复带槽位记录的版本。";
         return result;
     }
-    if (!result.missing_colors.empty()) return result;
+    if (!faces.missing.empty()) {
+        if (include_import_comparison) {
+            // The comparison reports the exact partial bindings, including
+            // preferred slots and subfaces. Display names play no part in matching.
+            std::set<size_t> used(faces.slots.begin(), faces.slots.end());
+            used.insert(subfaces.slots.begin(), subfaces.slots.end());
+            auto& comparison = result.import_comparison;
+            comparison.missing.assign(faces.missing.begin(), faces.missing.end());
+            for (const auto& candidate : candidates) {
+                auto& group = used.count(candidate.slot) ? comparison.matched : comparison.unused;
+                group.push_back(candidate);
+            }
+        }
+        return result;
+    }
 
     matched.face_slots = faces.slots;
     for (size_t index = 0; index < request.subfaces.size(); ++index) {

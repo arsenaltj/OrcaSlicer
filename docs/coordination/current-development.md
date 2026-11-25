@@ -1,3 +1,17 @@
+# MAINLINE-BUGFIX-001｜去切片配色不匹配卡片（2026-11-25）
+
+**主线** `task/mainline-bugfix` 去切片交接已本地提交 `e0984a8b34`。
+
+**本轮** 配色不匹配改用工作台详情卡，在 125% 的 905×703 窄窗验证长表滚动及按钮可达。187 项定向回归通过。[验收记录](/D:/TEST/artifacts/mainline-bugfix/evidence/workbench-import-color-comparison-20261125/validation.json)
+
+**未结** 配色卡保留在本地工作树。实窗验收到两项配色操作可达。
+
+**下一步** 新版已从原入口启动并停在多色测试模型工作台。
+
+**计划变更** 表格沿用色卡详情的深色滚动条，表头和操作按钮固定。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-workbench-import-color-comparison-20261125)
+
+---
+
 # MAINLINE-BUGFIX-001｜去切片画面交接（2026-11-25）
 
 **主线** `task/mainline-bugfix` 固定 Windows Release 已同步原运行目录并使用原配置启动。

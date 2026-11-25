@@ -9,6 +9,7 @@
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/Model/BeautySurface.hpp"
 #include "WorkbenchModelInspection.hpp"
+#include "WorkbenchImportColorDialog.hpp"
 #include "WorkbenchImportEligibility.hpp"
 #include "WorkbenchImportSession.hpp"
 #include "VerifiedModelFiles.hpp"
@@ -743,38 +744,35 @@ bool ModelGenerationPanel::finish_workbench_color_matching(const BeautyColorGate
         }
         const auto& match = *prepared_match;
         if (!match.matched) {
-            if (!match.error.empty() || match.missing_colors.empty()) {
+            if (!match.can_show_import_comparison()) {
                 m_workbench_operation_notice = match.error.empty()
                     ? "当前没有可用的打印机耗材配置。" : match.error;
                 refresh_post_generation_workbench();
                 return false;
             }
 
-            wxString missing;
-            const size_t visible = std::min<size_t>(match.missing_colors.size(), 8);
-            for (size_t index = 0; index < visible; ++index) {
-                if (index) missing += _L("、");
-                missing += wxString::FromUTF8(match.missing_colors[index]);
-            }
-            if (match.missing_colors.size() > visible)
-                missing += wxString::Format(_L(" 等 %llu 色"),
-                    static_cast<unsigned long long>(match.missing_colors.size()));
-            const wxString message = _L("当前模型配色和打印机耗材不匹配。\n\n缺少：") + missing +
-                _L("\n\n推荐“将耗材色映射到模型”，此操作不会改变当前打印机耗材配置。\n") +
-                _L("如需保留模型当前配色，请选择“将模型配色导入到耗材”。\n") +
-                _L("处理完成后请再次点击“去切片”。");
-            const int map_to_model = wxWindow::NewControlId();
-            const int import_to_filaments = wxWindow::NewControlId();
-            RedesignConfirmationOptions options;
-            options.style = wxCANCEL | wxCANCEL_DEFAULT;
-            options.dismiss_result = wxID_CANCEL;
-            style_workbench_color_confirmation(options);
-            options.actions = {{map_to_model, _L("将耗材色映射到模型"), true},
-                               {import_to_filaments, _L("将模型配色导入到耗材"), false}};
+            wxWeakRef<ModelGenerationPanel> weak(this);
+            const auto edit_revision = m_model_preview->leaf_edit_revision();
+            const auto current = [&] {
+                const auto* current_bundle = wxGetApp().preset_bundle;
+                return weak && !weak->m_shutdown && weak->m_workbench_shell && weak->m_sequence == state.revision &&
+                    weak->m_model_preview && weak->m_model_preview->model_sha256() == state.check.model_sha256 &&
+                    weak->m_model_preview->leaf_edit_revision() == edit_revision && current_bundle &&
+                    PrinterFilamentConfig::capture(*current_bundle).signature == state.printer_filaments.signature;
+            };
             prepared(std::nullopt);
-            const int answer = show_redesign_confirmation(this, message, _L("配色不匹配"), options);
-            if (answer == map_to_model) apply_workbench_printer_filaments();
-            else if (answer == import_to_filaments) toggle_printer_filament_trial();
+            if (!current()) return true;
+            const auto action = show_workbench_import_color_comparison(m_workbench_shell, match.import_comparison);
+            if (action == WorkbenchImportColorAction::Close) return true;
+            if (!current()) {
+                if (weak && !weak->m_shutdown) {
+                    weak->m_workbench_operation_notice = "模型或耗材已变化，请重新点击“去切片”核对配色。";
+                    weak->refresh_post_generation_workbench();
+                }
+                return true;
+            }
+            if (action == WorkbenchImportColorAction::MapToModel) apply_workbench_printer_filaments();
+            else toggle_printer_filament_trial();
             return true;
         }
         request.matched_colors = *match.matched;

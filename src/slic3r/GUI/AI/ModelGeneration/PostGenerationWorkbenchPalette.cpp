@@ -813,7 +813,7 @@ bool ModelGenerationPanel::request_workbench_filament_match(std::function<void(B
                 match.result.error = "模型内容已变化，请重新打开模型后重试。"; return match;
             }
             if (!import || !import->cancelled())
-                match.result = match_beauty_workbench_colors(request, context.cancellation.get());
+                match.result = match_beauty_workbench_colors(request, context.cancellation.get(), bool(import));
             return match;
         }, [weak, task, path, sequence, session, revision, geometry, signature, complete, discard, import](
             Presentation::TaskResult<Match> outcome) {
@@ -833,18 +833,21 @@ bool ModelGenerationPanel::request_workbench_filament_match(std::function<void(B
                 if (discard) discard();
                 return;
             }
+            // Publish the released processing state before Shell can admit the
+            // continuation. Its cached view otherwise still says cannot import.
+            weak->refresh_controls();
+            if (!current() || (import && import->cancelled())) {
+                if (discard) discard();
+                return;
+            }
             Match match = outcome.value ? std::move(*outcome.value) : Match{};
             if (outcome.canceled || outcome.error || !wxGetApp().preset_bundle ||
                 PrinterFilamentConfig::capture(*wxGetApp().preset_bundle).signature != signature ||
                 !match.files || !match.files->current()) {
-                match.result.matched.reset();
+                match.result = {};
                 match.result.error = "模型或工程状态已变化，或正在执行其他处理任务。请完成当前操作后重新导入。";
             }
-            // Publish the released processing state before Shell can admit the
-            // continuation. Its cached view otherwise still says cannot import.
-            weak->refresh_controls();
-            if (current() && (!import || !import->cancelled())) complete(std::move(match.result));
-            else if (discard) discard();
+            complete(std::move(match.result));
         }, Presentation::TaskPriority::Visible);
     if (!accepted) { m_beauty_restore_running = false; refresh_controls(); }
     return accepted;
