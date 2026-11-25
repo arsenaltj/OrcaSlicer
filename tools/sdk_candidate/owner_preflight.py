@@ -22,6 +22,14 @@ READOBJ='C:/Users/1/AppData/Local/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/
 GIT='C:/Program Files (x86)/Git/cmd/git.exe'
 PE='C:/Windows/System32/where.exe'
 PE_SHA='f51fab8041e5023d7290b540a2106f051ef0bd2bc3443c9daf318628b560fa29'
+ENV_POLICY={
+ 'schema':'artifact-owner-environment-binding-v2',
+ 'comparisonEncoding':'sha256-json-sort-keys-default-utf8',
+ 'valueOnlyKey':'CODEX_TOOL_CALL_ID',
+ 'comparisonMarker':'<ARTIFACT_PREFLIGHT_TOOL_CALL_VALUE_V1>',
+ 'keyPresence':'exact-preserve-absence',
+ 'presentEmptyToolCallValue':'normalize-like-any-present-value',
+ 'allOtherKeysAndValues':'exact'}
 PROTECTED={
  'artifact_owner.py':'6b9d5a98c1826ac6f18b0f64cf16ea207a65765a4d1f4791e4b4ef24d7509966',
  'api_context.py':'86366f0acb75b7d26f46f497c89faf08b8265a65b23d42a6fc86e010dbe798c9',
@@ -83,11 +91,38 @@ def git_state(plan,env=None,cwd=None):
     require(not subprocess.check_output([GIT,'-C',str(REPO),'status','--porcelain'],text=True,env=env,cwd=cwd).strip(),'preflight checkout dirty')
 
 
+def environment_hashes(env):
+    """Private comparison copy only. Never return a normalized launch map."""
+    private=dict(env)
+    full=hashlib.sha256(json.dumps(private,sort_keys=True).encode()).hexdigest()
+    if 'CODEX_TOOL_CALL_ID' in private:private['CODEX_TOOL_CALL_ID']=ENV_POLICY['comparisonMarker']
+    normalized=hashlib.sha256(json.dumps(private,sort_keys=True).encode()).hexdigest()
+    return full,normalized
+
+
+def prepare_environment_binding(env):
+    full,normalized=environment_hashes(env)
+    return dict(ENV_POLICY,prepareFullSha256=full,normalizedSha256=normalized)
+
+
+def check_environment_binding(env,binding):
+    require(isinstance(binding,dict) and set(binding)==set(ENV_POLICY)|{'prepareFullSha256','normalizedSha256'},'explicit exact environment binding v2 required')
+    require(all(binding[k]==v for k,v in ENV_POLICY.items()),'unsupported environment normalization policy')
+    for key in ('prepareFullSha256','normalizedSha256'):
+        require(isinstance(binding[key],str) and re.fullmatch('[0-9a-f]{64}',binding[key]),'unbound environment digest')
+    full,normalized=environment_hashes(env)
+    audit=dict(schema=ENV_POLICY['schema'],prepareFullSha256=binding['prepareFullSha256'],
+                currentFullSha256=full,prepareNormalizedSha256=binding['normalizedSha256'],
+                currentNormalizedSha256=normalized,rawValuesRecorded=False)
+    require(normalized==binding['normalizedSha256'],'current private environment comparison identity differs; hashAudit='+json.dumps(audit,sort_keys=True))
+    return audit
+
+
 def validate(plan,go,plan_sha,now):
-    require(go is not None and go['schema']=='artifact-owner-preflight-go-v1'
+    require(go is not None and go['schema']=='artifact-owner-preflight-go-v2'
             and go['rootConversation']==ROOT and go['authorized'] is True,'specific root preflight GO required')
     fresh(go,now)
-    require(plan['schema']=='artifact-owner-preflight-plan-v1' and plan['source']==go['source']==SOURCE,'wrong preflight source')
+    require(plan['schema']=='artifact-owner-preflight-plan-v2' and plan['source']==go['source']==SOURCE,'wrong preflight source')
     require(go['planSha256']==plan_sha and plan['nonce']==go['nonce'] and plan['nonce'],'preflight binding differs')
     require(plan['commands']==commands() and go['commands']==plan['commands'],'extra or altered argv')
     require(plan['commandTimeoutSeconds']==60 and go['commandTimeoutSeconds']==60,'short budget required')
@@ -98,8 +133,10 @@ def validate(plan,go,plan_sha,now):
     require(Path(go['cancel']).resolve()==out.with_suffix('.cancel'),'wrong dedicated cancel channel')
     require(plan['envOverrides']=={'PYTHONNOUSERSITE':'1','PYTHONPATH':''},'unexpected environment overrides')
     env=dict(os.environ);env.update(plan['envOverrides'])
-    digest=hashlib.sha256(json.dumps(env,sort_keys=True).encode()).hexdigest()
-    require(digest==plan['environmentSha256']==go['environmentSha256'],'current private environment identity differs')
+    require(plan['environmentBinding']==go['environmentBinding'],'plan/GO environment policy differs')
+    require(plan['environmentSha256']==go['environmentSha256']==plan['environmentBinding']['prepareFullSha256'],
+            'prepare full environment identity differs')
+    check_environment_binding(env,plan['environmentBinding'])
     key=lambda path:str(Path(path).resolve())
     expected={key(HERE/name):digest for name,digest in PROTECTED.items()}
     expected.update({key(Path(plan['supportDirectory'])/name):digest for name,digest in SUPPORT.items()})
@@ -133,7 +170,8 @@ def execute(plan,go,plan_sha):
     fresh(go,now());admit_cancel(go['cancel'])
     out.mkdir()
     state=dict(state='started',source=SOURCE,toolCommit=plan['toolCommit'],admission=admission,commands=[],
-        qualification='OWNER_COMPATIBILITY_ONLY_NOT_SDK',shortChildObservation='NOT_CLAIMED')
+        qualification='OWNER_COMPATIBILITY_ONLY_NOT_SDK',shortChildObservation='NOT_CLAIMED',
+        environmentAudit=check_environment_binding(env,plan['environmentBinding']))
     def save():(out/'execution.json').write_text(json.dumps(state,indent=2),encoding='utf8')
     try:
         for i,argv in enumerate(commands()):

@@ -69,6 +69,7 @@ class EmptyEnvironment(unittest.TestCase):
             with self.subTest(mode=mode),tempfile.TemporaryDirectory() as d:
                 plan,go,now=test_owner_preflight.PreflightTests().fixture(Path(d))
                 env=dict(before);env['CODEX_ENV_TEST_EMPTY']='';env['CODEX_ENV_TEST_UNICODE']='中文'
+                plan['environmentBinding']=p.prepare_environment_binding(env)
                 calls=[]
                 resources=types.ModuleType('build_resources');resources.gate=lambda *x:None
                 resources.sample=lambda:dict(freeKiB=10*1024**2,processes=[]);resources.heavy=lambda r:True
