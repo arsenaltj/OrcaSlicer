@@ -1588,13 +1588,13 @@ void RedesignShell::disconnect_model_generation_host()
         m_preview_transition_cover = nullptr;
     }
     m_import_in_progress = false;
-    m_import_awaiting_frame = false;
     m_slice_camera_loading_pending = false;
     m_slice_camera_waiting_for_frame = false;
     if (m_import_session) m_import_session->invalidate();
     rollback_import_target_view();
     if (m_import_transition) m_page_coordinator.transition().rollback(*m_import_transition);
     m_import_transition.reset();
+    release_import_source_page();
     if (m_import_loading) {
         if (m_import_activity) m_import_activity->Stop();
         m_import_loading->Hide();

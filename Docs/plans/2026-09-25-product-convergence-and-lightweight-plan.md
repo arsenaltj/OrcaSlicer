@@ -1,3 +1,23 @@
+<a id="mainline-bugfix-workbench-import-color-comparison-20261125"></a>
+
+# MAINLINE-BUGFIX-001｜去切片配色不匹配卡片（2026-11-25）
+
+`task/mainline-bugfix` 的去切片交接已独立本地提交为 `e0984a8b34`。本轮补充配色不匹配卡片，沿用「检查修复详情」与「模型信息」的浮层样式。表格显示缺少、已匹配和模型未使用的耗材色，实体槽与叠色来源取自本次核对。实际色块与中文名并列，长表正文单独滚动。配色操作沿用工作台入口。
+
+固定 Windows Release 已同步到原运行目录。187 项定向回归通过，覆盖部分匹配、同名异色、叠色、耗材不可用和过期结果。实窗使用原入口和 16 色测试模型，125% 缩放下的 905×703 窄窗可以滚到最后一行再返回表首，表头和操作按钮始终可见。已核对「关闭」和 Esc，验收后恢复 200% 缩放与最大化。[验收记录](/D:/TEST/artifacts/mainline-bugfix/evidence/workbench-import-color-comparison-20261125/validation.json)
+
+---
+
+<a id="mainline-bugfix-workbench-slicing-handoff-20261125"></a>
+
+# MAINLINE-BUGFIX-001｜去切片画面交接（2026-11-25）
+
+`task/mainline-bugfix` 沿用基线 `f40e37345c`。从耗材核对开始保留当前工作台和进度卡。需要确认配色时回到工作台。提交工程后按最终窗口尺寸准备切片页，以请求、视口尺寸、DPI 和取景后的新帧确认显示条件。Windows 在同一批窗口更新中撤下保留画面与进度卡。主动切页撤销展示资格，提交后的视图重试复用已导入对象。
+
+固定 Windows Release 已同步原运行目录并使用原配置启动，300 项定向测试通过。200% 最大化小模型录像中，第 108 帧仍显示工作台及进度卡，第 109 帧显示模型、打印盘和切片设置。日志核对该请求提交工程一次。用户接手实窗验收，狮子手办切页与 125% 窄窗待验证。[验收记录](/D:/TEST/artifacts/mainline-bugfix/evidence/workbench-slicing-handoff-20261125/validation.json)
+
+---
+
 <a id="mainline-bugfix-workbench-manual-retain-startup-20261125"></a>
 
 # MAINLINE-BUGFIX-001｜手动试色保留与启动首帧（2026-11-25）

@@ -4,16 +4,19 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace Slic3r::GUI {
 
-enum class WorkbenchImportPhase { Reading, Colors, Placement, Committing, UpdatingView, Completed, Cancelled, Failed };
+enum class WorkbenchImportPhase { CheckingFilaments, Reading, Colors, Placement, Committing, UpdatingView, Completed, Cancelled, Failed };
 
 // The cancellation boundary is the project commit, shared by UI and worker.
 class WorkbenchImportSession
 {
 public:
+    explicit WorkbenchImportSession(WorkbenchImportPhase phase = WorkbenchImportPhase::Reading) : m_phase(phase) {}
+
     WorkbenchImportPhase phase() const { return m_phase.load(); }
     bool valid() const { return m_valid.load(); }
     bool cancelled() const { return !valid() || phase() == WorkbenchImportPhase::Cancelled; }
@@ -37,11 +40,14 @@ public:
     void invalidate() { m_valid = false; cancel(); }
 
 private:
-    std::atomic<WorkbenchImportPhase> m_phase {WorkbenchImportPhase::Reading};
+    std::atomic<WorkbenchImportPhase> m_phase;
     std::atomic<bool> m_valid {true};
 };
 
 using WorkbenchImportProgress = std::function<void(WorkbenchImportPhase, const std::string&)>;
 using WorkbenchImportCompletion = std::function<void(const AI::ModelImportResult&)>;
+using WorkbenchImportPrepared = std::function<void(std::optional<AI::ModelImportRequest>)>;
+using WorkbenchImportPreparation = std::function<bool(std::shared_ptr<WorkbenchImportSession>, WorkbenchImportPrepared)>;
+using WorkbenchImportHandler = std::function<bool(WorkbenchImportPreparation)>;
 
 }

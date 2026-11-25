@@ -787,7 +787,8 @@ std::string workbench_filament_layout(const WorkbenchPrinterFilaments& state, co
 
 }
 
-bool ModelGenerationPanel::request_workbench_filament_match(std::function<void(BeautyColorGateResult)> complete)
+bool ModelGenerationPanel::request_workbench_filament_match(std::function<void(BeautyColorGateResult)> complete,
+    std::function<void()> discard, std::shared_ptr<WorkbenchImportSession> import)
 {
     if (m_shutdown || m_beauty_restore_running || !m_model_preview || !wxGetApp().preset_bundle) return false;
     auto request = capture_beauty_color_gate_request(*wxGetApp().preset_bundle, *m_model_preview,
@@ -804,33 +805,48 @@ bool ModelGenerationPanel::request_workbench_filament_match(std::function<void(B
     refresh_controls();
     struct Match { BeautyColorGateResult result; std::shared_ptr<VerifiedModelFiles> files; };
     const bool accepted = Presentation::background_tasks().submit(task,
-        [request = std::move(request), path](const Presentation::TaskContext& context) {
-            Match match; match.files = std::make_shared<VerifiedModelFiles>();
+        [request = std::move(request), path, import](const Presentation::TaskContext& context) {
+            Match match;
+            if (import && import->cancelled()) return match;
+            match.files = std::make_shared<VerifiedModelFiles>();
             if (!match.files->verify(path, request.source_sha256)) {
                 match.result.error = "模型内容已变化，请重新打开模型后重试。"; return match;
             }
-            match.result = match_beauty_workbench_colors(request, context.cancellation.get());
+            if (!import || !import->cancelled())
+                match.result = match_beauty_workbench_colors(request, context.cancellation.get(), bool(import));
             return match;
-        }, [weak, task, path, sequence, session, revision, geometry, signature, complete](Presentation::TaskResult<Match> outcome) mutable {
-            if (!weak || !weak->m_beauty_restore_scope.owns(task)) return;
+        }, [weak, task, path, sequence, session, revision, geometry, signature, complete, discard, import](
+            Presentation::TaskResult<Match> outcome) {
+            if (!weak || !weak->m_beauty_restore_scope.owns(task)) {
+                if (discard) discard();
+                return;
+            }
             weak->m_beauty_restore_running = false;
-            if (weak->m_shutdown || weak->m_sequence != sequence || weak->m_model_generation_session != session ||
-                !weak->m_model_preview || weak->m_model_preview->model_path() != path ||
-                weak->m_model_preview->geometry_id() != geometry || weak->m_model_preview->leaf_edit_revision() != revision) return;
-            Match match = outcome.value ? std::move(*outcome.value) : Match{};
-            if (outcome.canceled || outcome.error || !wxGetApp().preset_bundle ||
-                PrinterFilamentConfig::capture(*wxGetApp().preset_bundle).signature != signature ||
-                !match.files || !match.files->current()) {
-                match.result.matched.reset();
-                match.result.error = "模型或工程状态已变化，或正在执行其他处理任务。请完成当前操作后重新导入。";
+            const auto current = [&] {
+                return weak && !weak->m_shutdown && weak->m_sequence == sequence &&
+                    weak->m_model_generation_session == session && weak->m_model_preview &&
+                    weak->m_model_preview->model_path() == path && weak->m_model_preview->geometry_id() == geometry &&
+                    weak->m_model_preview->leaf_edit_revision() == revision;
+            };
+            if (!current() || (import && import->cancelled())) {
+                if (weak && !weak->m_shutdown) weak->refresh_controls();
+                if (discard) discard();
+                return;
             }
             // Publish the released processing state before Shell can admit the
             // continuation. Its cached view otherwise still says cannot import.
             weak->refresh_controls();
-            if (!weak || weak->m_shutdown || weak->m_sequence != sequence ||
-                weak->m_model_generation_session != session || !weak->m_model_preview ||
-                weak->m_model_preview->model_path() != path ||
-                weak->m_model_preview->geometry_id() != geometry || weak->m_model_preview->leaf_edit_revision() != revision) return;
+            if (!current() || (import && import->cancelled())) {
+                if (discard) discard();
+                return;
+            }
+            Match match = outcome.value ? std::move(*outcome.value) : Match{};
+            if (outcome.canceled || outcome.error || !wxGetApp().preset_bundle ||
+                PrinterFilamentConfig::capture(*wxGetApp().preset_bundle).signature != signature ||
+                !match.files || !match.files->current()) {
+                match.result = {};
+                match.result.error = "模型或工程状态已变化，或正在执行其他处理任务。请完成当前操作后重新导入。";
+            }
             complete(std::move(match.result));
         }, Presentation::TaskPriority::Visible);
     if (!accepted) { m_beauty_restore_running = false; refresh_controls(); }

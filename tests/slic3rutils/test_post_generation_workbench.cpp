@@ -46,6 +46,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/BeautyPartitionSelection.hpp"
 
 #include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchColorGate.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportColorDialog.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchPrinterFilaments.hpp"
 #include "slic3r/GUI/PrinterFilamentSlotRemap.hpp"
 #include "slic3r/Utils/ProjectConfigUndo.hpp"
@@ -1407,8 +1408,9 @@ TEST_CASE("cancelled decoding leaves no model or texture to commit", "[PostGener
 
 TEST_CASE("cancelling model preparation prevents a late project commit", "[PostGenerationWorkbench][UiRedesign]")
 {
-    const auto phase = GENERATE(WorkbenchImportPhase::Reading, WorkbenchImportPhase::Colors, WorkbenchImportPhase::Placement);
-    WorkbenchImportSession session;
+    const auto phase = GENERATE(WorkbenchImportPhase::CheckingFilaments, WorkbenchImportPhase::Reading,
+        WorkbenchImportPhase::Colors, WorkbenchImportPhase::Placement);
+    WorkbenchImportSession session(WorkbenchImportPhase::CheckingFilaments);
     REQUIRE(session.advance(phase));
     REQUIRE(session.can_cancel());
     REQUIRE(session.cancel());
@@ -1430,6 +1432,19 @@ TEST_CASE("project import commits once and cannot cancel an adopted model", "[Po
     CHECK_FALSE(session.advance(WorkbenchImportPhase::Colors));
     REQUIRE(session.advance(WorkbenchImportPhase::Completed));
     CHECK_FALSE(session.advance(WorkbenchImportPhase::Committing));
+}
+
+TEST_CASE("Retrying a committed import view cannot enter project preparation or commit",
+          "[PostGenerationWorkbench][UiRedesign][WorkbenchImportPresentation]")
+{
+    WorkbenchImportSession retry(WorkbenchImportPhase::UpdatingView);
+    CHECK_FALSE(retry.can_cancel());
+    CHECK_FALSE(retry.cancel());
+    CHECK_FALSE(retry.advance(WorkbenchImportPhase::CheckingFilaments));
+    CHECK_FALSE(retry.advance(WorkbenchImportPhase::Reading));
+    CHECK_FALSE(retry.advance(WorkbenchImportPhase::Committing));
+    REQUIRE(retry.advance(WorkbenchImportPhase::Completed));
+    CHECK_FALSE(retry.advance(WorkbenchImportPhase::Completed));
 }
 
 TEST_CASE("closed import sessions reject queued UI updates and commits", "[PostGenerationWorkbench][UiRedesign]")
@@ -2231,24 +2246,84 @@ TEST_CASE("Beauty color gate rejects unavailable and stale inputs without publis
     request.palette = {{2, "#AA0011", "PLA", false}};
     request.faces = {{PrinterFilamentPreview::rgb8_color(0xAA0011), {}}};
 
-    const auto no_compatible_slot = match_beauty_workbench_colors(request);
+    const auto no_compatible_slot = match_beauty_workbench_colors(request, nullptr, true);
     CHECK_FALSE(no_compatible_slot.compatible());
+    CHECK_FALSE(no_compatible_slot.can_show_import_comparison());
     CHECK(no_compatible_slot.error == "当前没有可用于模型配色的兼容耗材槽。");
     CHECK_FALSE(no_compatible_slot.matched.has_value());
 
     request.unavailable_reason = "当前没有可用的打印机耗材配置。";
-    const auto unavailable = match_beauty_workbench_colors(request);
+    const auto unavailable = match_beauty_workbench_colors(request, nullptr, true);
     CHECK_FALSE(unavailable.compatible());
     CHECK(unavailable.error == request.unavailable_reason);
     CHECK_FALSE(unavailable.matched.has_value());
+    CHECK_FALSE(unavailable.can_show_import_comparison());
 
     request.unavailable_reason.clear();
     request.palette.front().compatible = true;
     std::atomic<bool> canceled {true};
-    const auto stopped = match_beauty_workbench_colors(request, &canceled);
+    const auto stopped = match_beauty_workbench_colors(request, &canceled, true);
     CHECK(stopped.canceled);
     CHECK_FALSE(stopped.compatible());
     CHECK_FALSE(stopped.matched.has_value());
+    CHECK_FALSE(stopped.can_show_import_comparison());
+}
+
+TEST_CASE("Import color comparison reports exact slots and keeps distinct swatches with one name",
+          "[PostGenerationWorkbench][BeautyColorGate][WorkbenchImportColorComparison]")
+{
+    BeautyColorGateRequest request;
+    request.source_sha256 = std::string(64, 'a');
+    request.geometry_id = std::string(64, 'b');
+    request.material_fingerprint = std::string(64, 'c');
+    request.process_fingerprint = std::string(64, 'd');
+    request.palette = {{3, "#D52833", "PLA", true}, {0, "#D52833", "PLA", true},
+                       {8, "#F2DE3D", "PLA", true}, {6, "#777777", "PLA", false}};
+    request.mixed_recipes = {{"#219990", {{0, .5}, {8, .5}}, 9}};
+    const auto rgb = PrinterFilamentPreview::rgb8_color;
+    request.faces = {{rgb(0xD62934), {}}, {rgb(0xD52833), 3}};
+    request.subfaces = {{{rgb(0xD62934), {}}, 0, 2, 0},
+                        {{rgb(0xD82A36), {}}, 0, 2, 1},
+                        {{rgb(0x219990), 9}, 0, 2, 2}};
+
+    const auto result = match_beauty_workbench_colors(request, nullptr, true);
+    REQUIRE(result.can_show_import_comparison());
+    const auto& comparison = result.import_comparison;
+    REQUIRE(comparison.missing == std::vector<uint32_t>{0xD62934, 0xD82A36});
+    CHECK(std::string(workbench_import_color_name(comparison.missing[0])) == u8"红色");
+    CHECK(std::string(workbench_import_color_name(comparison.missing[1])) == u8"红色");
+    REQUIRE(comparison.matched.size() == 2);
+    CHECK(comparison.matched[0].slot == 3);
+    CHECK_FALSE(comparison.matched[0].mixed);
+    CHECK(comparison.matched[1].slot == 9);
+    CHECK(comparison.matched[1].mixed);
+    CHECK(PrinterFilamentPreview::rgb8(comparison.matched[1].color) == 0x219990);
+    REQUIRE(comparison.unused.size() == 2);
+    CHECK(comparison.unused[0].slot == 0);
+    CHECK(comparison.unused[1].slot == 8);
+
+    const auto match_only = match_beauty_workbench_colors(request);
+    CHECK(match_only.missing_colors == result.missing_colors);
+    CHECK_FALSE(match_only.can_show_import_comparison());
+    request.faces[1].preferred_slot.reset();
+    const auto ambiguous = match_beauty_workbench_colors(request, nullptr, true);
+    CHECK_FALSE(ambiguous.can_show_import_comparison());
+    CHECK(ambiguous.ambiguous_colors == std::vector<std::string>{"#D52833"});
+}
+
+TEST_CASE("Import comparison with superseded results stays hidden",
+          "[PostGenerationWorkbench][BeautyColorGate][WorkbenchImportColorComparison]")
+{
+    BeautyColorGateResult result;
+    result.import_comparison.missing = {0x282A29, 0xBA9D9F};
+    REQUIRE(result.can_show_import_comparison());
+    result.error = "模型或耗材已变化";
+    CHECK_FALSE(result.can_show_import_comparison());
+    result.error.clear();
+    result.canceled = true;
+    CHECK_FALSE(result.can_show_import_comparison());
+    CHECK(std::string(workbench_import_color_name(0x282A29)) == u8"深灰色");
+    CHECK(std::string(workbench_import_color_name(0xBA9D9F)) == u8"灰粉色");
 }
 
 TEST_CASE("Beauty color gate cache identity changes with model colors and filament configuration",

@@ -144,7 +144,7 @@ public:
     void set_service_retry_handler(std::function<void()> handler);
     void set_prepare_navigation_handler(std::function<void()> handler) { m_prepare_navigation = std::move(handler); }
     void set_color_matching_handler(std::function<void(const AI::GeneratedModelArtifact&)> handler) { m_color_matching = std::move(handler); }
-    void set_workbench_import_handler(std::function<void(const AI::ModelImportRequest&)> handler) { m_workbench_import = std::move(handler); }
+    void set_workbench_import_handler(WorkbenchImportHandler handler) { m_workbench_import = std::move(handler); }
     using LocalImportExecutor = std::function<bool(const AI::ModelImportRequest&,
         std::shared_ptr<WorkbenchImportSession>, WorkbenchImportProgress, WorkbenchImportCompletion, std::function<bool()>)>;
     void set_local_import_executor(LocalImportExecutor executor) { m_local_import_executor = std::move(executor); }
@@ -157,7 +157,7 @@ public:
     void raise_workbench_modal();
     bool request_enter_beauty();
     bool request_return_overview();
-    bool request_workbench_color_matching(const BeautyColorGateResult* prepared_match = nullptr);
+    bool request_workbench_color_matching();
     bool request_enable_portrait(bool enabled);
     bool request_semantic_mode(SemanticMode mode);
     bool request_portrait_optimization(wxString& reason);
@@ -391,7 +391,9 @@ private:
     WorkbenchButton* m_workbench_sync_filaments {nullptr};
     void apply_workbench_printer_filaments(bool physical_only = false);
     bool request_beauty_color_gate(bool enter_after_success);
-    bool request_workbench_filament_match(std::function<void(BeautyColorGateResult)> complete);
+    bool request_workbench_filament_match(std::function<void(BeautyColorGateResult)> complete,
+        std::function<void()> discard = {}, std::shared_ptr<WorkbenchImportSession> import = {});
+    bool finish_workbench_color_matching(const BeautyColorGateResult* match, WorkbenchImportPrepared prepared);
     void finish_beauty_color_gate(std::uint64_t request_id, std::uint64_t model_sequence,
                                   boost::filesystem::path source, BeautyColorGateIdentity identity,
                                   BeautyColorGateResult result);
@@ -448,7 +450,7 @@ private:
     void publish_workbench_state();
     std::function<void()> m_prepare_navigation;
     std::function<void(const AI::GeneratedModelArtifact&)> m_color_matching;
-    std::function<void(const AI::ModelImportRequest&)> m_workbench_import;
+    WorkbenchImportHandler m_workbench_import;
     bool input_editable() const;
     void show_input_hint(const wxString& message, wxWindow* focus = nullptr);
     bool set_selected_image(const boost::filesystem::path& path, bool request_recommendation);

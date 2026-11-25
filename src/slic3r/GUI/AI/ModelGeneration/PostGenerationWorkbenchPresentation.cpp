@@ -4,6 +4,7 @@
 #include "ModelPreview3D.hpp"
 #include "BeautyWorkbenchControls.hpp"
 #include "BeautyWorkbenchTransactionController.hpp"
+#include "WorkbenchImportColorDialog.hpp"
 #include "WorkbenchStyle.hpp"
 #include "WorkbenchTopologyDetails.hpp"
 #include "slic3r/GUI/AI/Model/BeautyDocument.hpp"
@@ -18,7 +19,11 @@
 #include "slic3r/GUI/Widgets/TextInput.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Print.hpp"
+#include "libslic3r/TextureToColor/ColorUtils.hpp"
 #include "slic3r/GUI/I18N.hpp"
+#include <array>
+#include <limits>
+#include <set>
 #include <boost/filesystem.hpp>
 #include <nlohmann/json.hpp>
 #include <wx/button.h>
@@ -480,6 +485,290 @@ void ModelGenerationPanel::cancel_workbench_check()
     if (m_workbench_check_message)
         m_workbench_check_message->SetLabel(_L("正在取消检查，当前模型保持不变……"));
     if (m_workbench_check_cancel_button) m_workbench_check_cancel_button->Disable();
+}
+
+const char* workbench_import_color_name(uint32_t rgb)
+{
+    constexpr struct {
+        uint32_t rgb;
+        const char* label;
+    } names[] {
+        {0x101010, L("黑色")}, {0x282828, L("深灰色")}, {0x777777, L("灰色")},
+        {0xB8B8B8, L("浅灰色")}, {0xDEDEDE, L("灰白色")}, {0xFAFAFA, L("白色")},
+        {0x8D2029, L("暗红色")}, {0xD52833, L("红色")}, {0xED7770, L("珊瑚色")},
+        {0xDE6397, L("粉色")}, {0xF3B9C8, L("浅粉色")}, {0xBA9D9E, L("灰粉色")},
+        {0xDFC9CA, L("浅灰粉色")}, {0xB7776D, L("砖红色")}, {0xC36535, L("砖橙色")}, {0xF58723, L("橙色")},
+        {0xF5AD7C, L("蜜桃色")}, {0xE9AD21, L("金黄色")}, {0xF2DE3D, L("黄色")},
+        {0xFAE78B, L("浅黄色")}, {0xF1E5C8, L("米白色")}, {0xD6C1A1, L("米色")},
+        {0xAC917F, L("灰棕色")}, {0xA77B52, L("浅棕色")}, {0x844D31, L("棕色")},
+        {0x4F3327, L("深棕色")}, {0xAAB544, L("黄绿色")}, {0x7D813E, L("橄榄绿")},
+        {0x32934A, L("绿色")}, {0x8ABB84, L("浅绿色")}, {0x3D6847, L("深绿色")},
+        {0x829784, L("灰绿色")}, {0x219990, L("青色")}, {0x9ED4C7, L("薄荷绿")},
+        {0x4ABACB, L("湖蓝色")}, {0x8CC8EA, L("浅蓝色")}, {0x2868C4, L("蓝色")},
+        {0x253D70, L("深蓝色")}, {0x798DAA, L("灰蓝色")}, {0x7D4DB0, L("紫色")},
+        {0xC0A9DF, L("浅紫色")}, {0x925F88, L("灰紫色")}, {0x553661, L("深紫色")}
+    };
+    const auto srgb = [](uint32_t color) -> tex2color::color_utils::ColorDouble {
+        return {double((color >> 16) & 255) / 255.0, double((color >> 8) & 255) / 255.0,
+                double(color & 255) / 255.0};
+    };
+    const auto sample = srgb(rgb);
+    const char* label = names[0].label;
+    double best = std::numeric_limits<double>::max();
+    for (const auto& candidate : names) {
+        const double distance = tex2color::color_utils::calc_rgb_color_difference_by_ciede2000_srgb01(
+            sample, srgb(candidate.rgb));
+        if (distance < best) {
+            best = distance;
+            label = candidate.label;
+        }
+    }
+    return label;
+}
+
+namespace {
+class WorkbenchImportColorRows final : public wxPanel {
+public:
+    WorkbenchImportColorRows(wxWindow* parent, const WorkbenchImportColorComparison& colors)
+        : wxPanel(parent), m_colors(colors)
+    {
+        SetName("ai_content_color");
+        SetBackgroundColour(parent->GetBackgroundColour());
+        m_scroll = new WorkbenchScrolledWindow(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
+        m_scroll->SetName("ai_content_color");
+        m_scroll->SetBackgroundColour(GetBackgroundColour());
+        m_scroll->SetFont(parent->GetFont());
+        m_scroll->SetMinSize(wxSize(0, 0));
+        auto* content = new wxBoxSizer(wxVERTICAL);
+        // The scroll extent represents every swatch, while painting only the
+        // current rows also accommodates models with baked texture colours.
+        m_extent = content->Add(0, 0);
+        m_scroll->SetSizer(content);
+        m_scroll->set_viewport_layout_callback([this] { m_scroll->Refresh(false); });
+        m_scroll->Bind(wxEVT_PAINT, [this](wxPaintEvent&) { draw_visible_rows(); });
+        auto* viewport = new wxBoxSizer(wxVERTICAL);
+        viewport->Add(m_scroll, 1, wxEXPAND);
+        SetSizer(viewport);
+    }
+
+    int row_height() const { return std::max(FromDIP(32), m_scroll->GetCharHeight() + FromDIP(12)); }
+    size_t row_count() const { return m_colors.missing.size() + m_colors.matched.size() + m_colors.unused.size(); }
+
+    void layout_rows()
+    {
+        const int height = row_height();
+        m_extent->SetMinSize(0, int(row_count()) * height);
+        m_scroll->SetScrollRate(0, height);
+        m_scroll->Layout();
+    }
+
+    void draw_header(wxDC& dc, const wxRect& rect) const
+    {
+        dc.SetFont(wxGetApp().bold_font());
+        dc.SetTextForeground(wxColour(183, 183, 189));
+        const auto columns = column_bounds(rect);
+        draw_cell(dc, columns[0], _L("模型配色"));
+        draw_cell(dc, columns[1], _L("打印机耗材"));
+        draw_cell(dc, columns[2], _L("状态"));
+    }
+
+private:
+    void draw_visible_rows()
+    {
+        wxAutoBufferedPaintDC dc(m_scroll);
+        dc.SetBackground(wxBrush(GetBackgroundColour()));
+        dc.Clear();
+        dc.SetFont(m_scroll->GetFont());
+        const auto viewport = m_scroll->GetClientSize();
+        const int height = row_height();
+        const size_t first = size_t(m_scroll->GetViewStart().y);
+        for (size_t index = first; index < row_count(); ++index) {
+            const int y = int(index - first) * height;
+            if (y >= viewport.y) break;
+            draw_row(dc, wxRect(0, y, viewport.x, height), index);
+        }
+    }
+
+    void draw_row(wxDC& dc, const wxRect& rect, size_t index) const
+    {
+        const bool missing = index < m_colors.missing.size();
+        const size_t matched_end = m_colors.missing.size() + m_colors.matched.size();
+        const bool unused = index >= matched_end;
+        const auto* filament = missing ? nullptr : unused ? &m_colors.unused[index - matched_end]
+            : &m_colors.matched[index - m_colors.missing.size()];
+        const uint32_t rgb = missing ? m_colors.missing[index] : PrinterFilamentPreview::rgb8(filament->color);
+        const wxString name = _L(workbench_import_color_name(rgb));
+        const auto columns = column_bounds(rect);
+        dc.SetTextForeground(wxColour(238, 240, 244));
+        if (unused) draw_cell(dc, columns[0], _L("—"));
+        else draw_cell(dc, columns[0], name, rgb);
+        if (missing) draw_cell(dc, columns[1], _L("无对应色"));
+        else draw_cell(dc, columns[1], filament->mixed ? wxString::Format(_L("%s · 叠色"), name) : name, rgb);
+        dc.SetTextForeground(missing ? wxColour(255, 194, 39) : wxColour(183, 183, 189));
+        draw_cell(dc, columns[2], missing ? _L("缺少") : unused ? _L("模型未使用") : _L("已匹配"));
+        dc.SetPen(wxPen(wxColour(51, 51, 55)));
+        dc.DrawLine(rect.x, rect.GetBottom(), rect.GetRight() + 1, rect.GetBottom());
+    }
+
+    std::array<wxRect, 3> column_bounds(const wxRect& rect) const
+    {
+        const int width = std::max(0, rect.width - FromDIP(10));
+        const int colors_width = std::max(0, width - FromDIP(94));
+        return {wxRect(rect.x, rect.y, colors_width / 2, rect.height),
+                wxRect(rect.x + colors_width / 2, rect.y, colors_width - colors_width / 2, rect.height),
+                wxRect(rect.x + colors_width, rect.y, width - colors_width, rect.height)};
+    }
+
+    void draw_cell(wxDC& dc, const wxRect& bounds, const wxString& text, std::optional<uint32_t> rgb = {}) const
+    {
+        int x = bounds.x + FromDIP(12);
+        if (rgb) {
+            const wxColour color(uint8_t(*rgb >> 16), uint8_t(*rgb >> 8), uint8_t(*rgb));
+            const int size = FromDIP(16);
+            dc.SetPen(wxPen(wxColour(112, 112, 118)));
+            dc.SetBrush(wxBrush(color));
+            dc.DrawRoundedRectangle(x, bounds.y + (bounds.height - size) / 2, size, size, FromDIP(3));
+            x += FromDIP(24);
+        }
+        const auto label = wxControl::Ellipsize(text, dc, wxELLIPSIZE_END,
+            std::max(1, bounds.GetRight() - x - FromDIP(5)));
+        dc.DrawText(label, x, bounds.y + (bounds.height - dc.GetCharHeight()) / 2);
+    }
+
+    const WorkbenchImportColorComparison& m_colors;
+    WorkbenchScrolledWindow* m_scroll {nullptr};
+    wxSizerItem* m_extent {nullptr};
+};
+}
+
+WorkbenchImportColorAction show_workbench_import_color_comparison(
+    wxWindow* parent, const WorkbenchImportColorComparison& comparison)
+{
+    auto* owner = wxGetTopLevelParent(parent);
+    WorkbenchFloatingCard dialog(owner);
+    dialog.SetTitle(_L("配色不匹配"));
+    dialog.SetFont(parent->GetFont());
+    const auto label = [&](const wxString& text, bool emphasized = false, long style = 0) {
+        auto* control = new WorkbenchStaticText(&dialog, wxID_ANY, text, wxDefaultPosition, wxDefaultSize, style);
+        control->SetForegroundColour(emphasized ? wxColour(238, 240, 244) : wxColour(183, 183, 189));
+        if (emphasized) control->SetFont(wxGetApp().bold_font());
+        return control;
+    };
+
+    auto* root = new wxBoxSizer(wxVERTICAL);
+    auto* heading = new wxBoxSizer(wxHORIZONTAL);
+    heading->Add(label(dialog.GetTitle(), true), 1, wxALIGN_CENTER_VERTICAL);
+    auto* close = workbench_button(&dialog, _L("关闭"));
+    heading->Add(close, 0, wxALIGN_CENTER_VERTICAL);
+    root->Add(heading, 0, wxEXPAND | wxBOTTOM);
+
+    wxString names;
+    std::set<wxString> shown_names;
+    const size_t shown = std::min<size_t>(3, comparison.missing.size());
+    for (size_t index = 0; index < shown; ++index) {
+        const wxString name = _L(workbench_import_color_name(comparison.missing[index]));
+        if (!shown_names.insert(name).second) continue;
+        if (!names.empty()) names += _L("、");
+        names += name;
+    }
+    const auto summary = wxString::Format(comparison.missing.size() > shown
+        ? _L("当前耗材缺少%s等颜色。") : _L("当前耗材缺少%s。"), names);
+    auto* summary_label = label(wxEmptyString, false, wxST_NO_AUTORESIZE);
+    root->Add(summary_label, 0, wxEXPAND | wxBOTTOM);
+
+    auto* table = new wxPanel(&dialog, wxID_ANY);
+    table->SetName("ai_content_color");
+    table->SetBackgroundColour(wxColour(36, 36, 40));
+    auto* header = new wxPanel(table);
+    header->SetName("ai_content_color");
+    header->SetBackgroundColour(wxColour(41, 41, 45));
+    header->SetBackgroundStyle(wxBG_STYLE_PAINT);
+    auto* rows = new WorkbenchImportColorRows(table, comparison);
+    header->Bind(wxEVT_PAINT, [header, rows](wxPaintEvent&) {
+        wxAutoBufferedPaintDC dc(header);
+        dc.SetBackground(wxBrush(header->GetBackgroundColour()));
+        dc.Clear();
+        rows->draw_header(dc, header->GetClientRect());
+    });
+    auto* table_sizer = new wxBoxSizer(wxVERTICAL);
+    table_sizer->Add(header, 0, wxEXPAND);
+    table_sizer->Add(rows, 1, wxEXPAND);
+    table->SetSizer(table_sizer);
+    root->Add(table, 1, wxEXPAND | wxBOTTOM);
+
+    const wxString next_step = _L("处理配色后，再点击「去切片」。");
+    auto* next_step_label = label(wxEmptyString, false, wxST_NO_AUTORESIZE);
+    root->Add(next_step_label, 0, wxEXPAND | wxBOTTOM);
+    auto* actions = new wxBoxSizer(wxHORIZONTAL);
+    auto* map_to_model = workbench_button(&dialog, _L("将耗材色映射到模型"));
+    map_to_model->SetBackgroundColor(StateColor(
+        std::pair<wxColour, int>(wxColour(255, 208, 80), StateColor::Hovered),
+        std::pair<wxColour, int>(wxColour(255, 194, 39), StateColor::Normal)));
+    map_to_model->SetTextColor(StateColor(wxColour(25, 25, 28)));
+    auto* import_to_filaments = workbench_button(&dialog, _L("将模型配色导入到耗材"));
+    actions->Add(map_to_model, 1, wxEXPAND);
+    auto* action_gap = actions->AddSpacer(0);
+    actions->Add(import_to_filaments, 1, wxEXPAND);
+    root->Add(actions, 0, wxEXPAND);
+
+    auto* outer = new wxBoxSizer(wxVERTICAL);
+    outer->Add(root, 1, wxEXPAND | wxALL);
+    dialog.SetSizer(outer);
+    const auto resize = [&] {
+        const int display = wxDisplay::GetFromWindow(dialog.IsShown() ? &dialog : owner);
+        wxRect area = wxDisplay(display == wxNOT_FOUND ? 0 : display).GetClientArea();
+        const wxRect owner_area(owner->ClientToScreen(wxPoint()), owner->GetClientSize());
+        if (area.Intersects(owner_area)) area.Intersect(owner_area);
+        const int margin = dialog.FromDIP(14);
+        const int inset = dialog.FromDIP(12);
+        const int width = std::min(dialog.FromDIP(480), std::max(1, area.width - 2 * margin));
+        const int text_width = std::max(1, width - 2 * margin);
+        outer->GetItem(root)->SetBorder(margin);
+        for (auto* item : {root->GetItem(heading), root->GetItem(summary_label),
+                           root->GetItem(table), root->GetItem(next_step_label)})
+            item->SetBorder(inset);
+        set_wrapped_workbench_text(summary_label, summary, text_width);
+        set_wrapped_workbench_text(next_step_label, next_step, text_width);
+        close->SetMinSize(dialog.FromDIP(wxSize(68, 32)));
+        map_to_model->SetMinSize(dialog.FromDIP(wxSize(-1, 32)));
+        import_to_filaments->SetMinSize(dialog.FromDIP(wxSize(-1, 32)));
+        const int action_width = std::max(map_to_model->GetBestSize().x, import_to_filaments->GetBestSize().x);
+        actions->SetOrientation(2 * action_width + inset <= text_width ? wxHORIZONTAL : wxVERTICAL);
+        action_gap->SetMinSize(wxSize(inset, inset));
+        const int row_height = rows->row_height();
+        header->SetMinSize(wxSize(0, row_height));
+        rows->SetMinSize(wxSize(0, 0));
+        const int available = area.height - 2 * margin - outer->CalcMin().y;
+        const int row_count = int(std::min<size_t>(rows->row_count(), 8));
+        rows->SetMinSize(wxSize(0, std::min(row_count * row_height, std::max(row_height, available))));
+        const auto minimum = outer->CalcMin();
+        dialog.SetClientSize(wxSize(std::max(width, minimum.x), minimum.y));
+        dialog.Layout();
+        rows->layout_rows();
+        header->Refresh(false);
+        apply_workbench_floating_card_shape(&dialog, 8, dialog.GetBackgroundColour());
+        const auto size = dialog.GetSize();
+        dialog.Move(area.x + (area.width - size.x) / 2, area.y + (area.height - size.y) / 2);
+    };
+
+    close->Bind(wxEVT_BUTTON, [&dialog](wxCommandEvent&) { dialog.EndModal(wxID_CANCEL); });
+    map_to_model->Bind(wxEVT_BUTTON, [&dialog](wxCommandEvent&) { dialog.EndModal(wxID_APPLY); });
+    import_to_filaments->Bind(wxEVT_BUTTON, [&dialog](wxCommandEvent&) { dialog.EndModal(wxID_OK); });
+    dialog.Bind(wxEVT_CHAR_HOOK, [&dialog](wxKeyEvent& event) {
+        if (event.GetKeyCode() == WXK_ESCAPE) dialog.EndModal(wxID_CANCEL);
+        else event.Skip();
+    });
+    dialog.Bind(wxEVT_DPI_CHANGED, [&dialog, resize](wxDPIChangedEvent& event) {
+        event.Skip();
+        dialog.CallAfter(resize);
+    });
+    resize();
+    close->SetFocus();
+    switch (dialog.ShowModal()) {
+    case wxID_APPLY: return WorkbenchImportColorAction::MapToModel;
+    case wxID_OK: return WorkbenchImportColorAction::ImportToFilaments;
+    default: return WorkbenchImportColorAction::Close;
+    }
 }
 
 void ModelGenerationPanel::show_workbench_check_details()
