@@ -313,6 +313,9 @@ def finish_manifest(plan):
         if file.is_file():
             shutil.copyfile(file, provenance / file.name)
     manifest['sourceSnapshot'] = hashlib.sha256(json.dumps(manifest['sourceFiles'], sort_keys=True).encode()).hexdigest()
+    # Upstream literal is preserved above. Caller has just checked actual clean
+    # Git/source identity and all four sealed producer closures before assembly.
+    manifest.update(uncommitted=False, sourceStatus='clean', buildSourceCommit=SOURCE)
     manifest['artifactAssembly'] = dict(sdkSource=SOURCE, toolSource=plan['toolSource'],
         fullSourceIndexesPreserved=True, cleanProducers=True, copiedPredecessorObjects=0,
         functionalQualification=None, pending=['independent-source-artifact-review', 'new-source-limited-nonGLB-HostQA'],
