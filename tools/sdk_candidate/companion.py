@@ -59,6 +59,52 @@ def project_outputs(path,target,role):
     return selected
 
 
+def link_path(value):
+    return str(value).strip().strip('"').replace('\\','/').lower()
+
+
+def log_paths(path):
+    data=Path(path).read_bytes()
+    text=data.decode('utf-16') if data.startswith((b'\xff\xfe',b'\xfe\xff')) else data.decode('utf8')
+    paths=set()
+    for quoted,bare in re.findall(r'"([^"\r\n]+)"|([^\s;"]+)',text):
+        value=(quoted or bare).lstrip('^')
+        for prefix in ('/OUT:','/IMPLIB:'):
+            if value.upper().startswith(prefix):value=value[len(prefix):]
+        paths.add(link_path(value))
+    return paths
+
+
+def sdk_dependency(sdkproject,dependency,import_lib):
+    """Only active Release XML roles; comments/plain text cannot grant an edge."""
+    a.require(isinstance(import_lib,str) and import_lib.strip() and import_lib.strip()==import_lib
+              and import_lib.lower().endswith('.lib') and ';' not in import_lib,'empty/invalid dependency import lib')
+    root=ET.fromstring(Path(sdkproject).read_bytes())
+    matched=False
+    def expand(value):
+        for key,val in {'Configuration':'Release','Platform':'x64','ProjectDir':str(Path(sdkproject).parent)+'/'}.items():
+            value=value.replace('$('+key+')',val)
+        return value
+    def visit(node,in_link=False):
+        nonlocal matched
+        cond=node.get('Condition','').replace(' ','')
+        if cond and cond!="'$(Configuration)|$(Platform)'=='Release|x64'":return
+        tag=node.tag.split('}')[-1]
+        if tag=='ProjectReference':
+            value=expand(node.get('Include',''))
+            candidate=Path(value.replace('\\','/'))
+            if not candidate.is_absolute():candidate=Path(sdkproject).parent/candidate
+            disabled=any(x.tag.split('}')[-1]=='LinkLibraryDependencies' and x.text and x.text.strip().lower()=='false' for x in node)
+            if '$(' not in value and candidate.resolve()==Path(dependency).resolve() and not disabled:matched=True
+        if tag=='AdditionalDependencies' and in_link and node.text:
+            for token in node.text.split(';'):
+                value=expand(token.strip()).strip('"')
+                if value and '$(' not in value and link_path(value)==link_path(import_lib):matched=True
+        for child in node:visit(child,in_link or tag=='Link')
+    visit(root)
+    a.require(matched,'Release SDK dependency edge missing')
+
+
 def appendix(receipt,producer,stage):
     pair=receipt.get('sourceAppendix')
     if pair is None:return []
@@ -153,13 +199,27 @@ def basis(entry,producer,stage,source_graph,extra=()):
             declared=str(path).replace('\\','/').lower()
             a.require(any(x.replace('\\','/').lower()==declared for x in output),'runtime dependency output differs')
             sdkproject=historical(evidence['project'])
-            a.require(sdkproject.name in ('orca_model_sdk.vcxproj','orca_mobile_slicing_sdk.vcxproj'),'wrong SDK dependency project')
+            expected_sdk='orca_model_sdk.vcxproj' if stage=='model-windows' else 'orca_mobile_slicing_sdk.vcxproj'
+            a.require(sdkproject.name==expected_sdk,'wrong stage SDK dependency project')
             a.require('--target' in build_argv and sdkproject.stem in build_argv[build_argv.index('--target')+1:], 'normal SDK target missing')
-            text=sdkproject.read_text(encoding='utf8')
-            a.require(project.name in text or evidence['dependencyImportLib'] in text,'SDK project does not reference dependency')
-            data=historical(evidence['linkTlog']).read_bytes()
-            text=data.decode('utf-16') if data.startswith((b'\xff\xfe',b'\xfe\xff')) else data.decode('utf8')
-            a.require(declared in text.replace('\\','/').lower(),'runtime actual link output absent')
+            requested=evidence['dependencyImportLib']
+            sdk_dependency(sdkproject,project,requested)
+            # The DLL project's Release import-library output and the SDK's
+            # actual link input must name the same artifact, not a substring.
+            xml=ET.fromstring(project.read_bytes())
+            has_import=any(x.tag.split('}')[-1]=='ImportLibrary' for x in xml.iter())
+            imports=project_outputs(project,target,'import-lib') if has_import else [str(path.with_suffix('.lib'))]
+            a.require(len(imports)==1,'ambiguous dependency Release import lib')
+            import_path=imports[0]
+            requested_path=requested.replace('\\','/')
+            a.require(link_path(requested_path)==link_path(import_path) or
+                      ('/' not in requested_path and requested_path.lower()==Path(import_path.replace('\\','/')).name.lower()),
+                      'dependency library does not belong to runtime project')
+            dependency_log=log_paths(historical(evidence['linkTlog']))
+            sdk_log=log_paths(historical(evidence['sdkLinkTlog']))
+            a.require(declared in dependency_log and link_path(import_path) in dependency_log,'runtime/import-lib actual link outputs missing')
+            a.require(link_path(import_path) in sdk_log and link_path(producer['rawSource']['buildPath']) in sdk_log,
+                      'SDK actual link input/output relationship missing')
             with path.open('rb') as stream:a.require(stream.read(2)==b'MZ','runtime is not PE')
             return
         approved=a.small_json(historical(evidence['approvedRule']))

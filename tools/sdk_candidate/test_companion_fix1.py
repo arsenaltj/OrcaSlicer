@@ -49,7 +49,8 @@ class CompanionFix1(unittest.TestCase):
                 runtime=build/'runtime/Release/tbb12.dll';runtime.parent.mkdir(parents=True);runtime.write_bytes(b'MZtiny')
                 dependency=pin(build/'tbb.vcxproj','<Project><PropertyGroup Condition="\'$(Configuration)|$(Platform)\'==\'Release|x64\'"><OutDir>'+str(runtime.parent)+'/</OutDir><TargetName>tbb12</TargetName><TargetExt>.dll</TargetExt></PropertyGroup></Project>')
                 e.update(role='runtime',current=a.identity(runtime));e['basis'].update(project=sdkproject,dependencyProject=dependency,
-                    dependencyTarget='tbb',dependencyImportLib='tbb12.lib',linkTlog=pin(build/'tbb.tlog',str(runtime)))
+                    dependencyTarget='tbb',dependencyImportLib='tbb12.lib',linkTlog=pin(build/'tbb.tlog',str(runtime)+'\n'+str(runtime.with_suffix('.lib'))),
+                    sdkLinkTlog=pin(build/'sdk-runtime.tlog',item['rawSource']['buildPath']+'\n'+str(runtime.with_suffix('.lib'))))
                 c.basis(e,item,stage,[],extra())
 
     def test_fixed_android_roles_headers_and_validator_reject_substitution(self):
