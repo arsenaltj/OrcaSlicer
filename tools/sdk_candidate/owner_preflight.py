@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+import re
 
 SOURCE='b5f078f52a8db9bb8eb3b347b155679c852d5c32'
 ROOT='01a20286-30e2-7a20-a134-d11895959c44'
@@ -46,6 +47,10 @@ def pin(path):
 
 
 def verify(ref):
+    require(isinstance(ref,dict) and isinstance(ref.get('path'),str) and Path(ref['path']).is_absolute()
+            and type(ref.get('bytes')) is int and ref['bytes']>0
+            and isinstance(ref.get('sha256'),str) and re.fullmatch('[0-9a-f]{64}',ref['sha256']),
+            'preflight pin unbound or malformed')
     value=pin(ref['path'])
     require(value['sha256']==ref['sha256'] and value['bytes']==ref['bytes'],'preflight pin changed')
 
