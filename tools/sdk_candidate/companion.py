@@ -193,6 +193,11 @@ def collect(plan,go):
     from build_resources import gate,sample,heavy
     from artifact_owner import admit_cancel
     out=Path(plan['output']);a.require(not out.exists(),'fresh companion output required')
+    for item in plan['producers'].values():
+        build=Path(item['rawSource']['buildPath']).resolve().parent
+        a.require(not out.resolve().is_relative_to(build) and not build.is_relative_to(out.resolve()),
+                  'collector output overlaps producer')
+    a.require(not out.resolve().is_relative_to(Path(plan['sdkRepository']).resolve()),'collector cannot write source')
     cancel=Path(go['cancel']);admit_cancel(cancel)
     samples=[]
     gate(samples,lambda:None)
@@ -230,6 +235,7 @@ def collect(plan,go):
         for entry in entries:a.verify(entry['current'])
         for ref in before:a.verify(ref)
         monitor(force=True)
+        sourcecheck()
         state['state']='verified_collection_no_processes_launched';save()
         a.write(out/'receipt.json',receipt)
         a.write(out/'seal.json',dict(schema='b5f-companion-seal-v1',receipt=a.identity(out/'receipt.json')))
