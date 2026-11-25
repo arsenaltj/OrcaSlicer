@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 import time
 import importlib.util
 import re
+import ntpath
 import adapter as a
 
 SCHEMA='b5f-producer-companion-v1'
@@ -81,6 +82,7 @@ def sdk_dependency(sdkproject,dependency,import_lib):
               and import_lib.lower().endswith('.lib') and ';' not in import_lib,'empty/invalid dependency import lib')
     root=ET.fromstring(Path(sdkproject).read_bytes())
     matched=False
+    tokens=set()
     def expand(value):
         for key,val in {'Configuration':'Release','Platform':'x64','ProjectDir':str(Path(sdkproject).parent)+'/'}.items():
             value=value.replace('$('+key+')',val)
@@ -99,10 +101,51 @@ def sdk_dependency(sdkproject,dependency,import_lib):
         if tag=='AdditionalDependencies' and in_link and node.text:
             for token in node.text.split(';'):
                 value=expand(token.strip()).strip('"')
+                if value and '$(' not in value and '%(' not in value:tokens.add(link_path(value))
                 if value and '$(' not in value and link_path(value)==link_path(import_lib):matched=True
         for child in node:visit(child,in_link or tag=='Link')
     visit(root)
     a.require(matched,'Release SDK dependency edge missing')
+    return tokens
+
+
+def frozen_value(actual,expected,kind):
+    if actual==expected:return True
+    if kind not in ('PATH','FILEPATH') or not isinstance(actual,str):return False
+    if not (ntpath.isabs(actual) and ntpath.isabs(expected)):return False
+    return ntpath.normcase(ntpath.normpath(actual))==ntpath.normcase(ntpath.normpath(expected))
+
+
+def linked_records(records,historical,sdkproject,stage,import_path,sdk_output,dependency_tokens):
+    """One typed MSVC record across command/read/write; never cwd inference."""
+    a.require(isinstance(records,list) and len(records)==3,'three SDK link record roles required')
+    by_role={r['role']:r for r in records}
+    a.require(set(by_role)=={'command','read','write'},'missing/duplicate SDK link record role')
+    target=Path(sdkproject).stem
+    directory=Path(sdkproject).parent/(target+'.dir')/'Release'/(target+'.tlog')
+    keys=[];paths={}
+    for role,row in by_role.items():
+        a.require(row['stage']==stage and row['target']==target and row['configuration']=='Release|x64','cross-target/config link records')
+        file=historical(row['pin'])
+        a.require(file.resolve()==(directory/('link.'+role+'.1.tlog')).resolve(),'wrong target/config tlog location')
+        data=file.read_bytes()
+        text=data.decode('utf-16') if data.startswith((b'\xff\xfe',b'\xfe\xff')) else data.decode('utf8')
+        lines=text.splitlines()
+        headers=[line for line in lines if line.startswith('^')]
+        a.require(len(headers)==1 and lines[0]==headers[0] and len(lines)>1,'ambiguous/missing complete link record key')
+        keys.append(headers[0]);paths[role]=log_paths(file)
+    a.require(keys[0]==keys[1]==keys[2],'complete link object-set key differs')
+    expected_lib=link_path(import_path);expected_sdk=link_path(sdk_output)
+    a.require(expected_lib in paths['read'] and expected_sdk in paths['write'] and expected_sdk in paths['command'],
+              'linked read/write actual input/output differs')
+    # The relative command token is not resolved to projectDir/cwd. Matching
+    # record read evidence is authoritative for its absolute input identity.
+    name=ntpath.basename(expected_lib)
+    commands=[x for x in paths['command'] if ntpath.basename(x)==name]
+    reads=[x for x in paths['read'] if ntpath.basename(x)==name]
+    a.require(len(commands)==1 and len(reads)==1 and reads[0]==expected_lib,'ambiguous or wrong linked library')
+    a.require(commands[0]==expected_lib or commands[0] in dependency_tokens,'relative command library not declared by Release SDK')
+    return dict(recordKeySha256=__import__('hashlib').sha256(keys[0].encode()).hexdigest(),recordKeyBytes=len(keys[0].encode()))
 
 
 def appendix(receipt,producer,stage):
@@ -156,11 +199,12 @@ def basis(entry,producer,stage,source_graph,extra=()):
         values={line.split(':',1)[0]:line.split('=',1)[1] for line in path.read_text(encoding='utf8').splitlines()
                 if not line.startswith(('#','//')) and ':' in line and '=' in line}
         expected={}
+        types={}
         for arg in configure:
             if arg.startswith('-D') and '=' in arg:
-                k,v=arg[2:].split('=',1);expected[k.split(':')[0]]=v
+                k,v=arg[2:].split('=',1);expected[k.split(':')[0]]=v;types[k.split(':')[0]]=k.partition(':')[2]
         a.require(expected and values.get('ORCA_MODEL_SOURCE_COMMIT')==a.SOURCE,'cache source not frozen')
-        a.require(all(values.get(k)==v for k,v in expected.items()),'cache differs from frozen configure/options/toolchain/deps')
+        a.require(all(frozen_value(values.get(k),v,types[k]) for k,v in expected.items()),'cache differs from frozen configure/options/toolchain/deps')
         a.require(Path(values['CMAKE_CACHEFILE_DIR']).resolve()==build,'cache build dir changed')
     elif role in ('runner','import-lib'):
         a.require(stage.endswith('windows'),'link companion wrong platform')
@@ -203,7 +247,7 @@ def basis(entry,producer,stage,source_graph,extra=()):
             a.require(sdkproject.name==expected_sdk,'wrong stage SDK dependency project')
             a.require('--target' in build_argv and sdkproject.stem in build_argv[build_argv.index('--target')+1:], 'normal SDK target missing')
             requested=evidence['dependencyImportLib']
-            sdk_dependency(sdkproject,project,requested)
+            dependency_tokens=sdk_dependency(sdkproject,project,requested)
             # The DLL project's Release import-library output and the SDK's
             # actual link input must name the same artifact, not a substring.
             xml=ET.fromstring(project.read_bytes())
@@ -216,10 +260,14 @@ def basis(entry,producer,stage,source_graph,extra=()):
                       ('/' not in requested_path and requested_path.lower()==Path(import_path.replace('\\','/')).name.lower()),
                       'dependency library does not belong to runtime project')
             dependency_log=log_paths(historical(evidence['linkTlog']))
-            sdk_log=log_paths(historical(evidence['sdkLinkTlog']))
             a.require(declared in dependency_log and link_path(import_path) in dependency_log,'runtime/import-lib actual link outputs missing')
-            a.require(link_path(import_path) in sdk_log and link_path(producer['rawSource']['buildPath']) in sdk_log,
-                      'SDK actual link input/output relationship missing')
+            a.require(('sdkLinkTlog' in evidence)!=('sdkLinkRecords' in evidence),'conflicting/missing SDK link proof modes')
+            if 'sdkLinkRecords' in evidence:
+                linked_records(evidence['sdkLinkRecords'],historical,sdkproject,stage,import_path,producer['rawSource']['buildPath'],dependency_tokens)
+            else:
+                sdk_log=log_paths(historical(evidence['sdkLinkTlog']))
+                a.require(link_path(import_path) in sdk_log and link_path(producer['rawSource']['buildPath']) in sdk_log,
+                          'SDK actual link input/output relationship missing')
             with path.open('rb') as stream:a.require(stream.read(2)==b'MZ','runtime is not PE')
             return
         approved=a.small_json(historical(evidence['approvedRule']))
@@ -301,7 +349,8 @@ def closure(source_proof):
     receipt=a.small_json(a.verify(pair['receipt']))
     extra=[receipt['sourceAppendix']] if receipt.get('sourceAppendix') else []
     if extra:extra += [x['pin'] for x in a.small_json(a.verify(extra[0]))['entries']]
-    return [pair['seal'],pair['receipt']]+extra+receipt['driftBefore']+[
+    linked=[r['pin'] for x in receipt['companions'] for r in x['basis'].get('sdkLinkRecords',[])]
+    return [pair['seal'],pair['receipt']]+extra+linked+receipt['driftBefore']+[
         ref for x in receipt['companions'] for ref in [x['current']]+list(x['basis'].values()) if isinstance(ref,dict) and 'sha256' in ref]
 
 
