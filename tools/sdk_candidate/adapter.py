@@ -56,6 +56,25 @@ def small_json(path):
     return json.loads(Path(path).read_text(encoding='utf-8-sig'))
 
 
+def dependency_json(ref):
+    """Only the exact pinned canonical dependency manifest may exceed 4MiB.
+
+    Original execution records still never enter any JSON loader. The 16MiB
+    ceiling covers the existing 10,464,796-byte canonical input without making
+    the compact receipt limit apply to an unrelated dependency-file index.
+    """
+    require(isinstance(ref, dict) and type(ref.get('bytes')) is int
+            and 0 < ref['bytes'] <= 16 * 1024 * 1024, 'dependency manifest size bound')
+    require(Path(ref['path']).name not in ('execution.json', 'actual-compiler-inputs.json'),
+            'not a canonical dependency manifest')
+    path = verify(ref)
+    with path.open('rb') as stream:
+        payload = stream.read(ref['bytes'] + 1)
+    require(len(payload) == ref['bytes'] and hashlib.sha256(payload).hexdigest() == ref['sha256'],
+            'dependency manifest changed during bounded read')
+    return json.loads(payload.decode('utf-8-sig'))
+
+
 def write(path, value):
     with Path(path).open('x', encoding='utf8') as out:
         json.dump(value, out, indent=2, ensure_ascii=False)

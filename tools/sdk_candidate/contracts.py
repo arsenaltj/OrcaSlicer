@@ -33,7 +33,9 @@ def check(plan, api):
         actual_originals = load(pin(origins[0])).get('originalRecords', {}) if origins else {}
         need(item.get('originalRecords', {}) == actual_originals, 'original record graph differs')
         for ref in item.get('originalRecords', {}).values():
-            graph[str(Path(ref['path']).resolve())] = ref
+            key = str(Path(ref['path']).resolve())
+            need(key not in graph or graph[key] == ref, 'conflicting original record identity')
+            graph[key] = ref
         def member(ref):
             need(isinstance(ref, dict) and graph.get(str(Path(ref['path']).resolve())) == ref,
                  'proof not in exact original graph')
@@ -63,6 +65,20 @@ def check(plan, api):
         need(Path(record['path']).name == 'execution.json', 'wrong full execution record')
         data = load(pin(original))
         need(data['source'] == api.SOURCE, 'wrong resource source')
+        # Original normal producers write the resource summary and execution
+        # into the same unique output directory. Resolve the association from
+        # the immutable original seal/origin index, not from typed pointers or
+        # a basename search. This also supplies size/path for legacy summaries
+        # that only record an execution SHA (or contain command metadata only).
+        canonical = str((Path(original['path']).resolve().parent / 'execution.json').resolve())
+        need(canonical in graph and graph[canonical] == record,
+             'resource summary does not bind this exact original execution path/size/SHA')
+        for field in ('executionSha256', 'originalRecordSha256'):
+            if field in data:
+                need(data[field] == record['sha256'], 'summary execution SHA differs')
+        for field in ('executionBytes', 'originalRecordBytes'):
+            if field in data:
+                need(data[field] == record['bytes'], 'summary execution size differs')
         if stage == 'model-windows':
             need(data['buildState'] == 'returned' and data['ownerPidsRemaining'] == 0
                  and data['buildExitCode'] == data['configureExitCode'] == 0
@@ -125,7 +141,7 @@ def check(plan, api):
     for item in tools.values():
         pin(item)
     need(plan['postprocessProof'] == tools[str(Path(__file__).with_name('static_proof.py').resolve())], 'wrong static proof implementation')
-    deps = load(plan['dependencyManifest'])
+    deps = api.dependency_json(tools[str(Path(plan['dependencyManifest']).resolve())])
     need(isinstance(deps, list) and deps, 'empty dependencies')
     for entry in deps:
         need(Path(entry['path']).is_absolute() and entry['files'], 'unbound dependency tree')
