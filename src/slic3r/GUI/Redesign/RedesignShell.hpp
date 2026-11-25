@@ -16,6 +16,7 @@
 #include "../AI/ModelGeneration/ModelHistoryOpen.hpp"
 #include "../AI/ModelGeneration/PortraitWorkbenchEntry.hpp"
 #include "../AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
+#include "../AI/ModelGeneration/WorkbenchImportPresentation.hpp"
 #include "../AI/ModelGeneration/WorkbenchImportSession.hpp"
 #include "../AI/SmartSlicing/SmartSlicingWorkbenchState.hpp"
 #include "../AI/Text/AITextClient.hpp"
@@ -133,6 +134,7 @@ private:
     void update_navigation();
     wxPanel* m_assets_page {nullptr};
     AssetsWorkspace* m_assets_workspace {nullptr};
+    wxWindow* m_navigation_rail {nullptr};
     void connect_model_generation_host();
     void apply_advanced_model_state(const ModelGenerationUIState& state, bool new_generation = false);
     void on_advanced_model_job(const AdvancedCreation::ModelJobEvent& event);
@@ -357,6 +359,7 @@ private:
     uint64_t m_history_open_request {0};
     std::string m_history_open_asset;
     wxDialog* m_history_loading {nullptr};
+    WorkbenchLoadingCardAnchor m_history_loading_anchor;
     wxActivityIndicator* m_history_activity {nullptr};
     WorkbenchLabel *m_history_stage {nullptr}, *m_history_elapsed {nullptr};
     wxWindow* m_history_cancel {nullptr};
@@ -381,6 +384,7 @@ private:
     wxSize m_import_fitted_viewport;
     std::shared_ptr<WorkbenchImportSession> m_import_session;
     wxDialog* m_import_loading {nullptr};
+    WorkbenchLoadingCardAnchor m_import_loading_anchor;
     wxFrame* m_import_transition_cover {nullptr};
     wxActivityIndicator* m_import_activity {nullptr};
     WorkbenchLabel* m_import_stage {nullptr};

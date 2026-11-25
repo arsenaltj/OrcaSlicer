@@ -1,3 +1,4 @@
+#include "slic3r/GUI/AI/Model/ModelFilePath.hpp"
 #include "ModelLibraryRepository.hpp"
 #include "ModelHistoryRepairIndex.hpp"
 #include "ModelLibraryMetadata.hpp"
@@ -65,8 +66,8 @@ bool can_import_directly(const boost::filesystem::path& model_path, const std::a
         return false;
 
     boost::system::error_code error;
-    if (!boost::filesystem::is_regular_file(model_path, error) || error ||
-        boost::filesystem::file_size(model_path, error) == 0 || error)
+    if (!boost::filesystem::is_regular_file(AI::model_io_path(model_path), error) || error ||
+        boost::filesystem::file_size(AI::model_io_path(model_path), error) == 0 || error)
         return false;
     if (!boost::algorithm::iequals(extension, ".3mf"))
         return true;
@@ -119,52 +120,54 @@ std::vector<ModelLibraryEntry> ModelLibraryRepository::read(
     thread_local ModelLibraryMetadata summaries;
     const auto read_json = [&only_job](const boost::filesystem::path& path) {
         if (!only_job.empty() && path.filename() == "orcaslicer-ai-" + only_job + ".json") {
-            boost::filesystem::ifstream input(path);
+            boost::filesystem::ifstream input(AI::model_io_path(path));
             return ModelLibraryObservations::overlay(input ? ModelLibraryMetadata::parse(input) : nlohmann::json{}, path);
         }
         return ModelLibraryObservations::overlay(summaries.read(path), path);
     };
     boost::system::error_code ec;
-    if (cancelled || !boost::filesystem::is_directory(root, ec)) return {};
+    if (cancelled || !boost::filesystem::is_directory(AI::model_io_path(root), ec)) return {};
 
     std::map<std::string, boost::filesystem::path> models;
-    for (boost::filesystem::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+    for (boost::filesystem::directory_iterator it(AI::model_io_path(root), ec), end; !ec && it != end; it.increment(ec)) {
         if (cancelled) return {};
         boost::system::error_code entry_ec;
-        if (!boost::filesystem::is_directory(it->path(), entry_ec))
+        if (!boost::filesystem::is_directory(AI::model_io_path(it->path()), entry_ec))
             continue;
         const std::string job_id = it->path().filename().string();
         if (job_id == "downloads" || job_id.rfind("attempt-", 0) == 0)
             continue;
-        boost::filesystem::path model_path = it->path() / "model.glb";
-        if (!is_nonempty_model(model_path)) model_path = it->path() / "model-vertex-color.obj";
-        if (boost::filesystem::is_regular_file(model_path, entry_ec) &&
-            boost::filesystem::file_size(model_path, entry_ec) > 0 && !entry_ec)
+        const auto directory = AI::model_path_from_io(it->path());
+        boost::filesystem::path model_path = directory / "model.glb";
+        if (!is_nonempty_model(model_path)) model_path = directory / "model-vertex-color.obj";
+        if (boost::filesystem::is_regular_file(AI::model_io_path(model_path), entry_ec) &&
+            boost::filesystem::file_size(AI::model_io_path(model_path), entry_ec) > 0 && !entry_ec)
             models.emplace(job_id, model_path);
     }
     ec.clear();
-    if (boost::filesystem::is_directory(downloads, ec)) {
-        for (boost::filesystem::directory_iterator it(downloads, ec), end; !ec && it != end; it.increment(ec)) {
+    if (boost::filesystem::is_directory(AI::model_io_path(downloads), ec)) {
+        for (boost::filesystem::directory_iterator it(AI::model_io_path(downloads), ec), end; !ec && it != end; it.increment(ec)) {
             if (cancelled) return {};
-            const boost::filesystem::path path = it->path();
+            const boost::filesystem::path path = AI::model_path_from_io(it->path());
             if (ModelLibraryDeletion::appearance_companion(path)) continue;
             boost::system::error_code entry_ec;
-            if (!boost::filesystem::is_regular_file(path, entry_ec) || !AI::is_model_artifact(path))
+            if (!boost::filesystem::is_regular_file(AI::model_io_path(path), entry_ec) || !AI::is_model_artifact(path))
                 continue;
             const std::string job_id = download_job_id(path);
-            if (job_id.rfind("finish-", 0) == 0 && !read_json(library_metadata_path(job_id)).is_object())
+            if ((job_id.rfind("finish-", 0) == 0 || job_id.rfind("native-workbench-partition-", 0) == 0) &&
+                !read_json(library_metadata_path(job_id)).is_object())
                 continue; // Unaccepted finishing previews are never history entries.
-            if (!job_id.empty() && boost::filesystem::file_size(path, entry_ec) > 0 && !entry_ec)
+            if (!job_id.empty() && boost::filesystem::file_size(AI::model_io_path(path), entry_ec) > 0 && !entry_ec)
                 models.emplace(job_id, path);
         }
     }
 
-    // A finishing OBJ stays beside its source so relative materials remain
-    // valid. Accepted metadata, not its temporary filename, registers it.
+    // Accepted metadata also registers finishing artifacts stored alongside
+    // their sources, outside the downloads directory.
     const auto records = library_metadata_path("placeholder").parent_path();
     ec.clear();
-    if (boost::filesystem::is_directory(records, ec)) {
-        for (boost::filesystem::directory_iterator it(records, ec), end; !ec && it != end; it.increment(ec)) {
+    if (boost::filesystem::is_directory(AI::model_io_path(records), ec)) {
+        for (boost::filesystem::directory_iterator it(AI::model_io_path(records), ec), end; !ec && it != end; it.increment(ec)) {
             if (cancelled) return {};
             if (it->path().extension() != ".json") continue;
             // The summary index lives beside history metadata. It is an
@@ -183,14 +186,14 @@ std::vector<ModelLibraryEntry> ModelLibraryRepository::read(
                 path_is_inside(root, path) && (is_nonempty_model(path) ||
                   (include_native && data.value("source",std::string())=="website_download" &&
                    !path.extension().empty() && PlatformLibrary::supported_format(path.extension().string().substr(1)) &&
-                   boost::filesystem::is_regular_file(path,ec) && boost::filesystem::file_size(path,ec)>0 && !ec)))
+                   boost::filesystem::is_regular_file(AI::model_io_path(path),ec) && boost::filesystem::file_size(AI::model_io_path(path),ec)>0 && !ec)))
                 models[id] = path;
         }
     }
     std::vector<ModelLibraryEntry> entries;
     entries.reserve(models.size());
     ec.clear();
-    for (boost::filesystem::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+    for (boost::filesystem::directory_iterator it(AI::model_io_path(root), ec), end; !ec && it != end; it.increment(ec)) {
         if (cancelled) return {};
         const auto job_id = it->path().filename().string();
         if (!only_job.empty() && job_id != only_job) continue;
@@ -227,7 +230,7 @@ std::vector<ModelLibraryEntry> ModelLibraryRepository::read(
         entry.job_id = job_id;
         entry.model_path = model_path;
         entry.can_direct_import = include_native && can_import_directly(model_path, cancelled);
-        entry.generated_at = boost::filesystem::last_write_time(model_path, entry_ec);
+        entry.generated_at = boost::filesystem::last_write_time(AI::model_io_path(model_path), entry_ec);
         if (entry_ec)
             entry.generated_at = 0;
 
@@ -290,7 +293,7 @@ std::vector<ModelLibraryEntry> ModelLibraryRepository::read(
             const auto color_intent_path = metadata.find("color_intent_path");
             if (color_intent_path != metadata.end() && color_intent_path->is_string()) {
                 const boost::filesystem::path candidate = root / color_intent_path->get<std::string>();
-                if (path_is_inside(root, candidate) && boost::filesystem::is_regular_file(candidate, entry_ec))
+                if (path_is_inside(root, candidate) && boost::filesystem::is_regular_file(AI::model_io_path(candidate), entry_ec))
                     entry.color_intent_path = candidate;
             }
             const auto color_intent_schema = metadata.find("color_intent_schema");
@@ -304,11 +307,11 @@ std::vector<ModelLibraryEntry> ModelLibraryRepository::read(
         const boost::filesystem::path job_preview = root / job_id / "preview.png";
         const boost::filesystem::path download_preview = temp_path(job_id, "png");
         entry_ec.clear();
-        if (boost::filesystem::is_regular_file(job_preview, entry_ec))
+        if (boost::filesystem::is_regular_file(AI::model_io_path(job_preview), entry_ec))
             entry.preview_path = job_preview;
         else {
             entry_ec.clear();
-            if (boost::filesystem::is_regular_file(download_preview, entry_ec))
+            if (boost::filesystem::is_regular_file(AI::model_io_path(download_preview), entry_ec))
                 entry.preview_path = download_preview;
         }
         if (entry.reference_image_path.empty()) {
@@ -355,7 +358,7 @@ std::vector<ModelLibraryEntry> ModelLibraryRepository::read(
             ? generated.FormatISODate() + " " + generated.FormatISOTime()
             : _L("未知时间");
         entry_ec.clear();
-        const auto model_size = boost::filesystem::file_size(model_path, entry_ec);
+        const auto model_size = boost::filesystem::file_size(AI::model_io_path(model_path), entry_ec);
         const double megabytes = entry_ec ? 0.0 : double(model_size) / (1024.0 * 1024.0);
         entry.details = date + wxString::Format(_L(" · %.1f MB · "), megabytes) +
             (entry.use_printable_colors

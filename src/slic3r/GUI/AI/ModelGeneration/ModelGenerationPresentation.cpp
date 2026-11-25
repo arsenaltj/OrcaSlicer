@@ -1,3 +1,4 @@
+#include "slic3r/GUI/AI/Model/ModelFilePath.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "slic3r/GUI/AIModelGenerationHttpError.hpp"
 #include "ModelLibraryThumbnail.hpp"
@@ -210,7 +211,7 @@ boost::filesystem::path temp_path(const std::string& job_id, const std::string& 
     const boost::filesystem::path root = generated_models_root();
     const boost::filesystem::path downloads = root / "downloads";
     boost::system::error_code ec;
-    boost::filesystem::create_directories(downloads, ec);
+    boost::filesystem::create_directories(AI::model_io_path(downloads), ec);
     return downloads / (std::string(GENERATED_MODEL_PREFIX) + job_id + "." + extension);
 }
 
@@ -237,7 +238,7 @@ bool valid_provider_task_id(const std::string& value)
 
 nlohmann::json read_json(const boost::filesystem::path& path)
 {
-    boost::filesystem::ifstream stream(path);
+    boost::filesystem::ifstream stream(AI::model_io_path(path));
     if (!stream)
         return {};
     return nlohmann::json::parse(stream, nullptr, false);
@@ -245,7 +246,7 @@ nlohmann::json read_json(const boost::filesystem::path& path)
 
 bool write_json(const boost::filesystem::path& path, const nlohmann::json& value)
 {
-    boost::filesystem::ofstream stream(path);
+    boost::filesystem::ofstream stream(AI::model_io_path(path));
     if (!stream)
         return false;
     // Large face-run records must stay below the workbench's bounded reader.
@@ -263,7 +264,7 @@ bool write_json_preencoded(const boost::filesystem::path& path, const nlohmann::
     if (!object.is_object()) return false;
     for (const auto& item : encoded)
         if (object.contains(item.first) || item.second.empty()) return false;
-    boost::filesystem::ofstream stream(path);
+    boost::filesystem::ofstream stream(AI::model_io_path(path));
     if (!stream) return false;
     stream << '{';
     bool first = true;
@@ -307,8 +308,8 @@ bool path_is_inside(const boost::filesystem::path& root, const boost::filesystem
 {
     boost::system::error_code root_ec;
     boost::system::error_code candidate_ec;
-    const boost::filesystem::path canonical_root = boost::filesystem::canonical(root, root_ec);
-    const boost::filesystem::path canonical_candidate = boost::filesystem::canonical(candidate, candidate_ec);
+    const boost::filesystem::path canonical_root = AI::canonical_model_path(root, root_ec);
+    const boost::filesystem::path canonical_candidate = AI::canonical_model_path(candidate, candidate_ec);
     if (root_ec || candidate_ec)
         return false;
 

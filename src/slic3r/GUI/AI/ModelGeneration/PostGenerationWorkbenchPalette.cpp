@@ -5,6 +5,7 @@
 #include "BeautyWorkbenchTransactionController.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "WorkbenchStyle.hpp"
+#include "slic3r/GUI/ColorPickerDialog.hpp"
 #include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include "slic3r/GUI/Plater.hpp"
@@ -12,45 +13,21 @@
 #include "slic3r/GUI/PresetComboBoxes.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaPrintPaletteSnapshot.hpp"
+#include "slic3r/GUI/Presentation/UiRuntime.hpp"
 #include <wx/display.h>
 #include <wx/menu.h>
 #include <wx/sizer.h>
+#include <wx/utils.h>
 #include <wx/weakref.h>
 #include <wx/wupdlock.h>
 #include <wx/wrapsizer.h>
 #include <boost/filesystem/fstream.hpp>
 #include <cctype>
+#include <utility>
 
 namespace Slic3r::GUI {
 
-void ModelPreviewColorControls::show_workbench_palette_details(wxWindow* owner)
-{
-    if (!m_workbench_editable || !workbench_palette_details_available()) return;
-
-    WorkbenchFloatingCard dialog(owner);
-    const auto title = _L("色卡详情");
-    dialog.SetTitle(title);
-    dialog.SetFont(owner->GetFont());
-    auto* root = new wxBoxSizer(wxVERTICAL);
-    auto* header = new wxBoxSizer(wxHORIZONTAL);
-    auto* caption = new WorkbenchStaticText(&dialog, wxID_ANY, title);
-    caption->SetFont(wxGetApp().bold_font());
-    caption->SetForegroundColour(wxColour(235, 235, 235));
-    header->Add(caption, 1, wxALIGN_CENTER_VERTICAL);
-    auto* reset = workbench_button(&dialog, _L("重置试色"));
-    header->Add(reset, 0);
-    root->Add(header, 0, wxEXPAND | wxALL, dialog.FromDIP(12));
-
-    auto* scroll = new WorkbenchScrolledWindow(&dialog, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
-    scroll->SetBackgroundColour(dialog.GetBackgroundColour());
-    auto* list = new wxBoxSizer(wxVERTICAL);
-    scroll->SetSizer(list);
-    root->Add(scroll, 1, wxEXPAND | wxLEFT | wxRIGHT, dialog.FromDIP(12));
-    auto* done = workbench_button(&dialog, _L("完成"));
-    done->Bind(wxEVT_BUTTON, [&dialog](wxCommandEvent&) { dialog.EndModal(wxID_OK); });
-    root->Add(done, 0, wxALIGN_RIGHT | wxALL, dialog.FromDIP(12));
-    dialog.SetSizer(root);
-
+struct ModelPreviewColorControls::PaletteDetails {
     struct Row {
         wxPanel* panel;
         wxPanel* chip;
@@ -58,113 +35,661 @@ void ModelPreviewColorControls::show_workbench_palette_details(wxWindow* owner)
         WorkbenchStaticText* label;
         WorkbenchSwitch* keep;
     };
-    std::array<Row, PreviewPalette::max_preview_colors> rows;
-    for (auto& row : rows) {
-        row.panel = new wxPanel(scroll, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxCLIP_CHILDREN);
-        row.panel->SetName("ai_content_color");
-        row.panel->SetBackgroundColour(wxColour(38, 38, 42));
-        auto* line = new wxBoxSizer(wxHORIZONTAL);
-        row.chip = new wxPanel(row.panel, wxID_ANY);
-        row.chip->SetName("ai_content_color");
-        row.hex = new WorkbenchStaticText(row.panel, wxID_ANY, wxEmptyString);
-        row.hex->SetForegroundColour(wxColour(235, 235, 235));
-        row.label = new WorkbenchStaticText(row.panel, wxID_ANY, _L("保留"));
-        row.label->SetForegroundColour(wxColour(200, 200, 204));
-        row.keep = new WorkbenchSwitch(row.panel, _L("保留"));
-        line->Add(row.chip, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, dialog.FromDIP(8));
-        line->Add(row.hex, 1, wxALIGN_CENTER_VERTICAL);
-        line->Add(row.label, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, dialog.FromDIP(4));
-        line->Add(row.keep, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, dialog.FromDIP(6));
-        row.panel->SetSizer(line);
-        list->Add(row.panel, 0, wxEXPAND | wxBOTTOM, dialog.FromDIP(4));
+
+    explicit PaletteDetails(wxWindow* owner)
+        : anchor(owner), window(new WorkbenchFloatingCard(wxGetTopLevelParent(owner)))
+    {
+        auto* dialog = window.get();
+        const auto title = _L("色卡详情");
+        dialog->SetTitle(title);
+        dialog->SetFont(owner->GetFont());
+        root = new wxBoxSizer(wxVERTICAL);
+        auto* header = new wxPanel(dialog, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
+        header->SetName("ai_content_color");
+        header->SetBackgroundColour(dialog->GetBackgroundColour());
+        auto* header_line = new wxBoxSizer(wxHORIZONTAL);
+        auto* caption = new WorkbenchLabel(header, title);
+        caption->SetFont(wxGetApp().bold_font());
+        caption->SetForegroundColour(wxColour(235, 235, 235));
+        reset = workbench_button(header, _L("重置试色"));
+        header_line->Add(caption, 1, wxALIGN_CENTER_VERTICAL);
+        header_line->Add(reset, 0);
+        header->SetSizer(header_line);
+        root->Add(header, 0, wxEXPAND | wxALL);
+
+        for (wxWindow* handle : {static_cast<wxWindow*>(header), static_cast<wxWindow*>(caption)}) {
+            handle->SetCursor(wxCursor(wxCURSOR_SIZING));
+            handle->Bind(wxEVT_LEFT_DOWN, [this, handle](wxMouseEvent& event) {
+                if (drag_handle || !window) return;
+                drag_offset = handle->ClientToScreen(event.GetPosition()) - window->GetPosition();
+                drag_handle = handle;
+                handle->CaptureMouse();
+            });
+            handle->Bind(wxEVT_MOTION, [this, handle](wxMouseEvent&) {
+                if (drag_handle == handle && handle->HasCapture()) move_with_pointer();
+            });
+            handle->Bind(wxEVT_LEFT_UP, [this, handle](wxMouseEvent&) {
+                if (drag_handle != handle) return;
+                move_with_pointer();
+                end_drag();
+            });
+            handle->Bind(wxEVT_MOUSE_CAPTURE_LOST, [this](wxMouseCaptureLostEvent&) {
+                drag_handle = nullptr;
+            });
+        }
+
+        scroll = new WorkbenchScrolledWindow(dialog, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
+        scroll->SetBackgroundColour(dialog->GetBackgroundColour());
+        list = new wxBoxSizer(wxVERTICAL);
+        scroll->SetSizer(list);
+        root->Add(scroll, 1, wxEXPAND | wxLEFT | wxRIGHT);
+        auto* footer = new wxBoxSizer(wxHORIZONTAL);
+        status = new WorkbenchLabel(dialog);
+        status->SetForegroundColour(wxColour(185, 185, 190));
+        done = workbench_button(dialog, _L("完成"));
+        footer->Add(status, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, dialog->FromDIP(8));
+        footer->Add(done, 0, wxALIGN_CENTER_VERTICAL);
+        root->Add(footer, 0, wxEXPAND | wxALL);
+        dialog->SetSizer(root);
+
+        for (auto& row : rows) {
+            row.panel = new wxPanel(scroll, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxCLIP_CHILDREN);
+            row.panel->SetName("ai_content_color");
+            row.panel->SetBackgroundColour(wxColour(38, 38, 42));
+            auto* line = new wxBoxSizer(wxHORIZONTAL);
+            row.chip = new wxPanel(row.panel, wxID_ANY);
+            row.chip->SetName("ai_content_color");
+            row.chip->SetBackgroundStyle(wxBG_STYLE_PAINT);
+            row.chip->Bind(wxEVT_PAINT, [chip = row.chip](wxPaintEvent&) {
+                wxAutoBufferedPaintDC dc(chip);
+                dc.SetBackground(wxBrush(chip->GetBackgroundColour()));
+                dc.Clear();
+            });
+            row.hex = new WorkbenchStaticText(row.panel, wxID_ANY, wxEmptyString);
+            row.hex->SetForegroundColour(wxColour(235, 235, 235));
+            row.label = new WorkbenchStaticText(row.panel, wxID_ANY, _L("保留"));
+            row.label->SetForegroundColour(wxColour(200, 200, 204));
+            row.keep = new WorkbenchSwitch(row.panel, _L("保留"));
+            line->Add(row.chip, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, dialog->FromDIP(8));
+            line->Add(row.hex, 1, wxALIGN_CENTER_VERTICAL);
+            line->Add(row.label, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, dialog->FromDIP(4));
+            line->Add(row.keep, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, dialog->FromDIP(6));
+            row.panel->SetSizer(line);
+            list->Add(row.panel, 0, wxEXPAND | wxBOTTOM);
+            row.panel->Hide();
+        }
     }
 
-    const auto resize = [&] {
-        const int display = wxDisplay::GetFromWindow(dialog.IsShown() ? &dialog : wxGetTopLevelParent(owner));
-        const wxRect area = wxDisplay(display == wxNOT_FOUND ? 0 : display).GetClientArea();
+    wxRect display_area(int display = wxNOT_FOUND) const
+    {
+        if (display == wxNOT_FOUND)
+            display = wxDisplay::GetFromWindow(window->IsShown() ? window.get() : anchor.get());
+        return wxDisplay(display == wxNOT_FOUND ? 0 : display).GetClientArea();
+    }
+
+    void move_inside_display(wxPoint position, int display = wxNOT_FOUND)
+    {
+        const wxRect area = display_area(display);
+        const wxSize size = window->GetSize();
+        position.x = std::clamp(position.x, area.x, std::max(area.x, area.x + area.width - size.x));
+        position.y = std::clamp(position.y, area.y, std::max(area.y, area.y + area.height - size.y));
+        if (window->GetPosition() != position) window->Move(position);
+    }
+
+    void move_with_pointer()
+    {
+        if (!window) return;
+        const auto cursor = wxGetMousePosition();
+        move_inside_display(cursor - drag_offset, wxDisplay::GetFromPoint(cursor));
+    }
+
+    void end_drag()
+    {
+        auto* handle = std::exchange(drag_handle, nullptr);
+        if (handle && handle->HasCapture()) handle->ReleaseMouse();
+    }
+
+    void resize()
+    {
+        const wxRect area = display_area();
+        const auto* owner = window->GetParent();
+        const int host_height = owner ? owner->GetClientSize().y : area.height;
+        const int width = std::min(window->FromDIP(420), area.width);
+        status->SetLabel(notice);
+        status->Wrap(std::max(1, width - window->FromDIP(104)));
         scroll->SetMinSize(wxSize(0, 0));
         const int controls_height = root->CalcMin().y;
-        const int list_height = std::min(list->CalcMin().y, std::max(0, area.height * 3 / 4 - controls_height));
+        const int maximum_height = std::min(area.height,
+            std::max(window->FromDIP(240), host_height * 3 / 4));
+        const int list_height = std::min(list->CalcMin().y, std::max(0, maximum_height - controls_height));
         scroll->SetMinSize(wxSize(0, list_height));
-        const wxSize size(std::min(dialog.FromDIP(420), area.width), list_height + controls_height);
-        if (dialog.GetClientSize() != size)
-            dialog.SetClientSize(size);
-        dialog.Layout();
+        const wxSize size(width, list_height + controls_height);
+        const bool size_changed = window->GetClientSize() != size;
+        if (size_changed) window->SetClientSize(size);
+        window->Layout();
         scroll->FitInside();
-        apply_workbench_floating_card_shape(&dialog, 8, dialog.GetBackgroundColour());
-    };
-    const auto sync = [&] {
-        const auto& colors = workbench_palette_colors();
-        const bool show_keep = workbench_palette_source() == 0;
-        const auto* original = current_source() == 1 && workbench_printer_source ? workbench_printer_source() : nullptr;
+        if (size_changed || !window->IsShown())
+            apply_workbench_floating_card_shape(window.get(), 8, window->GetBackgroundColour());
+        if (window->IsShown()) move_inside_display(window->GetPosition());
+    }
+
+    void rescale()
+    {
+        if (!window || window->IsBeingDeleted()) return;
+        const int margin = window->FromDIP(12);
+        scroll->SetScrollRate(0, margin);
+        reset->SetMinSize(window->FromDIP(wxSize(92, 32)));
+        done->SetMinSize(window->FromDIP(wxSize(72, 32)));
+        for (auto* item : root->GetChildren()) item->SetBorder(margin);
+        for (const auto& row : rows) {
+            row.panel->SetMinSize(window->FromDIP(wxSize(-1, 36)));
+            row.chip->SetMinSize(window->FromDIP(wxSize(42, 22)));
+            row.keep->rescale_workbench();
+            list->GetItem(row.panel)->SetBorder(window->FromDIP(4));
+        }
+        resize();
+    }
+
+    void position_initial()
+    {
+        const auto* owner = window->GetParent();
+        const wxRect bounds = owner ? owner->GetScreenRect() : anchor->GetScreenRect();
+        const int margin = window->FromDIP(16);
+        move_inside_display(wxPoint(bounds.GetRight() + 1 - window->GetSize().x - margin,
+            anchor->GetScreenRect().y + margin));
+    }
+
+    void show_colors(const std::vector<Color>& colors, bool show_keep, bool enable_keep, bool allow_edit,
+        const PreviewPalette::RetainedRows& locks, const wxString& message)
+    {
+        bool layout_changed = notice != message;
+        notice = message;
+        if (editable != allow_edit) {
+            editable = allow_edit;
+            for (const auto& row : rows) {
+                for (auto* control : {static_cast<wxWindow*>(row.chip), static_cast<wxWindow*>(row.hex)}) {
+                    control->SetCursor(editable ? wxCursor(wxCURSOR_HAND) : wxNullCursor);
+                    control->SetToolTip(editable ? _L("修改试色颜色") : wxEmptyString);
+                }
+            }
+        }
         for (size_t index = 0; index < rows.size(); ++index) {
             const auto& row = rows[index];
-            row.panel->Show(index < colors.size());
+            layout_changed |= row.panel->Show(index < colors.size());
             if (index >= colors.size()) continue;
             const auto color = wx_color(colors[index]);
+            if (row.chip->GetBackgroundColour() != color) {
+                row.chip->SetBackgroundColour(color);
+                row.chip->Refresh(false);
+            }
             const auto hex = color.GetAsString(wxC2S_HTML_SYNTAX);
-            row.chip->SetBackgroundColour(color);
-            row.chip->Refresh(false);
-            row.hex->SetLabel(hex);
-            row.label->Show(show_keep);
-            row.keep->Show(show_keep);
-            if (show_keep) {
+            if (row.hex->GetLabel() != hex) {
+                row.hex->SetLabel(hex);
                 const auto label = wxString::Format(_L("保留颜色 %s"), hex);
                 row.keep->SetName(label);
                 row.keep->SetToolTip(label);
-                row.keep->SetValue(original ? original->locks[index] : m_locks[index]->GetValue());
             }
-            row.panel->Layout();
+            const bool row_changed = row.label->Show(show_keep);
+            row.keep->Show(show_keep);
+            if (show_keep) {
+                if (row.keep->GetValue() != locks[index]) row.keep->SetValue(locks[index]);
+                if (row.keep->IsEnabled() != enable_keep) row.keep->Enable(enable_keep);
+            }
+            if (row_changed) row.panel->Layout();
         }
-        resize();
-    };
-    const auto rescale = [&] {
-        scroll->SetScrollRate(0, dialog.FromDIP(12));
-        reset->SetMinSize(dialog.FromDIP(wxSize(92, 32)));
-        done->SetMinSize(dialog.FromDIP(wxSize(72, 32)));
-        root->GetItem(header)->SetBorder(dialog.FromDIP(12));
-        root->GetItem(scroll)->SetBorder(dialog.FromDIP(12));
-        root->GetItem(done)->SetBorder(dialog.FromDIP(12));
-        for (const auto& row : rows) {
-            row.panel->SetMinSize(dialog.FromDIP(wxSize(-1, 36)));
-            row.chip->SetMinSize(dialog.FromDIP(wxSize(42, 22)));
-            row.keep->rescale_workbench();
-            list->GetItem(row.panel)->SetBorder(dialog.FromDIP(4));
-        }
-        sync();
-    };
+        if (layout_changed) resize();
+    }
 
-    const auto histogram = m_histogram;
-    const auto can_edit = [this, &histogram] {
-        return m_workbench_editable && m_histogram == histogram && workbench_palette_details_available();
+    wxWeakRef<wxWindow> anchor;
+    wxWeakRef<WorkbenchFloatingCard> window;
+    wxWindow* drag_handle {nullptr};
+    WorkbenchScrolledWindow* scroll;
+    wxBoxSizer* root;
+    wxBoxSizer* list;
+    WorkbenchLabel* status;
+    WorkbenchButton* reset;
+    WorkbenchButton* done;
+    std::array<Row, PreviewPalette::max_preview_colors> rows;
+    wxPoint drag_offset;
+    wxString notice;
+    bool editable {false};
+    bool picker_open {false};
+};
+
+ModelPreviewColorControls::~ModelPreviewColorControls()
+{
+    cancel_workbench_count();
+    dismiss_workbench_palette_details();
+}
+
+void ModelPreviewColorControls::show_workbench_palette_details(wxWindow* owner)
+{
+    if (!m_workbench_editable || !workbench_palette_details_available() || !owner->IsShownOnScreen()) return;
+    if (m_palette_details && m_palette_details->window) {
+        m_palette_details->window->Raise();
+        return;
+    }
+
+    auto details = m_palette_details = std::make_shared<PaletteDetails>(owner);
+    auto* dialog = details->window.get();
+    wxWeakRef<ModelPreviewColorControls> weak(this);
+    const auto close = [weak, details] {
+        if (weak && weak->m_palette_details == details) weak->finish_workbench_palette_details();
     };
-    for (size_t index = 0; index < rows.size(); ++index) {
-        auto* keep = rows[index].keep;
-        keep->Bind(wxEVT_TOGGLEBUTTON, [this, index, keep, &can_edit](wxCommandEvent& event) {
-            if (!can_edit() || workbench_palette_source() != 0 || index >= workbench_palette_colors().size()) {
+    details->done->Bind(wxEVT_BUTTON, [close](wxCommandEvent&) { close(); });
+    dialog->Bind(wxEVT_CLOSE_WINDOW, [close](wxCloseEvent&) { close(); });
+    dialog->Bind(wxEVT_CHAR_HOOK, &ModelPreviewColorControls::on_workbench_palette_key, this);
+    if (auto* host = dialog->GetParent())
+        host->Bind(wxEVT_CHAR_HOOK, &ModelPreviewColorControls::on_workbench_palette_key, this);
+    dialog->Bind(wxEVT_DPI_CHANGED, [details](wxDPIChangedEvent& event) {
+        event.Skip();
+        if (details->window) details->window->CallAfter([details] { details->rescale(); });
+    });
+
+    for (size_t index = 0; index < details->rows.size(); ++index) {
+        const auto& row = details->rows[index];
+        for (auto* control : {static_cast<wxWindow*>(row.chip), static_cast<wxWindow*>(row.hex)}) {
+            control->Bind(wxEVT_LEFT_UP, [weak, details, index, anchor = row.chip](wxMouseEvent& event) {
+                if (weak && weak->m_palette_details == details && details->editable)
+                    weak->edit_workbench_palette_color(index, anchor);
+                else
+                    event.Skip();
+            });
+        }
+        auto* keep = row.keep;
+        keep->Bind(wxEVT_TOGGLEBUTTON, [weak, details, index, keep](wxCommandEvent& event) {
+            const int source = weak ? weak->workbench_palette_source() : -1;
+            if (!weak || weak->m_palette_details != details || !weak->m_workbench_editable ||
+                (source != 0 && source != 2) || !weak->workbench_count_editable() ||
+                index >= weak->workbench_palette_colors().size()) {
                 keep->SetValue(!event.IsChecked());
                 return;
             }
-            auto* original = current_source() == 1 && workbench_printer_source ? workbench_printer_source() : nullptr;
-            if (original) original->locks[index] = event.IsChecked();
-            else m_locks[index]->SetValue(event.IsChecked());
-            keep->SetValue(event.IsChecked());
+            const auto pending = weak->m_workbench_count_requests.pending()
+                ? weak->m_workbench_count_requests.latest() : std::nullopt;
+            if (pending && pending->kind == WorkbenchPaletteCountRequests::Kind::Reset) {
+                keep->SetValue(!event.IsChecked());
+                return;
+            }
+            weak->cancel_workbench_count();
+            const bool checked = event.IsChecked();
+            auto* original = weak->current_source() == 1 && weak->workbench_printer_source
+                ? weak->workbench_printer_source() : nullptr;
+            if (original) original->locks[index] = checked;
+            else weak->m_locks[index]->SetValue(checked);
+            // A native click changes GetValue() before dispatch, but the painted toggle still has the old bitmap.
+            keep->SetValue(checked);
+            if (pending) weak->request_workbench_count(pending->count, true);
+            weak->sync_workbench_count_controls();
+            weak->sync_workbench_palette_details();
         });
     }
-    reset->Bind(wxEVT_BUTTON, [this, &can_edit, &sync, scroll](wxCommandEvent&) {
-        if (!can_edit()) return;
-        reset_trial();
-        scroll->Scroll(0, 0);
-        sync();
+    details->reset->Bind(wxEVT_BUTTON, [weak, details](wxCommandEvent&) {
+        if (!weak || weak->m_palette_details != details || !weak->m_workbench_editable) return;
+        weak->reset_workbench_trial();
+        if (weak->m_palette_details == details) details->scroll->Scroll(0, 0);
     });
-    dialog.Bind(wxEVT_CHAR_HOOK, [&dialog](wxKeyEvent& event) {
-        if (event.GetKeyCode() == WXK_ESCAPE) dialog.EndModal(wxID_CANCEL);
-        else event.Skip();
-    });
-    dialog.Bind(wxEVT_DPI_CHANGED, [&rescale](wxDPIChangedEvent&) { rescale(); });
-    rescale();
-    dialog.CenterOnParent();
-    dialog.ShowModal();
+
+    sync_workbench_palette_details();
+    details->rescale();
+    details->position_initial();
+    dialog->Show();
+}
+
+void ModelPreviewColorControls::present_workbench_palette_details()
+{
+    auto* dialog = m_palette_details ? m_palette_details->window.get() : nullptr;
+    if (!dialog || !dialog->IsShownOnScreen()) return;
+#ifdef __WXMSW__
+    // Swatches use their native background, which must be erased and repainted on restore.
+    ::RedrawWindow(dialog->GetHandle(), nullptr, nullptr,
+        RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+#else
+    dialog->Refresh();
+    dialog->Update();
+#endif
+}
+
+void ModelPreviewColorControls::dismiss_workbench_palette_details()
+{
+    auto details = std::move(m_palette_details);
+    if (!details || !details->window || details->window->IsBeingDeleted()) return;
+    auto* dialog = details->window.get();
+    if (auto* host = dialog->GetParent())
+        host->Unbind(wxEVT_CHAR_HOOK, &ModelPreviewColorControls::on_workbench_palette_key, this);
+    dialog->Unbind(wxEVT_CHAR_HOOK, &ModelPreviewColorControls::on_workbench_palette_key, this);
+    details->end_drag();
+    details->window->Hide();
+    details->window->Destroy();
+}
+
+void ModelPreviewColorControls::finish_workbench_palette_details()
+{
+    if (m_workbench_count_requests.tracking()) {
+        cancel_workbench_count();
+        sync_workbench_count_controls();
+    }
+    dismiss_workbench_palette_details();
+}
+
+void ModelPreviewColorControls::on_workbench_palette_key(wxKeyEvent& event)
+{
+    if (m_palette_details && !m_palette_details->picker_open && event.GetKeyCode() == WXK_ESCAPE)
+        finish_workbench_palette_details();
+    else event.Skip();
+}
+
+void ModelPreviewColorControls::close_workbench_palette_details()
+{
+    if (!m_palette_details && !m_workbench_count_requests.latest()) return;
+    cancel_workbench_count();
+    dismiss_workbench_palette_details();
+    sync_workbench_count_controls();
+}
+
+void ModelPreviewColorControls::sync_workbench_palette_details()
+{
+    if (!m_palette_details || !m_palette_details->window) return;
+    const auto* original = current_source() == 1 && workbench_printer_source ? workbench_printer_source() : nullptr;
+    PreviewPalette::RetainedRows locks {};
+    for (size_t index = 0; index < locks.size(); ++index)
+        locks[index] = original ? original->locks[index] : m_locks[index]->GetValue();
+    const int source = workbench_palette_source();
+    const bool allow_edit = m_workbench_editable && source == 2 && (current_source() == 2 || original);
+    const bool show_keep = (source == 0 || source == 2) && workbench_count_editable();
+    const bool pending = m_workbench_count_requests.pending();
+    const bool resetting = pending &&
+        m_workbench_count_requests.latest()->kind == WorkbenchPaletteCountRequests::Kind::Reset;
+    wxString status = m_notice;
+    if (pending)
+        status = resetting ? _L("正在恢复默认配色…") : _L("正在更新配色…");
+    m_palette_details->show_colors(workbench_palette_colors(), show_keep, m_workbench_editable && !resetting,
+        allow_edit && !resetting, locks, status);
+}
+
+void ModelPreviewColorControls::edit_workbench_palette_color(size_t index, wxWindow* anchor)
+{
+    auto details = m_palette_details;
+    if (!details || !details->window || details->picker_open || !details->editable) return;
+    const auto colors = workbench_palette_colors();
+    if (index >= colors.size()) return;
+    const int source = current_source();
+    const auto* original = source == 1 && workbench_printer_source ? workbench_printer_source() : nullptr;
+    const auto mapping = original ? original->mapping_colors : m_mapping_colors;
+    const auto slots = original ? original->source_to_target_slot : m_color_card_remap.source_to_target_slot;
+    const auto& color = colors[index];
+
+    cancel_workbench_count();
+    sync_workbench_count_controls();
+    sync_workbench_palette_details();
+    const auto geometry = m_geometry_id;
+    const auto histogram = m_histogram;
+    wxWeakRef<ModelPreviewColorControls> weak(this);
+    // The frame outlives the modeless card if the model changes while the picker is open.
+    details->picker_open = true;
+    ColorPickerDialog picker(details->window->GetParent(), ColorRGBA(color[0], color[1], color[2], 1.f),
+                             {}, false, anchor);
+    const int answer = picker.ShowModal();
+    details->picker_open = false;
+    if (answer != wxID_OK || !picker.selection() || !weak || weak->m_palette_details != details ||
+        !weak->m_workbench_editable || weak->m_geometry_id != geometry || weak->m_histogram != histogram ||
+        weak->current_source() != source || weak->workbench_palette_source() != 2 ||
+        weak->workbench_palette_colors() != colors) return;
+
+    const auto* current = source == 1 && weak->workbench_printer_source ? weak->workbench_printer_source() : nullptr;
+    if (source == 1 && !current) return;
+    if ((current ? current->mapping_colors : weak->m_mapping_colors) != mapping ||
+        (current ? current->source_to_target_slot : weak->m_color_card_remap.source_to_target_slot) != slots) return;
+    const auto* replacement = std::get_if<ColorRGBA>(&*picker.selection());
+    if (!replacement || !weak->restore_workbench_count_source()) return;
+    weak->apply_trial_color(index, {replacement->r(), replacement->g(), replacement->b()});
+}
+
+void ModelPreviewColorControls::apply_trial_color(size_t index, const Color& replacement)
+{
+    if (showing_card_slots()) {
+        if (index >= m_color_card_palette.size()) return;
+        const auto& slots = m_color_card_remap.source_to_target_slot;
+        const auto source = std::find(slots.begin(), slots.end(), index);
+        if (source != slots.end() && !PreviewPalette::replace_trial_target_color(
+                m_colors, m_mapping_colors, size_t(source - slots.begin()), replacement)) return;
+        m_color_card_palette[index] = m_color_card_remap.target_palette[index] = replacement;
+        m_notice = _L("已更新试色颜色，保留 AI 配色区域。");
+    } else if (semantic_optimization()) {
+        // Legacy suite previews associate targets with a semantic region palette.
+        const auto original = semantic_palette();
+        if (index >= original.size()) return;
+        m_semantic_mapping = semantic_mapping_palette();
+        m_semantic_colors = original;
+        m_semantic_colors[index] = replacement;
+        for (auto& target : m_colors)
+            if (target == original[index]) target = replacement;
+        m_notice = _L("已更新试色颜色，保留区域对应关系。");
+    } else {
+        if (!PreviewPalette::replace_trial_target_color(m_colors, m_mapping_colors, index, replacement)) return;
+        if (m_semantic_colors.size() != m_colors.size()) m_semantic_colors = m_colors;
+        if (m_semantic_mapping.empty()) m_semantic_mapping = m_mapping_colors;
+        m_semantic_colors[index] = replacement;
+        m_notice = _L("已更新试色颜色，保留区域对应关系。");
+    }
+    sync_active_palette_state();
+    set_source_internal(2);
+    m_last_source = 2;
+    m_manual_count = m_count->GetValue();
+    m_enabled = true;
+    changed();
+}
+
+void ModelPreviewColorControls::reset_workbench_trial()
+{
+    cancel_workbench_count();
+    if (!m_histogram) {
+        m_notice = _L("当前模型缺少可匹配的原色，已保留当前试色。");
+        update();
+        return;
+    }
+    m_workbench_count_seed.emplace();
+    m_workbench_count_seed->geometry_id = m_geometry_id;
+    m_workbench_count_seed->automatic = true;
+    m_workbench_count_requests.request(int(PreviewPalette::initial_trial_color_count()), true,
+        WorkbenchPaletteCountRequests::Kind::Reset);
+    sync_workbench_count_controls();
+    sync_workbench_palette_details();
+    schedule_workbench_count();
+}
+
+bool ModelPreviewColorControls::restore_workbench_count_source()
+{
+    if (current_source() != 1) return true;
+    const auto* original = workbench_printer_source ? workbench_printer_source() : nullptr;
+    if (!original || !original->suite_id.empty()) return false;
+    const State saved = *original;
+    restore(saved);
+    if (on_source_changed && current_source() != 1) on_source_changed(1, current_source());
+    return current_source() != 1;
+}
+
+WorkbenchPaletteCountSeed ModelPreviewColorControls::capture_workbench_count_seed() const
+{
+    WorkbenchPaletteCountSeed seed;
+    seed.automatic = current_source() == 0;
+    seed.fidelity = m_fidelity->GetValue();
+    seed.geometry_id = m_geometry_id;
+    seed.colors = m_colors;
+    seed.mapping = m_mapping_colors;
+    seed.semantic_colors = m_semantic_colors;
+    seed.semantic_mapping = m_semantic_mapping;
+    for (size_t index = 0; index < seed.locks.size(); ++index) seed.locks[index] = m_locks[index]->GetValue();
+    if (current_source() == 2 && !m_color_card_palette.empty())
+        use_workbench_card_rows(seed, m_color_card_remap);
+    return seed;
+}
+
+bool ModelPreviewColorControls::apply_workbench_count(WorkbenchPaletteCountResult result)
+{
+    if (result.available_colors) {
+        const int retained = std::clamp(m_automatic_count, 1, int(PreviewPalette::max_preview_colors));
+        m_count->SetValue(retained);
+        m_notice = wxString::Format(_L("原始配色证据只能形成 %u 个可区分颜色，已保留此前 %d 色预览。"),
+            unsigned(*result.available_colors), retained);
+        return false;
+    }
+    const auto lock_notice = _L("已达到保留色数下限。取消保留后可继续减少。");
+    if (m_notice == lock_notice) m_notice.clear();
+    m_suite_region_binding.reset();
+    m_color_card_remap = {};
+    m_color_card_palette.clear();
+    const int count = int(result.palette.colors.size());
+    m_count->SetValue(count);
+    for (size_t index = 0; index < result.palette.locks.size(); ++index)
+        m_locks[index]->SetValue(result.palette.locks[index]);
+    if (result.limited_by_locks) m_notice = lock_notice;
+    if (result.palette.automatic) {
+        m_suggestion_colors = result.palette.colors;
+        m_semantic_roles.clear();
+        m_semantic_card.clear();
+        if (result.used_native_basis && !result.limited_by_locks) {
+            m_notice = count == result.requested_count
+                ? wxString::Format(_L("已切换到 %d 色原生原子分区映射。"), count)
+                : wxString::Format(_L("原生原子分区只有 %u 个可区分颜色，已使用实际色数。"), unsigned(count));
+        }
+    } else if (m_semantic_colors.size() != size_t(count) && m_semantic_card.empty()) {
+        m_semantic_roles.clear();
+    }
+    m_automatic_basis = std::move(result.basis);
+    m_colors = std::move(result.palette.colors);
+    m_mapping_colors = std::move(result.palette.mapping);
+    m_semantic_colors = std::move(result.palette.semantic_colors);
+    m_semantic_mapping = std::move(result.palette.semantic_mapping);
+    return true;
+}
+
+void ModelPreviewColorControls::sync_workbench_count_controls()
+{
+    if (!m_workbench_count) return;
+    const auto& colors = workbench_palette_colors();
+    const int actual = colors.empty() ? m_count->GetValue() : int(colors.size());
+    const bool pending = m_workbench_count_requests.pending();
+    const auto& latest = m_workbench_count_requests.latest();
+    const int number = pending ? latest->count : actual;
+    const int slider = pending || m_workbench_count_requests.tracking() ? latest->count : actual;
+    const wxString label = pending || colors.empty() ? _L("目标色数") : _L("当前色数");
+    if (m_workbench_count_label->GetLabel() != label) {
+        m_workbench_count_label->SetLabel(label);
+        m_workbench_count_row->Layout();
+    }
+    if (m_workbench_count->GetValue() != slider) m_workbench_count->SetValue(slider);
+    m_workbench_count_input->SetValue(number);
+}
+
+void ModelPreviewColorControls::cancel_workbench_count()
+{
+    if (!m_workbench_count_requests.latest()) return;
+    m_workbench_count_timer.Stop();
+    m_workbench_count_scope.cancel();
+    m_workbench_count_requests.invalidate();
+    m_workbench_count_seed.reset();
+}
+
+void ModelPreviewColorControls::request_workbench_count(int value, bool final)
+{
+    if (!m_workbench_editable || !m_histogram || honor_suite_selected() || !workbench_count_editable()) return;
+    if (!m_palette_details && !m_workbench_count_requests.pending()) {
+        if (final) set_workbench_count(value);
+        return;
+    }
+    if (!restore_workbench_count_source()) return;
+    value = std::clamp(value, 1, int(PreviewPalette::max_preview_colors));
+    if (!m_workbench_count_requests.tracking() && !m_workbench_count_requests.pending() &&
+        value == m_count->GetValue() && !m_colors.empty()) {
+        sync_workbench_count_controls();
+        return;
+    }
+    if (!m_workbench_count_seed || !m_workbench_count_requests.tracking()) {
+        const auto& latest = m_workbench_count_requests.latest();
+        if (!latest || latest->kind != WorkbenchPaletteCountRequests::Kind::Adjust ||
+            latest->count != value || !final || !m_workbench_count_seed)
+            m_workbench_count_seed = capture_workbench_count_seed();
+    }
+    m_workbench_count_requests.request(value, final);
+    sync_workbench_count_controls();
+    sync_workbench_palette_details();
+    schedule_workbench_count();
+}
+
+void ModelPreviewColorControls::schedule_workbench_count()
+{
+    const auto now = WorkbenchPaletteCountRequests::Clock::now();
+    const auto delay = m_workbench_count_requests.wait(now);
+    if (!delay) return;
+    if (*delay > std::chrono::milliseconds::zero()) {
+        m_workbench_count_timer.StartOnce(int(delay->count()));
+        return;
+    }
+    m_workbench_count_timer.Stop();
+    const auto request = *m_workbench_count_requests.start(now);
+    const bool reset = request.kind == WorkbenchPaletteCountRequests::Kind::Reset;
+    const auto histogram = m_histogram;
+    const auto units = m_automatic_units;
+    const auto seed = *m_workbench_count_seed;
+    const auto source = current_source();
+    const auto compute_native = seed.automatic && capture_native_palette_basis
+        ? capture_native_palette_basis() : WorkbenchNativePaletteBasis{};
+    const auto initial = reset && m_initial_trial && m_initial_trial->default_ai_palette
+        ? m_initial_trial : nullptr;
+    const auto task = m_workbench_count_scope.begin(seed.geometry_id);
+    wxWeakRef<ModelPreviewColorControls> weak(this);
+    const auto complete = [weak, request, reset, histogram, source, task](
+        Presentation::TaskResult<WorkbenchPaletteCountResult> result) {
+        if (!weak) return;
+        const bool latest = weak->m_workbench_count_requests.complete(request);
+        if (latest && weak->m_workbench_count_scope.matches(task) &&
+            weak->m_workbench_editable && weak->m_histogram == histogram &&
+            weak->m_geometry_id == task.identity && weak->current_source() == source) {
+            weak->m_notice.clear();
+            if (reset && result.value) {
+                if (result.value->basis.valid()) {
+                    weak->set_source_internal(0);
+                    weak->m_last_source = 0;
+                    weak->m_fidelity->SetValue(true);
+                } else result.value.reset();
+            }
+            if (result.value && weak->apply_workbench_count(std::move(*result.value))) {
+                weak->sync_active_palette_state();
+                if (reset || source == 0) weak->m_automatic_count = weak->m_count->GetValue();
+                else if (source == 2) weak->m_manual_count = weak->m_count->GetValue();
+                weak->m_enabled = !weak->m_colors.empty();
+                if (reset) {
+                    weak->m_manual_count = weak->m_count->GetValue();
+                    if (weak->m_automatic_count < request.count)
+                        weak->m_notice = wxString::Format(
+                            _L("原始配色证据只能形成 %d 个可区分颜色，已应用实际色数。"), weak->m_automatic_count);
+                    if (source != 0 && weak->on_source_changed) weak->on_source_changed(source, 0);
+                }
+                weak->changed(true);
+                BOOST_LOG_TRIVIAL(info) << "[WorkbenchPaletteCount] count=" << weak->m_count->GetValue()
+                    << " tracking=" << weak->m_workbench_count_requests.tracking();
+            } else {
+                if (!result.value) {
+                    weak->m_notice = reset ? _L("默认配色匹配失败，请重试。") : _L("配色更新失败，请重试。");
+                    if (!weak->m_workbench_count_requests.tracking())
+                        weak->m_workbench_count_requests.invalidate();
+                }
+                weak->update();
+            }
+        }
+        if (!weak->m_workbench_count_requests.tracking() && !weak->m_workbench_count_requests.pending())
+            weak->m_workbench_count_seed.reset();
+        weak->schedule_workbench_count();
+    };
+    if (!Presentation::background_tasks().submit(task,
+            [seed, histogram, units, compute_native, request, reset, initial](const Presentation::TaskContext&) {
+                if (reset)
+                    return prepare_workbench_palette_reset(seed.geometry_id, *histogram, units.get(), compute_native,
+                        initial ? &initial->basis : nullptr);
+                return prepare_workbench_palette_count(seed, request.count, *histogram, units.get(), compute_native);
+            }, complete))
+        complete({});
 }
 
 namespace {

@@ -79,7 +79,10 @@ void ModelGenerationPanel::toggle_workbench_history()
     if (!m_workbench_editing) {
         update_workbench_history_visibility();
         if (m_workbench_history_panel->IsShown()) reveal_workbench_history();
-        else m_workbench_shell->Layout();
+        else {
+            m_workbench_shell->Layout();
+            static_cast<wxScrolledWindow*>(m_workbench_shell)->Scroll(0, -1);
+        }
         queue_workbench_surface_refresh();
         return;
     }
@@ -508,6 +511,7 @@ void ModelGenerationPanel::set_workbench_presented(bool presented)
     if (!active) {
         m_native_workbench_partition_retry.reset();
         finish_workbench_check_timing("presentation-left");
+        if (m_model_preview) m_model_preview->close_workbench_palette_details();
         if (m_model_preview) m_model_preview->observe_overlay_frame({});
         if (m_model_preview) m_model_preview->cancel_view_navigation();
         m_workbench_check_card_visible = false;
@@ -849,7 +853,8 @@ bool ModelGenerationPanel::prepare_workbench_import_request_async(AI::ModelImpor
             if (sequence != weak->m_sequence || path != weak->m_displayed_model_path ||
                 (prepared.files && !prepared.files->current()))
                 prepared.error = "模型或工程状态已变化，或正在执行其他处理任务。请完成当前操作后重新导入。";
-            if (prepared.source_changed) weak->fail_workbench_check(prepared.error);
+            if (prepared.source_changed)
+                weak->fail_workbench_check(prepared.error, WorkbenchCheckIssue::SourceChanged);
             if (prepared.portrait_changed && weak->m_beauty_controls) weak->m_beauty_controls->set_dirty(true);
             completion(std::move(prepared.request), std::move(prepared.error));
         }, Presentation::TaskPriority::Visible);

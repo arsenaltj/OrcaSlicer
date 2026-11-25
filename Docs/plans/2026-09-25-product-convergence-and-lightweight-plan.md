@@ -1,10 +1,114 @@
+<a id="mainline-bugfix-workbench-manual-retain-startup-20261125"></a>
+
+# MAINLINE-BUGFIX-001｜手动试色保留与启动首帧（2026-11-25）
+
+手动试色和 AI 配色共用保留开关及落位规则。减色时保留行携带目标色与源颜色映射，旧色卡按可见槽位迁移。已保留的行可以直接换色。历史重开恢复保存配色和保留状态，重置恢复默认六色 AI 配色并清除保留。
+
+Windows 首次显示主窗时，在最终客户区同步绘制加载页与工具栏，再解除 DWM 遮挡并关闭小启动图。带文件启动在发布工作区前等待目标视口提交首帧。DWM 不可用时先提交加载页，再显示其后的工作区。
+
+固定 Windows Release 已同步到原运行目录，237 项定向回归通过。小模型实测同色行、颜色保留上限和浮窗关闭后减色。狮子手办实测第六行随减色落到第四行，以及默认六色重置。200% 最大化与 125% 窄窗逐帧核对首帧，补验小启动图关闭、加载页最小化与恢复，以及本地文件启动。实窗使用本机 DWM，同次拖动内回拉由定向回归覆盖。[验收记录](/D:/TEST/artifacts/mainline-bugfix/evidence/workbench-manual-retain-startup-20261125/validation.json)
+
+本次集成提交以已合入 PR #85 的 `d8c2bfa7f4cf09fbbb15db9c562478e3bcc9e9cb` 为基线。提交范围包括下文的模型库四页、下载与原生导入，工作台修复及色卡，以及本节的启动首帧。集成基线与原本机验收基线的代码树一致。
+
+---
+
+<a id="mainline-bugfix-workbench-palette-picker-20261125"></a>
+
+# MAINLINE-BUGFIX-001｜色卡换色、六色重置与加载弹框（2026-11-25）
+
+「手动试色」可从色块和色值打开现有单色选择器，确认后按行更新目标色和预览，沿用当前区域映射。历史仍按保存配色打开。「重置试色」作废待处理的色数请求，切回默认六色 AI 配色，并清除试色保留状态。可区分颜色不足六种时显示实际色数。
+
+加载弹框在读取、验证和准备视口期间沿用操作开始时的源视口位置，主窗口移动和缩放时随客户区调整。历史打开和工作台导入共用这套定位。
+
+原目录 Windows Release 构建及 53 项定向回归通过。小模型从 16 色历史配色打开，换色更新选中区域，Esc 返回原位色卡。狮子手办从 7 色重置后，六个色值及顺序与基准一致。Windows 125% 的 894×700 窄窗复测选择器、滑杆和重置。载入狮子手办时，读取阶段和准备预览阶段的弹框位置一致。[验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-palette-picker-20261125/validation.json)
+
+---
+
+<a id="mainline-bugfix-workbench-palette-reset-20261125"></a>
+
+# MAINLINE-BUGFIX-001｜色卡重置与 Windows 任务栏（2026-11-25）
+
+保留开关在原点击中更新。减色时，保留色按原相对顺序落在最接近原位置的行。重置恢复首次导入或对应历史版本打开时的配色状态，包括来源、色数、色卡、保留状态、映射与三维预览。过期调色结果由现有请求校验丢弃。
+
+Windows 主窗口在应用工作区样式后设置任务栏样式、标题和 EXE 内嵌图标组。最小化恢复时，工作台浮窗重绘按钮及实际色块。窄窗关闭历史栏后回到左侧工具。
+
+固定 Windows Release 构建通过。色卡改动通过 625 项定向回归，窗口修正后复验 54 项相关用例。模型库网页 28 项通过。125% 的 901×747 实窗验证保留反馈、6→4 排序、初次导入与历史恢复、狮子手办恢复原色，以及恢复窗口和收起历史栏。200% 下通过原桌面验证入口重新启动，打开色卡时仍显示主窗口品牌图标。系统运行中切换比例时曾显示通用图标，重新启动后恢复。原运行目录仍被旧进程占用，桌面入口改用同一 checkout 的固定 Release 产物，沿用原工作目录和配置。[验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-palette-reset-20261125/validation.json)
+
+---
+
+<a id="mainline-bugfix-workbench-palette-20261125"></a>
+
+# MAINLINE-BUGFIX-001｜色卡详情与实时调色（2026-11-25）
+
+色卡详情沿用工作台浮层样式，打开靠右，从标题区域移动。窗口打开时可继续操作左侧色数滑杆。鼠标拖动中回显目标色数，调色计算保留最新输入，松手提交最终色数。计算结果核对模型与配色来源后，同时刷新试色和详情。
+
+手动试色在同一次拖动中根据起始配色恢复对应颜色。保留和重置会使旧计算失效。切换模型、离开工作台或开始检查修复时收起详情。
+
+固定 Windows Release 编译和 622 项定向回归通过。使用原配置核对小模型和 97.9 万面「狮子手办」，两者均记录到松手前应用配色。125% 的 891×699 窄窗验证标题拖动、长列表滚动、步进、保留、重置及完成或 Esc 关闭。历史切换会在保留过渡画面前关闭色卡。原运行目录仍有旧进程，本轮从固定 Release 产物启动实窗。验收后恢复了 200% 缩放。[实窗与构建记录](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-palette-live-20261125/validation.json)
+
+---
+
+<a id="mainline-bugfix-model-library-20261124"></a>
+
+# MAINLINE-BUGFIX-001｜模型库四页与下载交接（2026-11-24）
+
+`task/mainline-bugfix` 从 `e098a95028` 续接。按 Figma 的选中页签接入公共分类及个人活动，完成模型详情和相似推荐。列表筛选与卡片同区滚动，保留可见卡片位置。宽窗右栏滚动时保留三维视角，窄窗详情上下排列。
+
+已下载文件按模型、版本、文件及摘要恢复操作。下载按钮显示「已下载」并禁用，版本及附件从「版本与文件」选择。缺失原件可在详情重新下载。GLB/OBJ 走工作台和已有检查流程。3MF、STL、STEP/STP 的模型库入口采用默认几何导入选项，在页内显示可取消的读取进度。
+
+固定目录 Windows Release 已采用原配置启动。网页 27 项、原生 148 项通过，原生另有 1 项符号链接用例因环境跳过。实窗验证约 1445×860、906×695 和 785×695，覆盖列表滚动与追加、右栏滚动、画布缩放、版本隔离、3MF 直达切片、STL 首次下载和缺失恢复。GLB 已从详情进入工作台并通过模型检查。[验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/model-library-20261124/validation.json)
+
+读取中的实窗取消以及真实换号、上传、发表评论和关注写入待补验。两份实窗 3MF 样本均已进入切片准备，较大样本的文件读取约 1.2 秒。当前配置缺少已确认的测试账号。页内取消与登录代次隔离已有自动回归覆盖。
+
+下载进度改为右侧详情卡片内显示。已写入量与所选文件清单大小保留一位小数，校验、登记和结果留在当前详情。收到文件数据即重置计时，连续 20 秒没有数据时报告传输中断。同账号续期保留详情和预览，被中断的传输使用新凭证复核并重试一次，本地登记继续等待扫描。
+
+原固定目录与配置的 Windows 实窗完成 24.6 MB GLB 下载、窄窗对照、工作台打开、版本切换和 STL 缺失重下。网页 28 项和原生 183 项通过，另有 1 项环境跳过。
+
+后台续期实窗使用 50.6 MB OBJ。第一次传输持续写入约 95 秒，右栏显示 `22.4MB/50.6MB` 时续期。客户端自动重传一次，保留详情、已选预览图和推荐区，并在原处显示 `50.6MB/50.6MB` 与「下载完成」。原件摘要与登记一致。关闭并重开后仍显示「已下载」，工作台和导入入口可用。「牧濑 命运探知魔眼」V1 的对照保留了版本、右栏滚动位置和三维视角。GLB 和 OBJ 样本都已显示在工作台，后续模型检查报错。[下载反馈验收](D:/TEST/artifacts/mainline-bugfix/evidence/model-library-download-feedback-20261124/validation.json)
+
+Windows 125% 下复核两列列表的滚动与返回位置、窄窗推荐末项、三维缩放及操作入口，测试后恢复原 200%。「多彩小猫」和 15.3 MB 的「模型2」从详情进入切片准备，盘面显示模型。较大样本也经后台续期自动重传并登记。[实窗验收](D:/TEST/artifacts/mainline-bugfix/evidence/model-library-download-feedback-20261124/validation.json)
+
+工作台安全修复将候选 OBJ 和外观伴随文件写到模型根目录下的 `downloads`。以「狮子手办」为例，临时文件完整路径从 280 缩到 167 个字符。原配置实窗修复、复检、自动登记和历史重开均通过，原始 GLB、修复版本与外观载体的摘要分别与各自登记一致。定向原生回归 260 项通过，1 项因环境跳过。原运行文件仍被退出挂起的旧进程占用，实窗由固定 Release 构建产物启动并使用原工作目录和配置。本轮验收到工作台历史重开为止。[修复验收](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-repair-path-20261124/validation.json)
+
+后续将修复暂存移至应用现有的用户临时目录，普通和带颜色修复共用短文件名和原子发布。浮层及状态栏在修复阶段显示「高级修复进行中」。Windows 定向回归 345 项通过，含超过 260 字符的中文路径、GLB 和 OBJ、同卷和跨卷、取消、保存失败、重试及历史重开。
+
+采用原下载 GLB 的同摘要本地副本触发「狮子手办」实窗修复，`m.obj.partial` 路径实测 82 字符。新修复版本保存并从历史重开，原历史也重开显示「检查通过」。原件、修复版与外观载体的摘要均吻合。新版实窗使用固定 Release 构建产物、原工作目录及原配置。原运行目录的程序文件仍由旧进程占用。[实窗与回归记录](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-repair-short-staging-20261124/validation.json)
+
+后续在原运行目录同步已验收的 Release。退出挂起的旧 DLL 移到备份位置，原 EXE 的摘要与构建一致。运行文件清单、Python 环境和启动检查通过，新进程使用原配置，从历史重开本轮修复版并显示「检查通过」。[原目录启动记录](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-repair-short-staging-20261124/validation.json)
+
+检查修复详情复用「色卡详情」和「模型信息」的浮层样式。顶部、侧栏和详情共用简短状态，失败或取消时提示下一步。已提交的新版本显示修复前后面数，历史凭证显示当前面数。实窗复核「狮子手办」修复保存、历史重开、取消和失败，并确认 125% 窄窗可定位和关闭。最终 Release 通过 274 项原生回归和 28 项网页回归。旧进程仍触发运行目录更新检查，实窗使用固定 Release 产物及原工作目录和配置。[实窗和回归记录](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-repair-details-20261124/validation.json)
+
+模型库公开列表复测耗时 0.68–1.99 秒，基础详情 0.25–0.38 秒，两张 WebP 封面各 0.75 秒，一张 2.38 MB PNG 封面 15.54 秒。「狮子手办」实窗详情在 3.3 秒时仍在加载，到 5.1 秒已显示。客户端逐张请求封面，并在展示详情前串行等待浏览记录和互动统计。样本均返回 HTTP 200，线上网关的实际配置和日志待核对。[接口实测](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-repair-details-20261124/model-library-http.json) · [实窗耗时](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-repair-details-20261124/model-library-window-timings.json)
+
+「检查修复详情」在结果和面数下展示精简拓扑明细。异常按发现项显示计数，另列连通组件和自交状态。手动检查结束保留一句结论与「查看详情」入口。修复保存后展示新版本的复检结果，历史重开读取对应检查凭证。详情和问题面定位共同核对当前预览摘要。
+
+Windows Release 与 82 项定向回归通过。实窗验证重复面立方体从 13 面修复为 12 面并从历史重开。125% 缩放的 901×700 实窗显示多项异常与自交检测未完成，定位高亮和关闭均可用。最终 Release 从原配置重开「狮子手办」，手动重检和详情结果一致。系统缩放已恢复为 200%。[拓扑验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-topology-details-20261124/validation.json)
+
+---
+
+<a id="mainline-bugfix-workbench-round-base-20261124"></a>
+
+# MAINLINE-BUGFIX-001｜工作台底座和模型信息（2026-11-24）
+
+`task/mainline-bugfix` 从 `16b3108ad5` 续接。工作台预览与原生导入共用圆底座布局，保留主体几何和配色。3 mm 底座与主体搭接 0.2 mm，薄于 0.4 mm 时搭接主体高度的一半。组合范围用于取景、模型信息与打印空间校验。
+
+「模型信息」按三列展示 X、Y 和高度，另显示主体三角面数。底部使用「关闭」，也可按 Esc。耗材列表紧接按钮。禁用原因通过悬停查看，主动操作失败的原因显示在顶部，重试后清除。
+
+固定 Windows Release 与 304 项定向回归通过。实窗确认 40 mm 样本加底座后组合尺寸为 44.0 × 44.0 × 42.8 mm，0.2 mm 薄样本组合高度为 3.1 mm。带底座与无底座的 3MF 主体顶点和面级配色一致。实窗覆盖 192 DPI 和进程兼容模式提供的 96 DPI，故障测试确认提示在顶部且重试可恢复。桌面「Honor Forge 正式修复验证」已用原配置启动本版。 [验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-round-base-20261124/validation.json)
+
+本地提交 `e098a95028` 已推送至 `task/mainline-bugfix`。PR #85 以集成分支 `918c137399` 为基线，中文说明覆盖本次底座及模型信息、历史色卡与缩略图、工作台与切片视角、19 项 Nightly 回补和前景分割依赖下载。GitHub 确认可合并，已运行的远端检查均通过，原生切片在当前提交补测 602 项通过。团队候选构建处于停用状态，等待非作者复核。 [PR #85](https://github.com/arsenaltj/OrcaSlicer/pull/85) · [验证记录](D:/TEST/artifacts/mainline-bugfix/evidence/remote-pr-20261124/validation.json)
+
+---
+
 <a id="mainline-bugfix-integration-20261123"></a>
 
 # MAINLINE-BUGFIX-001｜同步团队切片工作台（2026-11-23）
 
-`task/mainline-bugfix` 先以 `d3ef60b5a8` 保存历史色卡、缩略图、加载与导航改动，再合入集成主线 `918c1373996aac8bc05c793c198eaa530c096b00`。主计划与短状态保留双方记录。
+`task/mainline-bugfix` 先以 `d3ef60b5a8` 保存历史色卡、缩略图、加载与导航改动，再以 `16b3108ad5` 合入集成主线 `918c1373996aac8bc05c793c198eaa530c096b00`。两份进度文档的冲突合并了双方记录。
 
-增量验证覆盖盘级工艺与塔位、试切与正式切片，以及本地工作台导入、拉手正面和导航。沿用固定 Windows Release 目录与桌面验证入口。
+固定目录 Windows Release 与 431 项定向回归通过，覆盖工作台、原生工艺、智能试切、擦料塔和 3MF。用此前的验收配置完成综合最优正式切片、前视和右视、工程保存及重开重切，切完后「去打印」可用。命令行重新导入切片工程并导出，产物均为 114 层。 [验证记录](D:/TEST/artifacts/mainline-bugfix/evidence/integration-918c137399-20261123/validation.json)
+
+2026-11-24 更新原桌面「Honor Forge 正式修复验证」入口。旧窗口占用固定运行目录时，快捷方式指向已验证的合并版运行目录，启动参数继续使用原配置目录。保存并退出旧窗口后可通过该入口启动。 [入口核验](D:/TEST/artifacts/mainline-bugfix/evidence/integration-918c137399-20261123/validation.json)
 
 ---
 

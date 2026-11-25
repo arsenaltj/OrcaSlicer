@@ -12,6 +12,7 @@
 #include <wx/stattext.h>
 #include <wx/webview.h>
 #include <wx/uri.h>
+#include <wx/weakref.h>
 
 namespace Slic3r::GUI {
 namespace {
@@ -37,20 +38,32 @@ AssetsWorkspace::AssetsWorkspace(wxWindow* parent)
         if(event.GetEventObject()==this) set_presented(event.IsShown());
         event.Skip();
     });
+    if (auto* frame = wxGetTopLevelParent(this)) {
+        wxWeakRef<AssetsWorkspace> weak(this);
+        frame->Bind(wxEVT_ACTIVATE, [weak](wxActivateEvent& event) {
+            if (event.GetActive() && weak && weak->m_service) weak->m_service->activated();
+            event.Skip();
+        });
+    }
 }
 AssetsWorkspace::~AssetsWorkspace() {
     m_messages.stop();
     if(m_service) {m_service->subscribe({});m_service->visible(false);}
 }
-void AssetsWorkspace::attach(std::shared_ptr<LibraryWorkspaceService> service,std::shared_ptr<ModelLibraryApplication> local) {
+void AssetsWorkspace::attach(std::shared_ptr<LibraryWorkspaceService> service,std::shared_ptr<ModelLibraryApplication> local,
+                             std::function<void(bool)> detail_layout) {
     m_service=std::move(service);m_local=std::move(local);
+    m_detail_layout=std::move(detail_layout);
     m_service->subscribe([this](const nlohmann::json& value){send(value);});
     m_service->set_project_available(m_project);
     if(IsShownOnScreen()) set_presented(true);
 }
 void AssetsWorkspace::set_presented(bool value) {
     Presentation::assert_gui_thread();
-    m_presented=value;
+    if (m_presented != value && m_detail_active) {
+        m_presented=value;
+        update_detail_layout();
+    } else m_presented=value;
     if(value) load();
     if(m_service && !m_fallback) m_service->visible(value);
     if(value) {
@@ -58,16 +71,32 @@ void AssetsWorkspace::set_presented(bool value) {
         m_messages.resume();
     }
 }
+void AssetsWorkspace::update_detail_layout()
+{
+    // Resizing the WebView from the message callback can reenter its host.
+    CallAfter([this] {
+        if (m_detail_layout) m_detail_layout(m_presented && m_detail_active);
+    });
+}
 void AssetsWorkspace::set_project_available(bool available) {
     m_project=available;if(m_service) m_service->set_project_available(available);
 }
 void AssetsWorkspace::send(const nlohmann::json& value) {
     Presentation::assert_gui_thread();
     if(!m_web || !m_loaded || !installed_document(m_web->GetCurrentURL())) return;
+    const auto type = value.value("type", "");
+    if (type == "detail" && !m_detail_active) {
+        m_detail_active=true;
+        update_detail_layout();
+    } else if (type == "account" && m_detail_active && !value.value("hasDetail",false)) {
+        m_detail_active=false;
+        update_detail_layout();
+    }
     m_channel.push(value);
     // Account/geometry/control messages keep their order. Inactive must reach
     // WebGL even after wx has hidden the host, to stop its animation loop.
-    if (value.value("type",std::string()) == "inactive") {
+    // Import progress reaches the WebView as the native reader pumps UI events.
+    if (value.value("type",std::string()) == "inactive" || value.contains("importPercent")) {
         flush_messages();
         return;
     }
@@ -111,6 +140,7 @@ void AssetsWorkspace::load() {
     m_web->Bind(wxEVT_WEBVIEW_ERROR,[this](wxWebViewEvent&) {
         if (m_fallback) return;
         m_loaded=false;
+        m_detail_active=false;update_detail_layout();
         if (m_service) m_service->visible(false);
         m_web->Hide();
         m_fallback=new ModelLibraryPanel(this,m_local);
@@ -119,6 +149,7 @@ void AssetsWorkspace::load() {
     m_web->Bind(wxEVT_WEBVIEW_LOADED,[this](wxWebViewEvent& event) {
         if(!installed_document(event.GetURL()) || m_fallback) return;
         m_service->ready(false);m_loaded=true;
+        m_detail_active=false;update_detail_layout();
         m_initialization=m_channel.begin(HonorAccount::random_value());
         // Handshake control bypasses the account-data batch.
         send_initialization();
@@ -132,15 +163,20 @@ void AssetsWorkspace::load() {
         for(const auto& field:value.items())
             if(field.key()!="nonce" && field.key()!="command" && field.key()!="scope" && field.key()!="filter" &&
                field.key()!="query" && field.key()!="key" && field.key()!="revision" && field.key()!="action" &&
-               field.key()!="file" && field.key()!="kind" && field.key()!="active" &&
+               field.key()!="file" && field.key()!="kind" && field.key()!="active" && field.key()!="comment" &&
                field.key()!="documentGeneration" && field.key()!="accountTag" &&
-               field.key()!="accountGeneration" && field.key()!="requestGeneration") return;
+               field.key()!="accountGeneration" && field.key()!="requestGeneration" && field.key()!="downloadRequest") return;
         try {
             const auto accepted=m_channel.accept(value);
             if(accepted==LibraryPresentationChannel::Acceptance::Ready) {
                 m_web->Show();Layout();m_service->ready();m_messages.resume();
-            } else if(accepted==LibraryPresentationChannel::Acceptance::Command && m_presented && IsShownOnScreen())
+            } else if(accepted==LibraryPresentationChannel::Acceptance::Command && m_presented && IsShownOnScreen()) {
+                const auto command=value.value("command","");
+                if (m_detail_active && (command=="back" || command=="query")) {
+                    m_detail_active=false;update_detail_layout();
+                }
                 m_service->command(value);
+            }
         } catch(const nlohmann::json::exception&) { /* Reject malformed internal messages. */ }
     });
     WebView::LoadUrl(m_web,installed_url());

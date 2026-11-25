@@ -122,11 +122,15 @@ class IntegrationGuardrailTests(unittest.TestCase):
         self.assertEqual([], GUARDRAILS.validate_contract_layout(REPO_ROOT))
 
     def test_generated_obj_colors_use_explicit_policy_without_changing_default_import(self) -> None:
-        plater = (REPO_ROOT / "src/slic3r/GUI/Plater.cpp").read_text(encoding="utf-8")
-        adapter = (REPO_ROOT / "src/slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.cpp").read_text(encoding="utf-8")
+        gui = REPO_ROOT / "src/slic3r/GUI"
+        plater = (gui / "Plater.cpp").read_text(encoding="utf-8")
+        file_import = (gui / "PlaterFileImport.ipp").read_text(encoding="utf-8")
+        adapter = (gui / "AI/Orca/OrcaWorkspaceAdapter.cpp").read_text(encoding="utf-8")
+        self.assertIn('#include "PlaterFileImport.ipp"', plater)
         self.assertNotIn("ObjColorDialog", plater)
-        self.assertIn("nullptr, 0, obj_color_fn)", plater)
-        self.assertIn("if (obj_color_fn && model.objects.empty())", plater)
+        self.assertNotIn("ObjColorDialog", file_import)
+        self.assertIn("nullptr, 0, obj_color_fn)", file_import)
+        self.assertIn("if (obj_color_fn && model.objects.empty())", file_import)
         self.assertIn("in_out.preserve_input_colors = true;", adapter)
         self.assertIn("in_out.cancelled = true;", adapter)
         self.assertNotIn("colors_applied = !in_out.filament_ids.empty()", adapter)

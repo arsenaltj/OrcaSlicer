@@ -1701,6 +1701,11 @@ void RedesignShell::confirm_workbench_import(const AI::ModelImportRequest& reque
 void RedesignShell::show_import_loading()
 {
     m_import_started = std::chrono::steady_clock::now();
+    const auto* owner = wxGetTopLevelParent(this);
+    const wxRect owner_bounds(owner->ClientToScreen(wxPoint()), owner->GetClientSize());
+    const auto* viewport = m_model_generation_host->workbench_import_viewport();
+    const auto viewport_bounds = viewport && viewport->IsShownOnScreen() ? viewport->GetScreenRect() : wxRect{};
+    m_import_loading_anchor = WorkbenchLoadingCardAnchor(viewport_bounds, workbench_transition_bounds(), owner_bounds);
     m_model_generation_host->set_workbench_import_feedback(true);
     m_slicing_settings->Disable();
     if (m_import_elapsed->GetLabel() != _L("已用时 0.0 秒"))
@@ -1739,21 +1744,16 @@ void RedesignShell::update_import_loading(WorkbenchImportPhase phase, const std:
 
 void RedesignShell::layout_import_loading()
 {
-    if (!m_import_in_progress || !m_import_loading || !m_model_generation_host) return;
-    if (m_import_navigation_detached) { m_import_loading->Hide(); return; }
-    wxWindow* viewport = m_model_generation_host->workbench_import_viewport();
-    if (!viewport) return;
-    auto* owner = wxGetTopLevelParent(this);
-    if (!owner || !viewport->IsShownOnScreen()) return;
-    if (auto* top = dynamic_cast<wxTopLevelWindow*>(owner); top && top->IsIconized()) {
+    if (!m_import_in_progress || !m_import_loading) return;
+    const auto* owner = wxDynamicCast(wxGetTopLevelParent(this), wxTopLevelWindow);
+    if (m_import_navigation_detached || !owner || owner->IsIconized() || !IsShownOnScreen()) {
         m_import_loading->Hide();
         return;
     }
-    const wxRect viewport_bounds(viewport->ClientToScreen(wxPoint(0, 0)), viewport->GetClientSize());
-    const wxRect owner_bounds(owner->ClientToScreen(wxPoint(0, 0)), owner->GetClientSize());
+    const wxRect owner_bounds(owner->ClientToScreen(wxPoint()), owner->GetClientSize());
     wxSize requested = m_import_loading->GetBestSize();
     if (requested.x <= 0 || requested.y <= 0) requested = FromDIP(wxSize(410, 184));
-    const wxRect bounds = workbench_import_card_bounds(viewport_bounds, owner_bounds, requested);
+    const wxRect bounds = m_import_loading_anchor.bounds(owner_bounds, requested);
     if (bounds.IsEmpty()) { m_import_loading->Hide(); return; }
     if (m_import_loading->GetRect() != bounds) {
         m_import_loading->SetSize(bounds);

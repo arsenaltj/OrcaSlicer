@@ -1,4 +1,5 @@
 #pragma once
+#include "slic3r/GUI/AI/Model/ModelFilePath.hpp"
 
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include <boost/filesystem.hpp>
@@ -74,7 +75,7 @@ public:
 private:
     static std::filesystem::file_time_type stamp(const boost::filesystem::path& path) {
         std::error_code error;
-        const auto value = std::filesystem::last_write_time(std::filesystem::path(path.native()), error);
+        const auto value = std::filesystem::last_write_time(std::filesystem::path(AI::model_io_path(path).native()), error);
         return error ? std::filesystem::file_time_type{} : value;
     }
     static std::string key(const boost::filesystem::path& path) {
@@ -111,9 +112,9 @@ private:
         for (const auto& part : relative) {
             if (part == "..") return false;
             prefix /= part;
-            if (boost::filesystem::is_symlink(prefix, error) || error) return false;
+            if (boost::filesystem::is_symlink(AI::model_io_path(prefix), error) || error) return false;
         }
-        return boost::filesystem::is_regular_file(path, error) && !error;
+        return boost::filesystem::is_regular_file(AI::model_io_path(path), error) && !error;
     }
     Node read(const boost::filesystem::path& model, const boost::filesystem::path& record,
               const std::string& job_id) const {
@@ -121,9 +122,9 @@ private:
         try {
             if (!safe_file(record)) return node;
             boost::system::error_code error;
-            const auto bytes = boost::filesystem::file_size(record, error);
+            const auto bytes = boost::filesystem::file_size(AI::model_io_path(record), error);
             if (error || !bytes || bytes > 128ULL * 1024 * 1024) return node;
-            boost::filesystem::ifstream input(record, std::ios::binary);
+            boost::filesystem::ifstream input(AI::model_io_path(record), std::ios::binary);
             using Json = nlohmann::json;
             const auto data = Json::parse(input, [](int depth, Json::parse_event_t event, Json& value) {
                 if (event != Json::parse_event_t::key) return true;

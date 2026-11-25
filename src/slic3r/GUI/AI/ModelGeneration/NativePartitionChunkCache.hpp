@@ -1,4 +1,6 @@
 #pragma once
+
+#include "slic3r/GUI/AI/Model/ModelFilePath.hpp"
 #include "PortraitNativePartition.hpp"
 #include "slic3r/GUI/AI/Model/BeautyLeafDomain.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
@@ -21,22 +23,22 @@ inline std::string publish(const nlohmann::json& document, const boost::filesyst
     if (bytes.empty() || bytes.size() > block_bytes) throw std::runtime_error("分区缓存块超过资源预算。");
     const auto hash = AI::beauty_leaf_digest(bytes);
     if (!hash_valid(hash)) throw std::runtime_error("分区缓存块摘要计算失败。");
-    boost::filesystem::create_directories(root);
+    boost::filesystem::create_directories(AI::model_io_path(root));
     const auto path = root / (hash + extension);
-    if (boost::filesystem::exists(path)) {
-        if (boost::filesystem::is_symlink(path) || AI::model_artifact_sha256(path) != hash)
+    if (boost::filesystem::exists(AI::model_io_path(path))) {
+        if (boost::filesystem::is_symlink(AI::model_io_path(path)) || AI::model_artifact_sha256(path) != hash)
             throw std::runtime_error("已有分区缓存块损坏。");
         return hash;
     }
     const auto temporary = root / boost::filesystem::unique_path("partition-block-%%%%-%%%%.tmp");
     try {
-        boost::filesystem::ofstream output(temporary, std::ios::binary);
+        boost::filesystem::ofstream output(AI::model_io_path(temporary), std::ios::binary);
         output.write(bytes.data(), std::streamsize(bytes.size())); output.close();
         if (!output || AI::model_artifact_sha256(temporary) != hash)
             throw std::runtime_error("分区缓存块写入或校验失败。");
-        boost::filesystem::rename(temporary, path);
+        boost::filesystem::rename(AI::model_io_path(temporary), AI::model_io_path(path));
     } catch (...) {
-        boost::system::error_code ignored; boost::filesystem::remove(temporary, ignored); throw;
+        boost::system::error_code ignored; boost::filesystem::remove(AI::model_io_path(temporary), ignored); throw;
     }
     return hash;
 }
@@ -45,12 +47,12 @@ inline nlohmann::json read(const boost::filesystem::path& root, const std::strin
 {
     if (!hash_valid(hash)) throw std::runtime_error("分区缓存块身份无效。");
     const auto path = root / (hash + extension);
-    if (boost::filesystem::is_symlink(path) || !boost::filesystem::is_regular_file(path))
+    if (boost::filesystem::is_symlink(AI::model_io_path(path)) || !boost::filesystem::is_regular_file(AI::model_io_path(path)))
         throw std::runtime_error("分区缓存块缺失。");
-    const auto count = boost::filesystem::file_size(path);
+    const auto count = boost::filesystem::file_size(AI::model_io_path(path));
     if (!count || count > block_bytes) throw std::runtime_error("分区缓存块大小无效。");
     std::string bytes(size_t(count), '\0');
-    boost::filesystem::ifstream input(path, std::ios::binary);
+    boost::filesystem::ifstream input(AI::model_io_path(path), std::ios::binary);
     if (!input.read(bytes.data(), std::streamsize(bytes.size())) || input.peek() != std::char_traits<char>::eof() ||
         AI::beauty_leaf_digest(bytes) != hash) throw std::runtime_error("分区缓存块摘要不符。");
     return nlohmann::json::parse(bytes);

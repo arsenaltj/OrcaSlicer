@@ -1,5 +1,7 @@
 #pragma once
 
+#include "slic3r/GUI/AI/Model/ModelFilePath.hpp"
+
 #include "PortraitNativePartition.hpp"
 #include "NativePartitionChunkCache.hpp"
 #include "slic3r/GUI/AI/Model/BeautyLeafDomain.hpp"
@@ -33,25 +35,25 @@ inline void write_validate_remove_native_portrait_partition_staging(
 {
     try {
         {
-            boost::filesystem::ofstream output(staging_path, std::ios::binary);
+            boost::filesystem::ofstream output(AI::model_io_path(staging_path), std::ios::binary);
             output << metadata.dump();
             output.close();
             if (!output)
                 throw std::runtime_error("原生分区提交元数据暂存失败。");
         }
         {
-            boost::filesystem::ifstream input(staging_path, std::ios::binary);
+            boost::filesystem::ifstream input(AI::model_io_path(staging_path), std::ios::binary);
             if (!input || nlohmann::json::parse(input) != metadata)
                 throw std::runtime_error("原生分区提交元数据暂存校验失败。");
         }
         boost::system::error_code filesystem_error;
-        const bool removed = boost::filesystem::remove(staging_path, filesystem_error);
+        const bool removed = boost::filesystem::remove(AI::model_io_path(staging_path), filesystem_error);
         if (filesystem_error || !removed)
             throw std::runtime_error("原生分区提交元数据暂存清理失败。" +
                 (filesystem_error ? " " + filesystem_error.message() : std::string {}));
     } catch (...) {
         boost::system::error_code ignored;
-        boost::filesystem::remove(staging_path, ignored);
+        boost::filesystem::remove(AI::model_io_path(staging_path), ignored);
         throw;
     }
 }
@@ -79,11 +81,11 @@ inline nlohmann::json publish_native_portrait_partition_commit(
         observe(PartitionCommitCheckpoint::AfterAtomicPublish);
 
         boost::system::error_code filesystem_error;
-        const auto bytes = boost::filesystem::file_size(metadata_path, filesystem_error);
+        const auto bytes = boost::filesystem::file_size(AI::model_io_path(metadata_path), filesystem_error);
         if (filesystem_error || bytes == 0 || bytes > 128ULL * 1024 * 1024 ||
-            boost::filesystem::is_symlink(metadata_path, filesystem_error) || filesystem_error)
+            boost::filesystem::is_symlink(AI::model_io_path(metadata_path), filesystem_error) || filesystem_error)
             throw std::runtime_error("原生人像分区提交元数据缺失或不可读。");
-        boost::filesystem::ifstream input(metadata_path, std::ios::binary);
+        boost::filesystem::ifstream input(AI::model_io_path(metadata_path), std::ios::binary);
         const auto read_back = nlohmann::json::parse(input);
         if (read_back != metadata || read_back.at("transaction_status") != "committed")
             throw std::runtime_error("原生人像分区提交元数据读回校验失败。");
@@ -92,7 +94,7 @@ inline nlohmann::json publish_native_portrait_partition_commit(
     } catch (...) {
         if (published) {
             boost::system::error_code ignored;
-            boost::filesystem::remove(metadata_path, ignored);
+            boost::filesystem::remove(AI::model_io_path(metadata_path), ignored);
         }
         throw;
     }
@@ -110,19 +112,19 @@ inline nlohmann::json replace_native_portrait_partition_commit(
         metadata.value("transaction_status", std::string {}) != "committed")
         throw std::runtime_error("原生人像分区提交元数据无效。");
     boost::system::error_code filesystem_error;
-    const auto bytes = boost::filesystem::file_size(metadata_path, filesystem_error);
+    const auto bytes = boost::filesystem::file_size(AI::model_io_path(metadata_path), filesystem_error);
     if (filesystem_error || bytes == 0 || bytes > 128ULL * 1024 * 1024 ||
-        boost::filesystem::is_symlink(metadata_path, filesystem_error) || filesystem_error ||
-        !boost::filesystem::is_regular_file(metadata_path, filesystem_error) || filesystem_error)
+        boost::filesystem::is_symlink(AI::model_io_path(metadata_path), filesystem_error) || filesystem_error ||
+        !boost::filesystem::is_regular_file(AI::model_io_path(metadata_path), filesystem_error) || filesystem_error)
         throw std::runtime_error("原生人像分区原提交缺失或不可替换。");
-    if (boost::filesystem::is_symlink(model) || boost::filesystem::is_symlink(source) ||
+    if (boost::filesystem::is_symlink(AI::model_io_path(model)) || boost::filesystem::is_symlink(AI::model_io_path(source)) ||
         AI::model_artifact_sha256(model) != metadata.value("model_sha256", std::string {}) ||
         AI::model_artifact_sha256(source) != metadata.value("source_sha256", std::string {}))
         throw std::runtime_error("原生人像分区模型或来源身份已变化。");
 
     nlohmann::json previous;
     {
-        boost::filesystem::ifstream input(metadata_path, std::ios::binary);
+        boost::filesystem::ifstream input(AI::model_io_path(metadata_path), std::ios::binary);
         previous = nlohmann::json::parse(input);
     }
     if (!previous.is_object() ||
@@ -138,21 +140,21 @@ inline nlohmann::json replace_native_portrait_partition_commit(
     bool rollback_created = false;
     try {
         {
-            boost::filesystem::ofstream output(staging_path, std::ios::binary);
+            boost::filesystem::ofstream output(AI::model_io_path(staging_path), std::ios::binary);
             output << metadata.dump();
             output.close();
             if (!output)
                 throw std::runtime_error("原生分区人物身份暂存失败。");
         }
         {
-            boost::filesystem::ifstream input(staging_path, std::ios::binary);
+            boost::filesystem::ifstream input(AI::model_io_path(staging_path), std::ios::binary);
             if (!input || nlohmann::json::parse(input) != metadata)
                 throw std::runtime_error("原生分区人物身份暂存校验失败。");
         }
-        boost::filesystem::copy_file(metadata_path, rollback_path);
+        boost::filesystem::copy_file(AI::model_io_path(metadata_path), AI::model_io_path(rollback_path));
         rollback_created = true;
         {
-            boost::filesystem::ifstream input(rollback_path, std::ios::binary);
+            boost::filesystem::ifstream input(AI::model_io_path(rollback_path), std::ios::binary);
             if (!input || nlohmann::json::parse(input) != previous)
                 throw std::runtime_error("原生分区原提交回滚副本校验失败。");
         }
@@ -164,16 +166,16 @@ inline nlohmann::json replace_native_portrait_partition_commit(
         replaced = true;
         if (observer) observer(PartitionCommitCheckpoint::AfterAtomicPublish);
 
-        boost::filesystem::ifstream input(metadata_path, std::ios::binary);
+        boost::filesystem::ifstream input(AI::model_io_path(metadata_path), std::ios::binary);
         const auto read_back = nlohmann::json::parse(input);
         if (read_back != metadata || read_back.at("transaction_status") != "committed")
             throw std::runtime_error("原生分区人物身份读回校验失败。");
         if (observer) observer(PartitionCommitCheckpoint::AfterReadbackValidation);
-        boost::filesystem::remove(rollback_path, filesystem_error);
+        boost::filesystem::remove(AI::model_io_path(rollback_path), filesystem_error);
         return read_back;
     } catch (...) {
         boost::system::error_code ignored;
-        boost::filesystem::remove(staging_path, ignored);
+        boost::filesystem::remove(AI::model_io_path(staging_path), ignored);
         if (replaced && rollback_created) {
             if (const auto rollback_error = Slic3r::rename_file(
                     boost::nowide::narrow(rollback_path.wstring()),
@@ -181,7 +183,7 @@ inline nlohmann::json replace_native_portrait_partition_commit(
                 throw std::runtime_error("原生分区人物身份发布失败，原提交保留在 " +
                     rollback_path.string() + "；自动回滚失败：" + rollback_error.message());
         } else if (rollback_created) {
-            boost::filesystem::remove(rollback_path, ignored);
+            boost::filesystem::remove(AI::model_io_path(rollback_path), ignored);
         }
         throw;
     }
@@ -309,11 +311,11 @@ inline nlohmann::json save_native_portrait_partition_cache(
     const auto bytes = document.dump();
     if (bytes.empty() || bytes.size() > maximum_partition_cache_bytes)
         throw std::runtime_error("原生人像分区缓存过大，未发布分区身份。");
-    boost::filesystem::create_directories(cache);
+    boost::filesystem::create_directories(AI::model_io_path(cache));
     const auto temporary = cache / boost::filesystem::unique_path("native-partition-%%%%-%%%%.tmp");
     std::string content_id;
     try {
-        boost::filesystem::ofstream output(temporary, std::ios::binary);
+        boost::filesystem::ofstream output(AI::model_io_path(temporary), std::ios::binary);
         output.write(bytes.data(), std::streamsize(bytes.size()));
         output.close();
         if (!output) throw std::runtime_error("原生人像分区缓存写入失败。");
@@ -321,17 +323,17 @@ inline nlohmann::json save_native_portrait_partition_cache(
         if (!AI::SurfaceSelectionPersistence::detail::valid_fingerprint(content_id))
             throw std::runtime_error("原生人像分区缓存校验失败。");
         const auto destination = cache / (content_id + ".json");
-        if (boost::filesystem::exists(destination)) {
-            if (boost::filesystem::is_symlink(destination) ||
+        if (boost::filesystem::exists(AI::model_io_path(destination))) {
+            if (boost::filesystem::is_symlink(AI::model_io_path(destination)) ||
                 AI::model_artifact_sha256(destination) != content_id)
                 throw std::runtime_error("原生人像分区缓存已损坏。");
-            boost::filesystem::remove(temporary);
+            boost::filesystem::remove(AI::model_io_path(temporary));
         } else {
-            boost::filesystem::rename(temporary, destination);
+            boost::filesystem::rename(AI::model_io_path(temporary), AI::model_io_path(destination));
         }
     } catch (...) {
         boost::system::error_code ignored;
-        boost::filesystem::remove(temporary, ignored);
+        boost::filesystem::remove(AI::model_io_path(temporary), ignored);
         throw;
     }
     return {{"schema", "orca.native-workbench-partition-cache-reference/v1"},
@@ -367,12 +369,12 @@ inline bool load_native_portrait_partition_cache(
             throw std::runtime_error("原生人像分区缓存引用无效。");
         const auto file = cache / (content_id + ".json");
         boost::system::error_code filesystem_error;
-        const auto bytes = boost::filesystem::file_size(file, filesystem_error);
+        const auto bytes = boost::filesystem::file_size(AI::model_io_path(file), filesystem_error);
         if (filesystem_error || bytes == 0 || bytes > maximum_partition_cache_bytes ||
-            boost::filesystem::is_symlink(file, filesystem_error) || filesystem_error ||
-            !boost::filesystem::is_regular_file(file, filesystem_error) || filesystem_error)
+            boost::filesystem::is_symlink(AI::model_io_path(file), filesystem_error) || filesystem_error ||
+            !boost::filesystem::is_regular_file(AI::model_io_path(file), filesystem_error) || filesystem_error)
             throw std::runtime_error("原生人像分区缓存缺失或校验失败。");
-        boost::filesystem::ifstream input(file, std::ios::binary);
+        boost::filesystem::ifstream input(AI::model_io_path(file), std::ios::binary);
         std::string contents(size_t(bytes), '\0');
         if (!input.read(contents.data(), std::streamsize(contents.size())) ||
             input.peek() != std::char_traits<char>::eof() ||
@@ -420,13 +422,13 @@ inline void archive_native_portrait_partitions(
         // Copy the content-addressed bytes verbatim. Re-serializing JSON can
         // change its digest even when the decoded identity is equivalent.
         const auto directory = auxiliaries / "OrcaNativeWorkbenchPartitions";
-        boost::filesystem::create_directories(directory);
+        boost::filesystem::create_directories(AI::model_io_path(directory));
         const auto content_id = reference.at("content_id").get<std::string>();
         for (const auto& source : chunk_cache::members(reference, cache)) {
             const auto destination = directory / source.filename();
             const auto hash = source.stem().string();
-            if (!boost::filesystem::exists(destination)) boost::filesystem::copy_file(source, destination);
-            if (boost::filesystem::is_symlink(destination) || AI::model_artifact_sha256(destination) != hash)
+            if (!boost::filesystem::exists(AI::model_io_path(destination))) boost::filesystem::copy_file(AI::model_io_path(source), AI::model_io_path(destination));
+            if (boost::filesystem::is_symlink(AI::model_io_path(destination)) || AI::model_artifact_sha256(destination) != hash)
                 throw std::runtime_error("原生人像分区归档已损坏。");
         }
     }
@@ -437,22 +439,22 @@ inline size_t restore_native_portrait_partition_archive(
     const boost::filesystem::path& cache)
 {
     const auto directory = auxiliaries / "OrcaNativeWorkbenchPartitions";
-    if (!boost::filesystem::is_directory(directory) || boost::filesystem::is_symlink(directory)) return 0;
-    boost::filesystem::create_directories(cache);
+    if (!boost::filesystem::is_directory(AI::model_io_path(directory)) || boost::filesystem::is_symlink(AI::model_io_path(directory))) return 0;
+    boost::filesystem::create_directories(AI::model_io_path(cache));
     size_t restored = 0;
     size_t visited = 0;
-    for (boost::filesystem::directory_iterator iterator(directory), end;
+    for (boost::filesystem::directory_iterator iterator(AI::model_io_path(directory)), end;
          iterator != end && visited < 256; ++iterator) {
         try {
             const auto file = iterator->path();
             const auto content_id = file.stem().string();
             if (file.extension() != ".json" ||
                 !AI::SurfaceSelectionPersistence::detail::valid_fingerprint(content_id) ||
-                boost::filesystem::is_symlink(file) ||
-                boost::filesystem::file_size(file) > maximum_partition_cache_bytes ||
+                boost::filesystem::is_symlink(AI::model_io_path(file)) ||
+                boost::filesystem::file_size(AI::model_io_path(file)) > maximum_partition_cache_bytes ||
                 AI::model_artifact_sha256(file) != content_id) continue;
             ++visited;
-            boost::filesystem::ifstream input(file, std::ios::binary);
+            boost::filesystem::ifstream input(AI::model_io_path(file), std::ios::binary);
             NativePortraitPartitionIdentity identity;
             std::string error;
             const auto document = nlohmann::json::parse(input);
@@ -472,18 +474,18 @@ inline size_t restore_native_portrait_partition_archive(
             for (const auto& source : members) {
                 const auto destination = cache / source.filename();
                 const auto hash = source.stem().string();
-                if (!boost::filesystem::exists(destination)) {
+                if (!boost::filesystem::exists(AI::model_io_path(destination))) {
                     const auto staging = cache / boost::filesystem::unique_path("partition-restore-%%%%-%%%%.tmp");
                     try {
-                        boost::filesystem::copy_file(source, staging);
+                        boost::filesystem::copy_file(AI::model_io_path(source), AI::model_io_path(staging));
                         if (AI::model_artifact_sha256(staging) != hash)
                             throw std::runtime_error("原生分区归档在恢复期间变化。");
-                        boost::filesystem::rename(staging, destination);
+                        boost::filesystem::rename(AI::model_io_path(staging), AI::model_io_path(destination));
                     } catch (...) {
-                        boost::system::error_code ignored; boost::filesystem::remove(staging, ignored); throw;
+                        boost::system::error_code ignored; boost::filesystem::remove(AI::model_io_path(staging), ignored); throw;
                     }
                 }
-                if (boost::filesystem::is_symlink(destination) || AI::model_artifact_sha256(destination) != hash) {
+                if (boost::filesystem::is_symlink(AI::model_io_path(destination)) || AI::model_artifact_sha256(destination) != hash) {
                     valid = false;
                     break;
                 }
