@@ -241,6 +241,15 @@ class AdvancedMultiviewRepository:
         """Replace current upload pointers while preserving every prior asset and design version."""
         validated = self._validate_images(images)
 
+        if images and "front" not in images:
+            # Removing front may preserve/delete auxiliary inputs, but cannot
+            # introduce or replace one before the main reference is restored.
+            for view, data in images.items():
+                previous = group["uploads"].get(view)
+                if (previous is None or view in replaced_views
+                        or previous["sha256"] != hashlib.sha256(data).hexdigest()):
+                    raise RequestError("missing_front", "Upload the main reference before changing auxiliary images.", 400)
+
         uploads: dict[str, Any] = dict.fromkeys(VIEWS)
         changed = []
         for view in VIEWS:

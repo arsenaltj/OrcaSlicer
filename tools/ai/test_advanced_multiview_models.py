@@ -161,7 +161,7 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(self.requests,[])
         self.assertEqual(self.jobs,{})
 
-    def test_selected_ordinary_auxiliary_failure_is_optional_but_unknown_submission_remains_global(self):
+    def test_missing_auxiliary_can_be_excluded_with_a_failed_or_unknown_attempt(self):
         from dataclasses import replace
         self.models.ports = replace(self.models.ports,capability=lambda *_:
             {"available":True,"supported_image_counts":[1,2,3,4],"model":"model-a"})
@@ -177,7 +177,83 @@ class ModelTests(unittest.TestCase):
         group = self.repo.load(self.group["id"])
         group["views"]["back"]["latest_attempt"]["state"] = "ambiguous"
         self.repo.save(group)
-        with self.assertRaises(RequestError): self.selected_plan(["front","right"])
+        self.selected_plan(["front", "right"])
+        with self.assertRaises(RequestError):
+            self.selected_plan(["front", "back"])
+
+    def test_terminal_unknown_auxiliary_is_excluded_from_both_provider_requests_and_keeps_its_receipt(self):
+        from dataclasses import replace
+        self.models.ports = replace(self.models.ports, capability=lambda *_:
+            {"available": True, "supported_image_counts": [1, 2, 3, 4], "model": "model-a"})
+        group = self.repo.load(self.group["id"])
+        group["views"]["left"]["latest_attempt"]["state"] = "ambiguous"
+        updated = self.repo.save(group)
+        left = deepcopy(updated["views"]["left"])
+        for provider in ("tripo", "yoyoclaw"):
+            def start(request, **kwargs):
+                self.requests.append(request)
+                kwargs["authorization"].consume(provider, "model_generation")
+                return SimpleNamespace(task_id=f"{provider}-task-{len(self.requests)}", reused=False)
+            self.gateway.start_or_reuse_model_task.side_effect = start
+            with self.subTest(provider=provider), self.assertRaises(RequestError) as selected:
+                self.selected_plan(["front", "left"], provider=provider)
+            self.assertEqual(selected.exception.code, "design_result_unknown")
+            with self.assertRaises(RequestError) as legacy:
+                self.plan(provider=provider, geometry_quality="standard")
+            self.assertEqual(legacy.exception.code, "design_result_unknown")
+            for expected in (["front"], ["front", "back"]):
+                with self.subTest(provider=provider, selected=expected):
+                    plan = self.selected_plan(expected, provider=provider)
+                    before = len(self.requests)
+                    job = self.execute(plan)
+                    self.assertEqual(self.execute(plan).id, job.id)
+                    self.assertEqual(len(self.queue), 1)
+                    frozen = job.approved_multiview_snapshot
+                    self.assertEqual(frozen["selected_views"], expected)
+                    self.assertEqual(frozen["input_mode"], "image" if len(expected) == 1 else "multiview")
+                    self.assertEqual({p.name for p in (job.directory / "inputs").iterdir()},
+                                     {view + ".png" for view in expected})
+                    self.drain()
+                    self.assertEqual(job.state, "ready")
+                    self.assertEqual(len(self.requests), before + 1)
+                    self.assertEqual(self.requests[-1].source, frozen["input_mode"])
+                    self.execute(plan)
+                    self.drain()
+                    self.assertEqual(len(self.requests), before + 1)
+        self.assertEqual(self.repo.load(self.group["id"])["views"]["left"], left)
+        self.assertEqual(len(self.requests), 4)
+
+    def test_recoverable_results_still_block_unselected_views_and_main_unknown_cannot_be_excluded(self):
+        from dataclasses import replace
+        self.models.ports = replace(self.models.ports, capability=lambda *_:
+            {"available": True, "supported_image_counts": [1, 2, 3, 4], "model": "model-a"})
+        for direction, state, reason in (("left", "result_pending", "provider_task_ambiguous"),
+                                         ("left", "result_saved", "provider_task_ambiguous"),
+                                         ("front", "ambiguous", "design_result_unknown")):
+            with self.subTest(direction=direction, state=state):
+                group = self.repo.load(self.group["id"])
+                group["views"]["left"]["latest_attempt"]["state"] = "succeeded"
+                group["views"][direction]["latest_attempt"]["state"] = state
+                self.repo.save(group)
+                with self.assertRaises(RequestError) as rejected:
+                    self.selected_plan(["front"])
+                self.assertEqual(rejected.exception.code, reason)
+                self.assertEqual(self.queue, [])
+        self.assertEqual(self.jobs, {})
+
+    def test_accepted_plan_cannot_be_reused_after_selected_attempt_changes(self):
+        from dataclasses import replace
+        self.models.ports = replace(self.models.ports, capability=lambda *_:
+            {"available": True, "supported_image_counts": [1, 2, 3, 4], "model": "model-a"})
+        plan = self.selected_plan(["front", "back"])
+        group = self.repo.load(self.group["id"])
+        group["views"]["back"]["latest_attempt"]["state"] = "ambiguous"
+        self.repo.save(group)
+        with self.assertRaises(RequestError) as rejected:
+            self.execute(plan)
+        self.assertEqual(rejected.exception.code, "revision_conflict")
+        self.assertEqual(self.queue, [])
+        self.assertEqual(self.jobs, {})
 
     def test_new_snapshots_and_strict_legacy_snapshots_validate_content_not_only_fingerprints(self):
         from dataclasses import replace

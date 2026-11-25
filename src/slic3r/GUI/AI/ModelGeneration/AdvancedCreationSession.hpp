@@ -18,6 +18,10 @@ public:
     bool set_design_draft(DesignDraft draft);
     bool set_design_provider(std::string provider);
     bool set_upload(ViewId view, std::string path, bool explicit_replacement = false);
+    std::string upload_change_rejection(ViewId view, const std::string& path, bool explicit_replacement = false) const;
+    std::vector<ViewId> all_design_views() const;
+    bool has_local_design_target(ViewId view) const;
+    std::string single_design_rejection(ViewId view, const std::string& text) const;
     void set_model_options(ModelOptions options) { m_draft.geometry = std::move(options); ++m_draft_revision; }
     bool draft_dirty() const { return m_draft_dirty; }
     void mark_draft_saved(const DesignDraft& saved);
@@ -44,7 +48,18 @@ public:
     bool toggle(ViewId view);
     std::vector<ViewId> effective_views() const;
     std::array<bool, 4> model_selection() const;
+    bool can_toggle_model_view(ViewId view) const;
+    bool toggle_model_view(ViewId view);
     std::vector<ViewId> effective_model_views() const;
+    const std::optional<ModelSelectionCandidate>& model_candidate() const { return m_model_candidate; }
+    std::uint64_t begin_model_selection();
+    bool toggle_candidate_view(ViewId view);
+    std::vector<ViewId> candidate_model_views() const;
+    Eligibility candidate_model_eligibility(const Capabilities& capabilities, const HostGuards& guards) const;
+    Eligibility model_selection_entry_eligibility(const Capabilities& capabilities, const HostGuards& guards) const;
+    std::optional<LocalDraft> candidate_local_draft() const;
+    bool commit_model_selection(std::uint64_t id, std::uint64_t revision);
+    void cancel_model_selection() { m_model_candidate.reset(); }
     void click(ViewId view, std::uint64_t now_ms, std::uint64_t double_click_ms,
                SelectionContext selection_context = SelectionContext::Design);
     bool flush_click(std::uint64_t now_ms);
@@ -62,6 +77,8 @@ private:
     std::string m_guidance_input_epoch;
     bool toggle_selection(ViewId view, SelectionContext context);
     bool model_view_usable(ViewId view) const;
+    Eligibility eligibility_for(const Capabilities& capabilities, const HostGuards& guards,
+                                const std::array<bool, 4>& selected, bool selection_entry = false) const;
     struct PendingClick { ViewId view; std::uint64_t due; SelectionContext context; };
     InputDraft m_draft;
     std::optional<GroupSnapshot> m_group;
@@ -72,6 +89,8 @@ private:
     std::array<bool, 4> m_invalidated_uploads {};
     std::array<std::string, 4> m_invalidated_versions;
     std::optional<PendingClick> m_pending_click;
+    std::optional<ModelSelectionCandidate> m_model_candidate;
+    std::uint64_t m_candidate_sequence {0};
     std::string m_opening_id;
     std::uint64_t m_epoch {1};
     std::uint64_t m_draft_revision {0};

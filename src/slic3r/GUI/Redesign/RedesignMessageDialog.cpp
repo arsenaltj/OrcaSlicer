@@ -678,6 +678,10 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
             root->Add(m_checkbox, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(24));
     }
 
+    if (design) {
+        m_confirmation_content = new wxBoxSizer(wxVERTICAL);
+        root->Add(m_confirmation_content, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(24));
+    }
     m_action_sizer = new wxBoxSizer(m_stacked_actions ? wxVERTICAL : wxHORIZONTAL);
     if ((!compact || design) && !m_stacked_actions && !inline_confirmation_footer) m_action_sizer->AddStretchSpacer(1);
     if (!actions.empty()) {
@@ -796,6 +800,25 @@ void RedesignMessageDialog::enable_action(wxWindowID id, bool enabled)
         if (button->GetId() == id) { button->Enable(enabled); button->Refresh(false); }
 }
 
+void RedesignMessageDialog::set_confirmation_content(wxWindow* content, std::function<bool()> before_confirm)
+{
+    if (!m_confirmation_content || !content || content->GetParent() != this) return;
+    m_confirmation_content->Add(content, 1, wxEXPAND);
+    m_before_confirm = std::move(before_confirm);
+    GetSizer()->SetSizeHints(this); Layout(); update_shape(); CentreOnParent();
+}
+
+void RedesignMessageDialog::fit_confirmation_content()
+{
+    if (!m_confirmation_content || !GetSizer()) return;
+    const auto size = GetSizer()->GetMinSize();
+    GetSizer()->SetSizeHints(this);
+    SetClientSize(wxSize(std::max(GetClientSize().x, size.x), size.y));
+    Layout();
+    update_shape();
+    CentreOnParent();
+}
+
 bool RedesignMessageDialog::checkbox_checked() const
 {
     return m_checkbox != nullptr && m_checkbox->GetValue();
@@ -829,6 +852,7 @@ void RedesignMessageDialog::bind_title_drag(wxWindow* window)
 
 void RedesignMessageDialog::finish_with(int result)
 {
+    if (result == wxID_YES && m_before_confirm && !m_before_confirm()) return;
     if (IsModal())
         EndModal(result);
     else {

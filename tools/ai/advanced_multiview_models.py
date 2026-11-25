@@ -55,6 +55,14 @@ class AdvancedMultiviewModels:
                 "fingerprint": job.approved_multiview_snapshot["fingerprint"]})
             self.repository.save(group)
 
+    @staticmethod
+    def _require_design_results(group, selected) -> None:
+        states = {view: (group["views"][view].get("latest_attempt") or {}).get("state") for view in VIEWS}
+        if any(state in {"result_pending", "result_saved"} for state in states.values()):
+            raise RequestError("provider_task_ambiguous", "Recover the saved image result first.", 409)
+        if any(states[view] == "ambiguous" for view in selected):
+            raise RequestError("design_result_unknown", "A selected design still has an unknown generation result.", 409)
+
     def prepare(self, group_id: str, request: dict[str, Any]) -> dict[str, Any]:
         command = identity(request.get("command_id"), "command_id")
         selected = targets(request.get("selected_views"), default_all=False) if "selected_views" in request else VIEWS
@@ -83,10 +91,7 @@ class AdvancedMultiviewModels:
                 raise RequestError("missing_current_view", "All selected design views must be usable.", 409)
             if draft_fields(request.get("draft")) != group["latest_submitted_draft"]:
                 raise RequestError("draft_changed", "Generate the changed description before modeling.", 409)
-            for view in VIEWS:
-                attempt = group["views"][view].get("latest_attempt") or {}
-                if attempt.get("state") in {"ambiguous", "result_pending", "result_saved"}:
-                    raise RequestError("provider_task_ambiguous", "Resolve the outstanding image request first.", 409)
+            self._require_design_results(group, selected)
             if "selected_views" in request:
                 visible = request.get("visible_versions")
                 if (request.get("expected_input_epoch") != group["input_epoch"]
@@ -153,12 +158,13 @@ class AdvancedMultiviewModels:
                     if group["active_operation_id"] or self.busy(group_id):
                         raise RequestError("group_busy", "The group has an active operation.", 409)
                     self._require_resolved(group_id)
+                    selected = tuple(v for v in VIEWS if v in plan["approved_multiview_snapshot"]["views"])
+                    self._require_design_results(group, selected)
                     options = plan["options"]
                     if options["provider"] == "yoyoclaw" and options["face_limit"] != 0:
                         raise RequestError("stale_confirmation", "Confirm a new YOYOClaw plan using its default face count.", 409)
                     if capability is None:
                         return options["provider"], options["geometry_model"]
-                    selected = tuple(v for v in VIEWS if v in plan["approved_multiview_snapshot"]["views"])
                     if not supports_model_input(capability, len(selected)):
                         raise RequestError("unsupported_multiview", "The confirmed model is no longer available.", 503)
                     for view in selected:

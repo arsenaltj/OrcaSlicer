@@ -756,7 +756,7 @@
     {
       "id": "advanced_creation_host",
       "path": "src/slic3r/GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.cpp",
-      "needle": "void AdvancedCreationFeatureHost::generate_model(Confirm confirm)",
+      "needle": "void AdvancedCreationFeatureHost::generate_model(Confirm confirm, GenerationRejected rejected)",
       "detail": "高级每次基于当前所选1～4个可见版本新plan／job，绑定3D选择修订、版本摘要及输入epoch；本地草稿与失效标记在服务保存前持久化，旧回执不确认较新编辑。先登记真实任务再通知，模型状态刷新不导航；停止、幂等和组／会话／请求隔离保持。"
     },
     {
@@ -2227,8 +2227,8 @@
           "tools/ai/test_advanced_multiview_models.py",
           "tests/slic3rutils/test_unified_workbench.cpp"
         ],
-        "state_owner": "旧Job／Repository持有原任务；高级组仓库持有当前上传、有效设计目标、current及不可变版本，Application冻结实际目标及发布基准。Session拥有草稿、2D选择、独立3D偏好、输入失效及一次性引导，Host保存本地检查点并适配回执；高级Job-v2冻结主图必选的1～4图及精确版本，ModelTaskFlow只观察明确任务",
-        "contract": "图片仅生成上传方向，纯文字四图；删除／替换立即清空current且不删历史。首次及新建按受理目标全部成功引导一次，主动返回关闭；仅主图走单图、2～4图走多图。所选图须有效，未选辅助普通失败可手动建模，未决／忙碌保护保持；确认、取消、过期、幂等和原供应商参数在既有应用处理",
+        "state_owner": "旧Job／Repository持有原任务；高级组仓库持有当前上传、有效设计目标、current及不可变版本，Application冻结实际目标及发布基准。Session拥有全局草稿、3D方向偏好、方案A临时候选、输入失效及一次性引导；2D展示模式／预览焦点和未提交局部文字只在Workspace内存，Host保存检查点并适配回执及候选计划代次；高级Job-v2冻结主图必选的1～4图及精确版本，ModelTaskFlow只观察明确任务",
+        "contract": "左栏明确all_inputs面向全部上传方向或纯文字四图；single_view冻结唯一方向及独立局部文字，受理／孤立回执恢复不覆盖全局提交基线；2D不产生业务选图。主图先上传，缺主图允许保留／删除辅助，禁止辅助新增／替换；删改立即清空对应current且不删历史。方案A候选改选不保存，最终确认持久化并提交精确匹配的冻结计划，入口不以某一张数的能力误拦截。首次及新建按受理目标全部成功引导一次，主动返回关闭；仅主图走单图、2～4图走多图。所选图须有效，未选辅助普通失败可手动建模，未决／忙碌保护保持；确认、取消、过期、幂等和原供应商参数在既有应用处理",
         "note": "智能与高级创作Session／任务独立，生成等待、结果与编辑接入Shell唯一工作台；高级不额外执行2D。供应商协议、预算确认与原文件兼容不变。",
         "build_boundary": "任务应用为本地 Python sidecar 模块；高级 Session 编入 libslic3r_gui STATIC，二者不具有独立部署边界。"
       },

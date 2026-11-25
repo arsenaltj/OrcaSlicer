@@ -65,7 +65,14 @@ public:
     void rename_group(const std::string& id, std::uint64_t revision, std::string display_name);
     void new_creation();
     void generate_design(Confirm confirm, GenerationRejected rejected = {});
+    void generate_single_design(AdvancedCreation::ViewId view, std::string text,
+                                std::function<void(bool)> submitted, GenerationRejected rejected = {});
     void generate_model(Confirm confirm, GenerationRejected rejected = {});
+    bool begin_model_selection(GenerationRejected rejected = {});
+    void prepare_model_selection(AdvancedMultiviewClient::Complete ready, AdvancedMultiviewClient::Error failed);
+    bool confirm_model_selection(const Json& plan, GenerationRejected rejected = {});
+    void cancel_model_selection();
+    AdvancedCreation::Eligibility model_selection_eligibility() const;
     void retry(AdvancedCreation::ViewId view, Confirm confirm);
     void stop();
     void recover(AdvancedCreation::ViewId view);
@@ -80,13 +87,17 @@ private:
     void observe_model_job(const std::string& job, bool new_generation, bool restart = false);
     void poll(bool restore = false);
     void ingest(Json group, AdvancedCreation::CallbackContext context, bool restore,
-                std::function<void()> done = {}, std::optional<AdvancedCreation::InputDraft> saved_input = {});
-    void save_draft(std::function<void()> done);
-    void save_local_draft();
+                std::function<void()> done = {}, std::optional<AdvancedCreation::InputDraft> saved_input = {},
+                AdvancedMultiviewClient::Error failed = {});
+    void save_draft(std::function<void()> done, AdvancedMultiviewClient::Error failed = {});
+    bool save_local_draft(const AdvancedCreation::LocalDraft* candidate = nullptr);
     void restore_local_draft(const std::string& group);
     void prepare(const std::string& group, Json request, Confirm confirm,
-                 AdvancedCreation::CommandContext context, bool new_group);
-    void run_plan(const std::string& group, Json plan, bool new_group);
+                 AdvancedCreation::CommandContext context, bool new_group, std::function<void(bool)> submitted = {});
+    void run_plan(const std::string& group, Json plan, bool new_group, std::function<void(bool)> submitted = {});
+    void submit_model_plan(const std::string& group, const Json& plan);
+    AdvancedCreation::HostGuards command_guards(bool preparing_candidate = false) const;
+    AdvancedMultiviewClient::Error single_design_error(std::function<void(bool)> submitted);
     bool save_pending_receipt(Json receipt);
     void clear_pending_receipt(const std::string& operation);
     bool receipt_is_current(const Json& receipt) const;
@@ -130,6 +141,11 @@ private:
     std::map<std::string, Json> m_written_local_drafts;
     std::set<std::string> m_unreadable_local_drafts;
     std::set<std::string> m_reconciling;
+    std::map<std::string, std::function<void(bool)>> m_single_submissions;
+    struct CandidatePlan { std::uint64_t id, revision, sequence; Json plan; };
+    std::optional<CandidatePlan> m_candidate_plan;
+    std::uint64_t m_candidate_plan_sequence {0};
+    bool m_preparing_candidate {false};
     bool m_restore_receipts {true};
     std::string m_message;
     bool m_service_available {false};

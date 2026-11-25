@@ -5,11 +5,17 @@
 #include "slic3r/GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/AdvancedMultiviewClient.hpp"
 #include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
+#include "slic3r/GUI/Redesign/AdvancedPreviewGesture.hpp"
+#include "slic3r/GUI/Redesign/AdvancedPreviewLayout.hpp"
 #include "../test_utils.hpp"
 #include <wx/app.h>
 #include <wx/evtloop.h>
 #include <wx/init.h>
+#include <wx/image.h>
 #include <wx/socket.h>
+#include <openssl/evp.h>
+#include <algorithm>
+#include <array>
 #include <chrono>
 
 using Slic3r::GUI::AdvancedMultiviewClient;
@@ -41,6 +47,253 @@ Session ready_session()
     session.apply_snapshot(complete_group(), context, true);
     return session;
 }
+
+// Exercise the real asynchronous client without the application sidecar or a
+// supplier. Selected responses stay open until the test delivers them.
+class AdvancedHttpProbe {
+public:
+    using Json = nlohmann::json;
+    struct Request {
+        std::string path;
+        Json payload;
+        std::unique_ptr<wxSocketBase> connection;
+    };
+    AdvancedHttpProbe()
+    {
+        REQUIRE(address.Hostname("127.0.0.1")); REQUIRE(address.Service(0));
+        server = std::make_unique<wxSocketServer>(address, wxSOCKET_NOWAIT);
+        REQUIRE(server->IsOk()); REQUIRE(server->GetLocal(address));
+    }
+    std::string endpoint() const { return "http://127.0.0.1:" + std::to_string(address.Service()); }
+    static bool ends_with(const std::string& value, const std::string& suffix)
+    { return value.size() >= suffix.size() && value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0; }
+    std::size_t count(const std::string& suffix) const
+    { return std::count_if(requests.begin(), requests.end(), [&](const auto& request) { return ends_with(request.path, suffix); }); }
+    std::size_t at(const std::string& suffix, std::size_t occurrence = 0) const
+    {
+        for (std::size_t i = 0; i < requests.size(); ++i)
+            if (ends_with(requests[i].path, suffix) && occurrence-- == 0) return i;
+        FAIL("Expected an observed HTTP request"); return 0;
+    }
+    void reply(std::size_t index, const Json& value, bool failed = false)
+    { reply_bytes(index, value.dump(), "application/json", failed); }
+    void reply_bytes(std::size_t index, const std::string& body, const std::string& content_type, bool failed = false)
+    {
+        auto& request = requests.at(index); REQUIRE(request.connection);
+        const auto response = std::string("HTTP/1.1 ") + (failed ? "503 Service Unavailable" : "200 OK") +
+            "\r\nContent-Type: " + content_type + "\r\nContent-Length: " + std::to_string(body.size()) +
+            "\r\nConnection: close\r\n\r\n" + body;
+        request.connection->Write(response.data(), response.size());
+        REQUIRE(request.connection->LastCount() == response.size());
+        request.connection->Close(); request.connection.reset();
+    }
+    void drop(std::size_t index)
+    {
+        auto& connection = requests.at(index).connection;
+        if (connection) { connection->Close(); connection.reset(); }
+    }
+    void pump()
+    {
+        if (auto* accepted = server->Accept(false)) {
+            std::unique_ptr<wxSocketBase> connection(accepted);
+            connection->SetFlags(wxSOCKET_WAITALL); connection->SetTimeout(2);
+            std::string header; char byte = 0;
+            while (header.find("\r\n\r\n") == std::string::npos && header.size() < 16384) {
+                connection->Read(&byte, 1); REQUIRE(connection->LastCount() == 1); header += byte;
+            }
+            const auto length_at = header.find("Content-Length:");
+            const auto length = length_at == std::string::npos ? 0 :
+                std::stoul(header.substr(length_at + std::string("Content-Length:").size()));
+            std::string body(length, '\0');
+            if (length) { connection->Read(body.data(), length); REQUIRE(connection->LastCount() == length); }
+            const auto first = header.find(' '), last = header.find(' ', first + 1);
+            const auto path = header.substr(first + 1, last - first - 1);
+            auto payload = body.empty() ? Json::object() : Json::parse(body, nullptr, false);
+            // Input saves use the real client's multipart upload, while plans
+            // and commands use JSON. Preserve multipart bytes for assertions.
+            if (payload.is_discarded()) payload = body;
+            requests.push_back({path, std::move(payload), std::move(connection)});
+            if (!ends_with(path, "/model-plans") && !ends_with(path, "/plans") &&
+                !ends_with(path, "/model-jobs") && !ends_with(path, "/operations") && !ends_with(path, "/reconcile") &&
+                !ends_with(path, "/stop") && std::none_of(held_suffixes.begin(), held_suffixes.end(),
+                    [&](const auto& suffix) { return ends_with(path, suffix); }))
+                reply(requests.size() - 1, capabilities);
+        }
+        wxTheApp->ProcessPendingEvents(); loop.DispatchTimeout(10);
+    }
+    template<class Ready> bool until(Ready ready)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!ready() && std::chrono::steady_clock::now() < deadline) pump();
+        return ready();
+    }
+    void drain()
+    {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(80);
+        while (std::chrono::steady_clock::now() < deadline) pump();
+    }
+    Json model_plan(std::size_t request, const std::string& group) const
+    {
+        const auto& input = requests.at(request).payload;
+        Json snapshot {{"schema", "approved-multiview-input-v2"}, {"group_id", group},
+            {"snapshot_id", input.at("command_id")}, {"input_epoch", input.at("expected_input_epoch")},
+            {"selected_views", input.at("selected_views")}, {"views", input.at("visible_versions")},
+            {"input_mode", input.at("selected_views").size() == 1 ? "image" : "multiview"}};
+        for (const auto& view : input.at("selected_views"))
+            snapshot["views"][view.get<std::string>()]["path"] = "inputs/" + view.get<std::string>() + ".png";
+        Json options = Json::object();
+        for (const auto* key : {"provider", "geometry_model", "face_limit", "geometry_quality", "texture_quality", "output_format"})
+            options[key] = input.at(key);
+        if (options.at("geometry_model").get<std::string>().empty()) options["geometry_model"] = "v3.0";
+        const double now = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+        return {{"schema", "advanced-multiview-model-plan-v2"}, {"id", input.at("command_id")},
+            {"job_id", input.at("command_id")}, {"group_id", group},
+            {"expected_group_revision", input.at("expected_group_revision")}, {"draft", input.at("draft")},
+            {"options", options}, {"approved_multiview_snapshot", snapshot}, {"max_new_image_calls", 0},
+            {"max_new_model_tasks", 1}, {"max_new_conversion_tasks", 0}, {"expires_at", now + 300},
+            {"confirmation_fingerprint", std::string(64, 'e')}};
+    }
+    Json local_plan(std::size_t request, const GroupSnapshot& group) const
+    {
+        const auto& input = requests.at(request).payload;
+        const auto target = input.at("design_request").at("target_view").get<std::string>();
+        return {{"id", input.at("command_id")}, {"group_id", group.id}, {"kind", input.at("kind")},
+            {"expected_group_revision", input.at("expected_group_revision")}, {"design_request", input.at("design_request")},
+            {"targets", Json::array({target})}, {"base_versions", input.at("base_versions")},
+            {"target_modes", {{target, "edit"}}}, {"dependency_views", Json::array()},
+            {"max_new_image_calls", 1}, {"max_new_model_tasks", 0},
+            {"frozen", {{"input_epoch", group.input_epoch}, {"design_targets", Json::array({"front", "left", "back", "right"})}}},
+            {"confirmation_fingerprint", std::string(64, 'd')}};
+    }
+    Json capabilities = {
+        {"schema", "advanced-multiview-capabilities-v1"}, {"model_plans", true}, {"groups", Json::array()},
+        {"image_models", Json::array({{{"provider", "gpt"}, {"model", "gpt-image-2"}, {"initial_text", "supported"},
+            {"initial_named_references", "supported"}, {"edit_current_with_context", "supported"}}})},
+        {"model_providers", {{"tripo", {{"available", true}, {"named_four_view_model", "supported"},
+            {"supported_image_counts", Json::array({1, 2, 3, 4})}}}}}};
+    std::vector<Request> requests;
+    std::vector<std::string> held_suffixes;
+private:
+    wxIPV4address address;
+    std::unique_ptr<wxSocketServer> server;
+    wxEventLoop loop;
+    wxEventLoopActivator active {&loop};
+};
+
+GroupSnapshot host_test_group(unsigned suffix)
+{
+    auto group = complete_group();
+    group.id = "55555555-5555-4555-8555-" + std::to_string(100000000000ULL + suffix);
+    group.input_epoch = group.id;
+    for (std::size_t i = 0; i < group.views.size(); ++i)
+        group.views[i].sha256 = std::string(64, static_cast<char>('a' + i));
+    return group;
+}
+}
+
+TEST_CASE("Preview navigation consumes a rapid click once across relayout",
+          "[AdvancedCreation][AdvancedPreviewGesture]")
+{
+    Slic3r::GUI::AdvancedPreviewClickSequence clicks;
+    // The first release switches Grid to Single immediately. Its second
+    // release must not activate the thumbnail now occupying the same position.
+    REQUIRE(clicks.accept(100, 603, 939, 500, 4));
+    CHECK_FALSE(clicks.accept(120, 603, 939, 500, 4));
+    CHECK_FALSE(clicks.accept(150, 605, 937, 500, 4));
+    // A deliberate click at another thumbnail remains immediate.
+    CHECK(clicks.accept(160, 647, 939, 500, 4));
+    CHECK_FALSE(clicks.accept(180, 647, 939, 500, 4));
+    CHECK(clicks.accept(661, 647, 939, 500, 4));
+}
+
+TEST_CASE("A new creation resets the preview click sequence without delaying input",
+          "[AdvancedCreation][AdvancedPreviewGesture]")
+{
+    Slic3r::GUI::AdvancedPreviewClickSequence clicks;
+    REQUIRE(clicks.accept(100, 603, 939, 500, 4));
+    clicks.reset();
+    CHECK(clicks.accept(101, 603, 939, 500, 4));
+    CHECK_FALSE(clicks.accept(102, 603, 939, 500, 4));
+    // Do not retain a lock if the monotonic clock input is reset.
+    CHECK(clicks.accept(1, 603, 939, 500, 4));
+}
+
+TEST_CASE("Preview cards fill their sizing budget proportionally and center in the viewport",
+          "[AdvancedCreation][AdvancedPreviewLayout]")
+{
+    using namespace Slic3r::GUI;
+    const wxSize viewport = GENERATE(wxSize(900, 950), wxSize(600, 451), wxSize(275, 811));
+    const wxSize available(viewport.x, viewport.y - 8);
+    const auto single = center_design_preview(viewport, fit_design_preview(available, {548, 740}));
+    CHECK(wxRect(wxPoint{}, viewport).Contains(single));
+    CHECK(single.height <= available.y);
+    CHECK(single.width <= 548);
+    CHECK(single.height <= 740);
+    CHECK(std::abs(single.width * 740 - single.height * 548) <= 740);
+    CHECK(std::abs(single.GetTop() - (viewport.y - single.GetBottom() - 1)) <= 1);
+
+    const auto grid = design_preview_grid(viewport, available.y, {260, 350}, 8);
+    for (const auto& card : grid) {
+        CHECK(wxRect(wxPoint{}, viewport).Contains(card));
+        CHECK(card.GetSize() == grid.front().GetSize());
+        CHECK(card.width <= 260);
+        CHECK(card.height <= 350);
+        CHECK(std::abs(card.width * 350 - card.height * 260) <= 350);
+    }
+    CHECK(grid[1].GetLeft() - grid[0].GetRight() - 1 == 8);
+    CHECK(grid[2].GetTop() - grid[0].GetBottom() - 1 == 8);
+    CHECK(grid.back().GetBottom() - grid.front().GetTop() + 1 <= available.y);
+    CHECK(std::abs(grid.front().GetTop() - (viewport.y - grid.back().GetBottom() - 1)) <= 1);
+}
+
+TEST_CASE("The thumbnail strip stays inside a narrow preview and leaves the star clickable",
+          "[AdvancedCreation][AdvancedPreviewLayout]")
+{
+    using namespace Slic3r::GUI;
+    const int scale = GENERATE(1, 2);
+    const int width = GENERATE(548, 210, 132);
+    const wxSize size(width * scale, width * 740 / 548 * scale);
+    const auto controls = design_preview_controls(size, true, [scale](int dip) { return scale * dip; });
+    REQUIRE(controls.regenerate.GetSize() == wxSize(24 * scale, 24 * scale));
+    for (const auto& thumb : controls.thumbnails) {
+        CHECK_FALSE(thumb.IsEmpty());
+        CHECK(wxRect(wxPoint{}, size).Contains(thumb));
+        CHECK_FALSE(thumb.Intersects(controls.regenerate));
+        CHECK(thumb.GetBottom() == size.y - 12 * scale - 1);
+    }
+    CHECK(std::abs(controls.thumbnails.front().GetLeft() - (size.x - controls.thumbnails.back().GetRight() - 1)) <= 1);
+    CHECK(controls.thumbnails[1].GetLeft() - controls.thumbnails[0].GetRight() - 1 == 4 * scale);
+}
+
+TEST_CASE("Model check corners reserve their own hit target within each preview thumbnail",
+          "[AdvancedCreation][AdvancedPreviewLayout]")
+{
+    using namespace Slic3r::GUI;
+    const int scale = GENERATE(100, 150, 200);
+    const int width = GENERATE(548, 132, 68);
+    const auto dip = [scale](int n) { return (n * scale + 50) / 100; };
+    const auto controls = design_preview_controls({dip(width), dip(width * 740 / 548)}, true, dip);
+    for (size_t i = 0; i < controls.thumbnails.size(); ++i) {
+        const auto& thumb = controls.thumbnails[i];
+        const auto& corner = controls.thumbnail_checks[i];
+        REQUIRE_FALSE(corner.IsEmpty());
+        CHECK(thumb.Contains(corner));
+        CHECK_FALSE(corner.Intersects(controls.regenerate));
+        CHECK_FALSE(corner.Contains(thumb.GetTopLeft()));
+        const auto checkbox = controls.thumbnail_at(thumb.GetTopRight(), true);
+        REQUIRE(checkbox);
+        CHECK(checkbox->index == i);
+        CHECK(checkbox->selection);
+        const auto body = controls.thumbnail_at(thumb.GetTopLeft(), true);
+        REQUIRE(body);
+        CHECK(body->index == i);
+        CHECK_FALSE(body->selection);
+        const auto design = controls.thumbnail_at(thumb.GetTopRight(), false);
+        REQUIRE(design);
+        CHECK(design->index == i);
+        CHECK_FALSE(design->selection);
+        CHECK_FALSE(controls.thumbnail_at(thumb.GetTopRight() + wxPoint(1, 0), true));
+    }
 }
 
 TEST_CASE("Advanced invalid drafts remain clickable without authorizing generation",
@@ -51,7 +304,10 @@ TEST_CASE("Advanced invalid drafts remain clickable without authorizing generati
     auto draft = session.draft().design;
     std::string reason;
     if (invalid == "empty") reason = "empty_input";
-    if (invalid == "front") { session.set_upload(ViewId::Left, "left.png"); reason = "missing_front"; }
+    if (invalid == "front") {
+        auto local = session.local_draft(); local.dirty = true; local.input.uploads[1] = "left.png";
+        session.restore_local_draft(local); reason = "missing_front";
+    }
     if (invalid == "prompt") { draft.prompt.assign(2001,'a'); reason = "prompt_too_long"; }
     if (invalid == "custom-empty") { draft.prompt = "object"; draft.style = "custom"; reason = "custom_style_empty"; }
     if (invalid == "custom-long") { draft.prompt = "object"; draft.custom_style.assign(1001,'a'); reason = "custom_style_too_long"; }
@@ -100,6 +356,244 @@ TEST_CASE("Advanced model selection defaults to every available direction and al
     CHECK(session.eligibility(capabilities,{true,true,true}).generate_model);
     capabilities.model_image_counts[0] = false;
     CHECK_FALSE(session.eligibility(capabilities,{true,true,true}).generate_model);
+}
+
+TEST_CASE("Full design scope follows inputs independently of repaint and model selections",
+          "[AdvancedCreation][Advanced2DPreview]")
+{
+    auto session = ready_session();
+    REQUIRE(session.toggle(ViewId::Left));
+    session.click(ViewId::Right,100,1,SelectionContext::Model); REQUIRE(session.flush_click(101));
+    CHECK(session.all_design_views() == std::vector<ViewId>{ViewId::Front,ViewId::Left,ViewId::Back,ViewId::Right});
+    auto group = complete_group(); group.uploads = {"front-source.png","","back-source.png",""};
+    REQUIRE(session.apply_snapshot(group,session.begin_open(group.id),true));
+    CHECK(session.all_design_views() == std::vector<ViewId>{ViewId::Front,ViewId::Back});
+    REQUIRE(session.set_upload(ViewId::Front,""));
+    CHECK(session.all_design_views() == std::vector<ViewId>{ViewId::Back});
+    CHECK(session.input_rejection() == "missing_front");
+    REQUIRE(session.set_upload(ViewId::Back,""));
+    CHECK(session.all_design_views().size() == 4);
+}
+
+TEST_CASE("Missing main reference permits auxiliary deletion but rejects additions and replacements",
+          "[AdvancedCreation][Advanced2DPreview]")
+{
+    Session session;
+    CHECK_FALSE(session.set_upload(ViewId::Left,"new.png",true));
+    CHECK(session.draft().uploads[1].empty());
+    REQUIRE(session.set_upload(ViewId::Front,"front.png"));
+    REQUIRE(session.set_upload(ViewId::Left,"left.png"));
+    REQUIRE(session.set_upload(ViewId::Front,""));
+    const auto before = session.command_context();
+    CHECK_FALSE(session.set_upload(ViewId::Left,"left.png",true));
+    CHECK_FALSE(session.set_upload(ViewId::Left,"other.png"));
+    CHECK_FALSE(session.set_upload(ViewId::Right,"new.png"));
+    CHECK(session.matches_command(before));
+    CHECK(session.draft().uploads[1] == "left.png");
+    REQUIRE(session.set_upload(ViewId::Left,""));
+    REQUIRE(session.set_upload(ViewId::Front,"restored.png"));
+    CHECK(session.set_upload(ViewId::Right,"new.png"));
+}
+
+TEST_CASE("Single design edits require a current or failed direction and retain global unresolved guards",
+          "[AdvancedCreation][Advanced2DPreview]")
+{
+    const bool front_upload_only = GENERATE(false, true);
+    auto group = complete_group();
+    if (front_upload_only) group.uploads[index(ViewId::Front)] = "main-reference.png";
+    Session session;
+    REQUIRE(session.apply_snapshot(group, session.begin_open(group.id), true));
+    const std::vector<ViewId> front_only {ViewId::Front};
+    if (front_upload_only) CHECK(session.all_design_views() == front_only);
+    CHECK(session.has_local_design_target(ViewId::Left));
+    CHECK(session.single_design_rejection(ViewId::Left,"").empty());
+    CHECK(session.single_design_rejection(ViewId::Left,std::string(2000,'a')).empty());
+    CHECK(session.single_design_rejection(ViewId::Left,std::string(2001,'a')) == "invalid_input");
+    group = *session.group(); group.views[1] = {}; ++group.revision;
+    REQUIRE(session.apply_snapshot(group,session.context()));
+    CHECK_FALSE(session.has_local_design_target(ViewId::Left));
+    CHECK(session.single_design_rejection(ViewId::Left,"") == "missing_current_view");
+    group.views[1].attempt_state = "failed"; ++group.revision;
+    REQUIRE(session.apply_snapshot(group,session.context()));
+    CHECK(session.has_local_design_target(ViewId::Left));
+    CHECK(session.single_design_rejection(ViewId::Left,"").empty());
+    group.views[3].attempt_state = "ambiguous"; ++group.revision;
+    REQUIRE(session.apply_snapshot(group,session.context()));
+    CHECK(session.single_design_rejection(ViewId::Left, "").empty());
+    for (const std::string known : {"result_pending", "result_saved"}) {
+        group.views[3].attempt_state = known; ++group.revision;
+        REQUIRE(session.apply_snapshot(group,session.context()));
+        CHECK(session.single_design_rejection(ViewId::Left, "") == "recovery_required");
+    }
+}
+
+TEST_CASE("Local design can use its displayed base or its own description when the global prompt is empty",
+          "[AdvancedCreation][AdvancedLocalDesign]")
+{
+    auto group = complete_group();
+    group.saved_draft.prompt.clear();
+    group.views[index(ViewId::Front)] = {};
+    group.views[index(ViewId::Left)] = {};
+    group.views[index(ViewId::Left)].attempt_state = "failed";
+    Session session;
+    REQUIRE(session.apply_snapshot(group, session.begin_open(group.id), true));
+    CHECK(session.input_rejection() == "empty_input");
+    CHECK(session.all_design_views().empty());
+    CHECK(session.single_design_rejection(ViewId::Right, "").empty());
+    CHECK(session.has_local_design_target(ViewId::Left));
+    CHECK(session.single_design_rejection(ViewId::Left, " ") == "empty_input");
+    CHECK(session.single_design_rejection(ViewId::Left, "Render the left profile").empty());
+    CHECK(session.single_design_rejection(ViewId::Front, "Render the main view") == "missing_current_view");
+}
+
+TEST_CASE("Model selection candidates keep preferences unchanged until their exact final revision commits",
+          "[AdvancedCreation][AdvancedModelSelection]")
+{
+    auto session = ready_session(); const auto before = session.local_draft();
+    const auto id = session.begin_model_selection();
+    CHECK_FALSE(session.toggle_candidate_view(ViewId::Front));
+    REQUIRE(session.toggle_candidate_view(ViewId::Left));
+    CHECK(session.local_draft().model_selected == before.model_selected);
+    REQUIRE(session.candidate_local_draft());
+    CHECK_FALSE(session.candidate_local_draft()->model_selected[1]);
+    CHECK_FALSE(session.commit_model_selection(id,0));
+    REQUIRE(session.commit_model_selection(id,1));
+    CHECK_FALSE(session.model_selection()[1]);
+    CHECK_FALSE(session.model_candidate());
+    session.begin_model_selection(); REQUIRE(session.toggle_candidate_view(ViewId::Back));
+    const auto confirmed = session.local_draft(); session.cancel_model_selection();
+    CHECK(session.local_draft().model_selected == confirmed.model_selected);
+}
+
+TEST_CASE("Model candidates allow removing unavailable old auxiliaries while retaining creation guards",
+          "[AdvancedCreation][AdvancedModelSelection]")
+{
+    auto session = ready_session(); auto group = *session.group();
+    group.views[1].display_error = true; ++group.revision;
+    REQUIRE(session.apply_snapshot(group,session.context()));
+    const Capabilities caps {true,true,true,true,true,{true,true,true,true},true};
+    const HostGuards guards {true,true,true};
+    CHECK_FALSE(session.eligibility(caps,guards).generate_model);
+    CHECK(session.model_selection_entry_eligibility(caps,guards).generate_model);
+    session.begin_model_selection();
+    CHECK_FALSE(session.candidate_model_eligibility(caps,guards).generate_model);
+    REQUIRE(session.toggle_candidate_view(ViewId::Left));
+    CHECK_FALSE(session.toggle_candidate_view(ViewId::Left));
+    CHECK(session.candidate_model_eligibility(caps,guards).generate_model);
+    CHECK_FALSE(session.candidate_model_eligibility(caps,{false,true,true}).generate_model);
+    group.views[3].attempt_state = "ambiguous"; ++group.revision;
+    REQUIRE(session.apply_snapshot(group,session.context()));
+    CHECK(session.model_selection_entry_eligibility(caps, guards).generate_model);
+    session.begin_model_selection();
+    CHECK(session.candidate_model_eligibility(caps, guards).model_reason == "design_result_unknown");
+    REQUIRE(session.toggle_candidate_view(ViewId::Left));
+    REQUIRE(session.toggle_candidate_view(ViewId::Right));
+    CHECK(session.candidate_model_eligibility(caps, guards).generate_model);
+    session.cancel_model_selection();
+    CHECK(session.model_selection()[index(ViewId::Right)]);
+}
+
+TEST_CASE("Changing inputs versions model preferences or creation invalidates candidate confirmation",
+          "[AdvancedCreation][AdvancedModelSelection]")
+{
+    const std::string change = GENERATE("draft","version","model-selection","creation");
+    auto session = ready_session(); const auto id = session.begin_model_selection();
+    REQUIRE(session.toggle_candidate_view(ViewId::Right));
+    if (change == "draft") { auto draft = session.draft().design; draft.prompt += " changed"; session.set_design_draft(draft); }
+    if (change == "version") { auto group = *session.group(); ++group.revision; session.apply_snapshot(group,session.context()); }
+    if (change == "model-selection") { session.click(ViewId::Back,100,1,SelectionContext::Model); session.flush_click(101); }
+    if (change == "creation") session.new_creation();
+    CHECK_FALSE(session.commit_model_selection(id,1));
+}
+
+TEST_CASE("Advanced local plan parsing rejects ignored scope expanded targets and mismatched frozen identity",
+          "[AdvancedCreation][Advanced2DPreview]")
+{
+    using Json = nlohmann::json;
+    const std::string variant = GENERATE("valid","legacy","targets","dependencies","calls","modes","base","mode","text","revision","group","id");
+    const Json intent {{"version",1},{"scope","single_view"},{"target_view","left"},{"local_prompt","keep this local"}};
+    const Json request {{"command_id","operation-a"},{"kind","edit"},{"expected_group_revision",4},{"design_request",intent},
+        {"base_versions",{{"left","version-a"}}}};
+    Json plan {{"id","operation-a"},{"group_id","group-a"},{"kind","edit"},{"expected_group_revision",4},
+        {"design_request",intent},{"targets",Json::array({"left"})},{"base_versions",{{"left","version-a"}}},
+        {"target_modes",{{"left","edit"}}},{"dependency_views",Json::array()},{"max_new_image_calls",1},{"max_new_model_tasks",0}};
+    if (variant == "legacy") plan.erase("design_request");
+    if (variant == "targets") plan["targets"].push_back("front");
+    if (variant == "dependencies") plan["dependency_views"].push_back("front");
+    if (variant == "calls") plan["max_new_image_calls"] = 2;
+    if (variant == "modes") plan["target_modes"]["front"] = "initial";
+    if (variant == "base") plan["base_versions"]["left"] = "another-version";
+    if (variant == "mode") plan["target_modes"]["left"] = "initial";
+    if (variant == "text") plan["design_request"]["local_prompt"] = "different";
+    if (variant == "revision") plan["expected_group_revision"] = 5;
+    if (variant == "group") plan["group_id"] = "group-b";
+    if (variant == "id") plan["id"] = "operation-b";
+    CHECK(AdvancedMultiviewClient::design_plan_matches(plan,request,"group-a",{ViewId::Left}) == (variant == "valid"));
+}
+
+TEST_CASE("Model selection entry defers exact image count capability until the candidate is chosen",
+          "[AdvancedCreation][AdvancedModelSelection]")
+{
+    const int count = GENERATE(1,2,3,4);
+    auto session = ready_session();
+    Capabilities caps {true,true,true,true,true,{},true};
+    caps.model_image_counts[count-1] = true;
+    const HostGuards guards {true,true,true};
+    REQUIRE(session.model_selection_entry_eligibility(caps,guards).generate_model);
+    session.begin_model_selection();
+    for (int i=3; i>=count; --i) REQUIRE(session.toggle_candidate_view(AllViews[i]));
+    CHECK(session.candidate_model_eligibility(caps,guards).generate_model);
+    CHECK_FALSE(session.model_selection_entry_eligibility(caps,{false,true,true}).generate_model);
+    caps.model_image_counts.fill(false);
+    CHECK_FALSE(session.model_selection_entry_eligibility(caps,guards).generate_model);
+    CHECK_FALSE(session.candidate_model_eligibility(caps,guards).generate_model);
+}
+
+TEST_CASE("Model candidate plans must echo exact frozen versions options and creation identity",
+          "[AdvancedCreation][AdvancedModelSelection]")
+{
+    using Json = nlohmann::json;
+    const std::string variant = GENERATE("valid","epoch","version","sha","path","extra-view","selection",
+        "mode","revision","job","group","draft","provider","model","faces","quality","output","calls");
+    const Json request {{"command_id","operation-a"},{"expected_group_revision",4},{"expected_input_epoch","epoch-a"},
+        {"selected_views",Json::array({"front","right"})},
+        {"visible_versions",{{"front",{{"version_id","front-a"},{"sha256",std::string(64,'a')}}},
+                             {"right",{{"version_id","right-a"},{"sha256",std::string(64,'b')}}}}},
+        {"draft",{{"prompt","original"}}},{"provider","tripo"},{"geometry_model","model-a"},{"face_limit",300000},
+        {"geometry_quality","standard"},{"texture_quality","standard"},{"output_format","glb"}};
+    Json snapshot {{"schema","approved-multiview-input-v2"},{"group_id","group-a"},{"snapshot_id","operation-a"},
+        {"input_epoch","epoch-a"},{"selected_views",request.at("selected_views")},{"input_mode","multiview"},{"views",Json::object()}};
+    for (const auto& view : request.at("selected_views")) {
+        const auto name=view.get<std::string>();
+        snapshot["views"][name]=request.at("visible_versions").at(name);
+        snapshot["views"][name]["path"]="inputs/"+name+".png";
+    }
+    Json options;
+    for (const auto* key : {"provider","geometry_model","face_limit","geometry_quality","texture_quality","output_format"})
+        options[key]=request.at(key);
+    Json plan {{"schema","advanced-multiview-model-plan-v2"},{"id","operation-a"},{"job_id","operation-a"},
+        {"group_id","group-a"},{"expected_group_revision",4},{"draft",request.at("draft")},{"options",options},
+        {"approved_multiview_snapshot",snapshot},{"max_new_image_calls",0},{"max_new_model_tasks",1},
+        {"max_new_conversion_tasks",0},{"confirmation_fingerprint",std::string(64,'c')}};
+    auto& approved=plan["approved_multiview_snapshot"];
+    if (variant=="epoch") approved["input_epoch"]="epoch-b";
+    if (variant=="version") approved["views"]["front"]["version_id"]="another-version";
+    if (variant=="sha") approved["views"]["right"]["sha256"]=std::string(64,'d');
+    if (variant=="path") approved["views"]["right"]["path"]="inputs/front.png";
+    if (variant=="extra-view") approved["views"]["left"]=approved["views"]["right"];
+    if (variant=="selection") approved["selected_views"]=Json::array({"front"});
+    if (variant=="mode") approved["input_mode"]="image";
+    if (variant=="revision") plan["expected_group_revision"]=5;
+    if (variant=="job") plan["job_id"]="job-b";
+    if (variant=="group") approved["group_id"]="group-b";
+    if (variant=="draft") plan["draft"]["prompt"]="different";
+    if (variant=="provider") plan["options"]["provider"]="yoyoclaw";
+    if (variant=="model") plan["options"]["geometry_model"]="model-b";
+    if (variant=="faces") plan["options"]["face_limit"]=1000000;
+    if (variant=="quality") plan["options"]["texture_quality"]="detailed";
+    if (variant=="output") plan["options"]["output_format"]="obj";
+    if (variant=="calls") plan["max_new_image_calls"]=1;
+    CHECK(AdvancedMultiviewClient::model_plan_matches(plan,request,"group-a")== (variant=="valid"));
 }
 
 TEST_CASE("Explicit model changes and design repaint selection have independent command identities",
@@ -171,7 +665,7 @@ TEST_CASE("Upload deletion and same path replacement hide designs through stale 
 {
     const bool replacement = GENERATE(false,true);
     auto session = ready_session();
-    auto original = *session.group(); original.uploads[1] = "same-path.png";
+    auto original = *session.group(); original.uploads[0] = "front-upload.png"; original.uploads[1] = "same-path.png";
     REQUIRE(session.apply_snapshot(original,session.context(),true));
     REQUIRE(session.set_upload(ViewId::Left,replacement ? "same-path.png" : "",replacement));
     REQUIRE_FALSE(session.group()->views[1].usable);
@@ -277,6 +771,8 @@ TEST_CASE("Three successive upload replacements keep only the newest acknowledge
 {
     const bool same_path = GENERATE(false, true);
     auto session = ready_session();
+    auto uploaded = *session.group(); uploaded.uploads[0] = "front-upload.png";
+    REQUIRE(session.apply_snapshot(uploaded, session.context(), true));
     const auto initial = *session.group();
     std::array<InputDraft, 3> inputs;
     std::array<GroupSnapshot, 3> snapshots;
@@ -448,8 +944,15 @@ TEST_CASE("Selected auxiliary failures can be removed in both model selection co
     CHECK(session.model_selection()[slot]);
     CHECK_FALSE(session.eligibility(capabilities,{true,true,true}).generate_model);
     const auto old_command=session.command_context();
-    session.click(auxiliary,300,10,context);
-    REQUIRE(session.flush_click(310));
+    const bool explicit_check = context == SelectionContext::Model && GENERATE(false, true);
+    if (explicit_check) {
+        CHECK_FALSE(session.can_toggle_model_view(ViewId::Front));
+        CHECK(session.can_toggle_model_view(auxiliary));
+        REQUIRE(session.toggle_model_view(auxiliary));
+    } else {
+        session.click(auxiliary,300,10,context);
+        REQUIRE(session.flush_click(310));
+    }
     CHECK_FALSE(session.model_selection()[slot]);
     CHECK_FALSE(session.matches_model_command(old_command));
     CHECK(session.group()->pending_views[slot]==failed.pending_views[slot]);
@@ -459,8 +962,13 @@ TEST_CASE("Selected auxiliary failures can be removed in both model selection co
     CHECK(session.effective_model_views()==expected);
     REQUIRE(session.eligibility(capabilities,{true,true,true}).generate_model);
     const auto canceled_command=session.command_context();
-    session.click(auxiliary,400,10,context);
-    CHECK_FALSE(session.flush_click(410));
+    if (explicit_check) {
+        CHECK_FALSE(session.can_toggle_model_view(auxiliary));
+        CHECK_FALSE(session.toggle_model_view(auxiliary));
+    } else {
+        session.click(auxiliary,400,10,context);
+        CHECK_FALSE(session.flush_click(410));
+    }
     CHECK(session.matches_model_command(canceled_command));
     const auto local=session.local_draft();
     Session reopened; REQUIRE(reopened.apply_snapshot(failed,reopened.begin_open(failed.id),true));
@@ -477,7 +985,7 @@ TEST_CASE("Removing an unavailable auxiliary does not bypass model generation gu
           "[AdvancedCreation][AdvancedFlexibleViews]")
 {
     const std::string blocker=GENERATE("active","model","stopping","readonly","options","service",
-        "draft","ambiguous","result_pending","result_saved","front");
+        "draft","result_pending","result_saved","front");
     auto group=complete_group(); group.views[2]=group.views[3]={};
     Session session; REQUIRE(session.apply_snapshot(group,session.begin_open(group.id),true));
     auto failed=*session.group(); ++failed.revision;
@@ -495,8 +1003,7 @@ TEST_CASE("Removing an unavailable auxiliary does not bypass model generation gu
     if (blocker=="options") guards.model_options_valid=false;
     if (blocker=="service") guards.model_service_available=false;
     if (blocker=="front") blocked.views[0].display_error=true;
-    if (blocker=="ambiguous" || blocker=="result_pending" || blocker=="result_saved")
-        blocked.views[1].attempt_state=blocker;
+    if (blocker == "result_pending" || blocker == "result_saved") blocked.views[1].attempt_state = blocker;
     REQUIRE(session.apply_snapshot(blocked,session.context()));
     if (blocker=="draft") {
         auto draft=session.draft().design; draft.prompt="changed";
@@ -513,7 +1020,7 @@ TEST_CASE("Hidden auxiliary slots and ordinary repaint clicks retain their exist
 {
     const bool replacement=GENERATE(false,true);
     auto session=ready_session();
-    auto uploaded=*session.group(); uploaded.uploads[1]="original-left.png";
+    auto uploaded=*session.group(); uploaded.uploads[0]="front-upload.png"; uploaded.uploads[1]="original-left.png";
     REQUIRE(session.apply_snapshot(uploaded,session.context(),true));
     REQUIRE(session.set_upload(ViewId::Left,replacement?"replacement.png":"",replacement));
     const auto before=session.local_draft();
@@ -536,7 +1043,7 @@ TEST_CASE("Hidden auxiliary slots and ordinary repaint clicks retain their exist
     CHECK(ordinary.model_selection()[1]);
 }
 
-TEST_CASE("Unselected ordinary auxiliary failure does not block modeling but unresolved submission does",
+TEST_CASE("Unselected auxiliary failures without a recoverable result do not block modeling",
           "[AdvancedCreation][AdvancedFlexibleViews]")
 {
     const std::string state = GENERATE("failed","stopped","blocked","ambiguous","result_pending","result_saved");
@@ -545,7 +1052,7 @@ TEST_CASE("Unselected ordinary auxiliary failure does not block modeling but unr
     Session session; REQUIRE(session.apply_snapshot(group,session.begin_open(group.id),true));
     Capabilities capabilities {true,true,true,true,true,{true,true,true,true},true};
     const auto allowed = session.eligibility(capabilities,{true,true,true});
-    CHECK(allowed.generate_model == (state == "failed" || state == "stopped" || state == "blocked"));
+    CHECK(allowed.generate_model == (state != "result_pending" && state != "result_saved"));
     CHECK_FALSE(session.model_selection()[2]);
 }
 
@@ -567,10 +1074,14 @@ TEST_CASE("Advanced interaction guards survive missing views and distinguish unr
     const auto eligible = session.eligibility({true,true,true,true,true},guards);
     const bool unresolved = blocker == "ambiguous" || blocker == "result_pending" || blocker == "result_saved";
     CHECK(eligible.click_generate_design == unresolved);
-    CHECK_FALSE(eligible.click_generate_model);
+    CHECK(eligible.click_generate_model == (blocker == "ambiguous"));
     CHECK_FALSE(eligible.generate_model);
     if (blocker == "workbench") CHECK(eligible.model_reason == "missing_current_view");
-    if (unresolved) CHECK(eligible.generate_design);
+    if (unresolved) {
+        CHECK(eligible.generate_design == (blocker == "ambiguous"));
+        CHECK(eligible.recover == (blocker != "ambiguous"));
+        if (blocker != "ambiguous") CHECK(eligible.design_reason == "recovery_required");
+    }
 }
 
 TEST_CASE("Advanced byte boundaries and selection flushing keep their original command semantics",
@@ -1000,6 +1511,47 @@ TEST_CASE("Advanced polling and sidebar changes preserve edited text selection a
     CHECK_FALSE(session.draft_dirty());
 }
 
+TEST_CASE("Reopening a creation preserves its local model preferences before history responds",
+          "[AdvancedCreation][AdvancedDraftInput][AdvancedModelSelection][Regression]")
+{
+    wxInitializer init; REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-advanced-reopen-preferences"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.string());
+    // The model output directory is process-scoped. Exercise both opens within
+    // the same isolated directory rather than reinitializing it per generator.
+    for (const bool same_group : {true, false}) {
+        CAPTURE(same_group);
+        Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr, "https://not-a-local-service.invalid");
+        auto group = complete_group();
+        group.id = "11111111-1111-4111-8111-111111111111";
+        REQUIRE(host.session().apply_snapshot(group, host.session().begin_open(group.id), true));
+        host.session().click(ViewId::Left, 100, 10, SelectionContext::Model);
+        REQUIRE(host.session().flush_click(110));
+        const auto checkpoint = host.session().local_draft();
+        host.changed();
+        const auto path = temporary.path() / "advanced-cache" / "drafts" / (group.id + ".json");
+        REQUIRE(boost::filesystem::is_regular_file(path));
+        const auto read_checkpoint = [&] {
+            std::ifstream input(path.string());
+            REQUIRE(input.is_open());
+            return nlohmann::json::parse(input);
+        };
+        const auto before = read_checkpoint();
+        // No service is enabled: opening publishes the loading state without any
+        // network response. That state must not overwrite the durable checkpoint.
+        const std::string opened = same_group ? group.id : "22222222-2222-4222-8222-222222222222";
+        host.open_group(opened);
+        REQUIRE(host.session().context().group_id == opened);
+        CHECK(read_checkpoint() == before);
+        if (same_group) {
+            CHECK(host.session().local_draft().model_selected == checkpoint.model_selected);
+            CHECK(host.session().local_draft().model_seen == checkpoint.model_seen);
+        }
+        host.shutdown();
+        CHECK(read_checkpoint() == before);
+    }
+}
+
 TEST_CASE("Advanced auto-save leaves editing available while explicit commands retain their lock",
           "[AdvancedCreation][AdvancedDraftInput]")
 {
@@ -1058,6 +1610,205 @@ TEST_CASE("Advanced auto-save leaves editing available while explicit commands r
     host.shutdown();
 }
 
+TEST_CASE("A failed save before a local edit releases submission and permits an explicit retry",
+          "[AdvancedCreation][AdvancedLocalDesign][AdvancedDraftInput]")
+{
+    const std::string failure = GENERATE("http", "missing_group", "invalid_group");
+    wxInitializer init; REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-advanced-local-save-failure"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.string());
+    wxIPV4address address;
+    REQUIRE(address.Hostname("127.0.0.1")); REQUIRE(address.Service(0));
+    wxSocketServer server(address, wxSOCKET_NOWAIT);
+    REQUIRE(server.IsOk()); REQUIRE(server.GetLocal(address));
+    Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr,
+        "http://127.0.0.1:" + std::to_string(address.Service()));
+    host.session() = ready_session();
+    wxEventLoop loop; wxEventLoopActivator active(&loop);
+    const auto pump = [&] { wxTheApp->ProcessPendingEvents(); loop.DispatchTimeout(20); };
+    const auto reply = [&](const std::string& body, bool error = false) {
+        std::unique_ptr<wxSocketBase> connection(server.Accept(false));
+        if (!connection) return false;
+        const std::string response = std::string("HTTP/1.1 ") +
+            (error ? "503 Service Unavailable" : "200 OK") +
+            "\r\nContent-Type: application/json\r\nContent-Length: " + std::to_string(body.size()) +
+            "\r\nConnection: close\r\n\r\n" + body;
+        connection->Write(response.data(), response.size());
+        REQUIRE(connection->LastCount() == response.size());
+        connection->Close(); return true;
+    };
+    const std::string capabilities = R"({"schema":"advanced-multiview-capabilities-v1","image_models":[{"provider":"gpt","model":"gpt-image-2","initial_text":"supported","initial_named_references":"supported","edit_current_with_context":"supported"}],"model_plans":true,"model_providers":{},"groups":[]})";
+    host.set_service_available(true);
+    const auto discover_until = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (std::chrono::steady_clock::now() < discover_until) {
+        reply(capabilities); pump();
+    }
+    REQUIRE(host.eligibility().generate_design);
+    auto draft = host.session().draft().design; draft.prompt = "A newly edited global description";
+    REQUIRE(host.session().set_design_draft(draft));
+    int callbacks = 0, saves = 0;
+    const std::string body = failure == "invalid_group" ? R"({"group":{}})" : "{}";
+    for (int attempt = 1; attempt <= 2; ++attempt) {
+        host.generate_single_design(ViewId::Left, "Only recolor this view", [&](bool accepted) {
+            CHECK_FALSE(accepted); ++callbacks;
+        });
+        REQUIRE(host.command_pending());
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (callbacks < attempt && std::chrono::steady_clock::now() < deadline) {
+            if (reply(body, failure == "http")) ++saves;
+            pump();
+        }
+        REQUIRE(callbacks == attempt);
+        CHECK(saves == attempt);
+        CHECK_FALSE(host.command_pending());
+        CHECK_FALSE(host.has_pending_receipt());
+        CHECK(host.session().draft_dirty());
+        CHECK(host.session().draft().design.prompt == draft.prompt);
+        CHECK(host.session().group()->views[1].version_id == "left-v1");
+    }
+    host.shutdown();
+}
+
+TEST_CASE("A model candidate can be confirmed after an unsent checkpoint failure is repaired",
+          "[AdvancedCreation][AdvancedModelSelection][AdvancedDraftInput][Regression]")
+{
+    using Json = nlohmann::json;
+    wxInitializer init; REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-advanced-candidate-save"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.string());
+    for (const bool receipt_failure : {true, false}) {
+        CAPTURE(receipt_failure);
+        wxIPV4address address;
+        REQUIRE(address.Hostname("127.0.0.1")); REQUIRE(address.Service(0));
+        wxSocketServer server(address, wxSOCKET_NOWAIT);
+        REQUIRE(server.IsOk()); REQUIRE(server.GetLocal(address));
+        Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr,
+            "http://127.0.0.1:" + std::to_string(address.Service()));
+        auto group = complete_group();
+        group.id = receipt_failure ? "33333333-3333-4333-8333-333333333333" :
+                                     "44444444-4444-4444-8444-444444444444";
+        for (std::size_t i = 0; i < group.views.size(); ++i)
+            group.views[i].sha256 = std::string(64, static_cast<char>('a' + i));
+        REQUIRE(host.session().apply_snapshot(group, host.session().begin_open(group.id), true));
+        host.changed();
+        const auto checkpoint = temporary.path() / "advanced-cache" / "drafts" / (group.id + ".json");
+        const auto read_checkpoint = [&] {
+            std::ifstream input(checkpoint.string()); REQUIRE(input.is_open()); return Json::parse(input);
+        };
+        const auto original = read_checkpoint();
+        const auto preferences = host.session().model_selection();
+        wxEventLoop loop; wxEventLoopActivator active(&loop);
+        Json prepared, submitted;
+        int model_posts = 0, reconciles = 0;
+        const Json capabilities = {
+            {"schema", "advanced-multiview-capabilities-v1"}, {"model_plans", true}, {"groups", Json::array()},
+            {"image_models", Json::array({{{"provider", "gpt"}, {"model", "gpt-image-2"},
+                {"initial_text", "supported"}, {"initial_named_references", "supported"},
+                {"edit_current_with_context", "supported"}}})},
+            {"model_providers", {{"tripo", {{"available", true}, {"named_four_view_model", "supported"},
+                {"supported_image_counts", Json::array({1, 2, 3, 4})}}}}}};
+        const auto reply = [&] {
+            std::unique_ptr<wxSocketBase> connection(server.Accept(false));
+            if (!connection) return false;
+            // Use the existing real-client socket seam. This is an offline HTTP
+            // response, never the application sidecar or a supplier service.
+            connection->SetFlags(wxSOCKET_WAITALL); connection->SetTimeout(2);
+            std::string header;
+            char byte = 0;
+            while (header.find("\r\n\r\n") == std::string::npos && header.size() < 16384) {
+                connection->Read(&byte, 1); REQUIRE(connection->LastCount() == 1); header += byte;
+            }
+            const auto length_at = header.find("Content-Length:");
+            const auto length = length_at == std::string::npos ? 0 :
+                std::stoul(header.substr(length_at + std::string("Content-Length:").size()));
+            std::string payload(length, '\0');
+            if (length) { connection->Read(payload.data(), length); REQUIRE(connection->LastCount() == length); }
+            const auto first_space = header.find(' '), second_space = header.find(' ', first_space + 1);
+            const auto path = header.substr(first_space + 1, second_space - first_space - 1);
+            Json body = capabilities;
+            bool failure = false;
+            if (path.find("/model-plans") != std::string::npos) {
+                const auto request = Json::parse(payload);
+                Json snapshot {{"schema", "approved-multiview-input-v2"}, {"group_id", group.id},
+                    {"snapshot_id", request.at("command_id")}, {"input_epoch", request.at("expected_input_epoch")},
+                    {"selected_views", request.at("selected_views")}, {"input_mode", "multiview"},
+                    {"views", request.at("visible_versions")}};
+                for (const auto& view : request.at("selected_views"))
+                    snapshot["views"][view.get<std::string>()]["path"] = "inputs/" + view.get<std::string>() + ".png";
+                Json options = Json::object();
+                for (const auto* key : {"provider", "geometry_model", "face_limit", "geometry_quality", "texture_quality", "output_format"})
+                    options[key] = request.at(key);
+                if (options.at("geometry_model").get<std::string>().empty()) options["geometry_model"] = "v3.0";
+                const double now = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+                body = {{"plan", {{"schema", "advanced-multiview-model-plan-v2"}, {"id", request.at("command_id")},
+                    {"job_id", request.at("command_id")}, {"group_id", group.id},
+                    {"expected_group_revision", request.at("expected_group_revision")}, {"draft", request.at("draft")},
+                    {"options", options}, {"approved_multiview_snapshot", snapshot}, {"max_new_image_calls", 0},
+                    {"max_new_model_tasks", 1}, {"max_new_conversion_tasks", 0}, {"expires_at", now + 300},
+                    {"confirmation_fingerprint", std::string(64, 'e')}}}};
+            } else if (path.find("/reconcile") != std::string::npos) {
+                ++reconciles; body = {{"accepted", false}};
+            } else if (path.size() >= 11 && path.substr(path.size() - 11) == "/model-jobs") {
+                ++model_posts; submitted = Json::parse(payload); failure = true; body = Json::object();
+            }
+            const auto text = body.dump();
+            const std::string response = std::string("HTTP/1.1 ") + (failure ? "503 Service Unavailable" : "200 OK") +
+                "\r\nContent-Type: application/json\r\nContent-Length: " + std::to_string(text.size()) +
+                "\r\nConnection: close\r\n\r\n" + text;
+            connection->Write(response.data(), response.size()); REQUIRE(connection->LastCount() == response.size());
+            connection->Close(); return true;
+        };
+        const auto until = [&](auto ready) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (!ready() && std::chrono::steady_clock::now() < deadline) {
+                reply(); wxTheApp->ProcessPendingEvents(); loop.DispatchTimeout(20);
+            }
+            return ready();
+        };
+        host.set_service_available(true);
+        REQUIRE(until([&] { return host.eligibility().generate_model; }));
+        REQUIRE(host.begin_model_selection());
+        REQUIRE(host.session().toggle_candidate_view(ViewId::Left));
+        std::string prepare_error;
+        host.prepare_model_selection([&](Json plan) { prepared = std::move(plan); },
+                                     [&](std::string reason) { prepare_error = std::move(reason); });
+        REQUIRE(until([&] { return !prepared.is_null() || !prepare_error.empty(); }));
+        CAPTURE(prepare_error);
+        REQUIRE(prepare_error.empty()); REQUIRE_FALSE(prepared.is_null());
+        const auto candidate = host.session().model_candidate(); REQUIRE(candidate);
+        const auto blocked = receipt_failure ? temporary.path() / "advanced-cache" / "pending-submissions" /
+            (prepared.at("job_id").get<std::string>() + ".json.part") :
+            boost::filesystem::path(checkpoint.string() + ".part");
+        boost::filesystem::create_directories(blocked.parent_path());
+        REQUIRE(boost::filesystem::create_directory(blocked));
+        CHECK_FALSE(host.confirm_model_selection(prepared));
+        CHECK(host.session().model_selection() == preferences);
+        CHECK(read_checkpoint() == original);
+        CHECK(model_posts == 0);
+        REQUIRE(host.session().model_candidate());
+        CHECK(host.session().model_candidate()->id == candidate->id);
+        CHECK(host.session().model_candidate()->revision == candidate->revision);
+        CHECK(host.session().model_candidate()->selected == candidate->selected);
+        // No POST was sent. An unsent checkpoint failure must not become an
+        // unresolved model request or consume this plan through negative reconcile.
+        CHECK_FALSE(host.has_pending_receipt());
+        REQUIRE(boost::filesystem::remove(blocked));
+        host.reconcile_submission();
+        wxTheApp->ProcessPendingEvents();
+        loop.DispatchTimeout(20);
+        reply();
+        CHECK_FALSE(host.has_pending_receipt());
+        CHECK(reconciles == 0);
+        CHECK(host.confirm_model_selection(prepared));
+        REQUIRE(until([&] { return model_posts > 0; }));
+        CHECK(model_posts == 1);
+        CHECK(submitted.at("command_id") == prepared.at("id"));
+        CHECK(host.session().model_selection() == candidate->selected);
+        CHECK(read_checkpoint().at("model_selected") == Json(candidate->selected));
+        host.shutdown();
+    }
+}
+
 TEST_CASE("Capability discovery errors hide raw transport explanations in either scope",
           "[AdvancedCreation][ModelGenerationStatusText][Regression]")
 {
@@ -1093,6 +1844,724 @@ TEST_CASE("Capability discovery errors hide raw transport explanations in either
     CHECK_FALSE(host.eligibility().generate_design);
     CHECK_FALSE(host.eligibility().generate_model);
     host.shutdown();
+}
+
+TEST_CASE("Model candidate responses preserve only the newest selection through reverse delivery",
+          "[AdvancedCreation][AdvancedModelSelection][Regression]")
+{
+    using Json = nlohmann::json;
+    wxInitializer init; REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-advanced-model-order"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.string());
+    AdvancedHttpProbe probe;
+    Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr, probe.endpoint());
+    const auto group = host_test_group(1);
+    REQUIRE(host.session().apply_snapshot(group, host.session().begin_open(group.id), true));
+    host.set_service_available(true);
+    REQUIRE(probe.until([&] { return host.eligibility().generate_model; }));
+    const auto original = host.session().model_selection();
+    REQUIRE(host.begin_model_selection());
+    REQUIRE(host.session().toggle_candidate_view(ViewId::Back));
+    REQUIRE(host.session().toggle_candidate_view(ViewId::Right));
+    Json ready; int ready_count = 0; std::vector<std::string> errors;
+    const auto prepare = [&] {
+        host.prepare_model_selection([&](Json plan) { ready = std::move(plan); ++ready_count; },
+            [&](std::string reason) { errors.push_back(std::move(reason)); });
+    };
+    prepare(); REQUIRE(probe.until([&] { return probe.count("/model-plans") == 1; }));
+    REQUIRE(host.session().toggle_candidate_view(ViewId::Left));
+    prepare(); REQUIRE(probe.until([&] { return probe.count("/model-plans") == 2; }));
+    REQUIRE(host.session().toggle_candidate_view(ViewId::Right));
+    prepare(); REQUIRE(probe.until([&] { return probe.count("/model-plans") == 3; }));
+    const auto first = probe.at("/model-plans", 0), second = probe.at("/model-plans", 1), third = probe.at("/model-plans", 2);
+    CHECK(probe.requests[first].payload.at("selected_views") == Json::array({"front", "left"}));
+    CHECK(probe.requests[second].payload.at("selected_views") == Json::array({"front"}));
+    CHECK(probe.requests[third].payload.at("selected_views") == Json::array({"front", "right"}));
+    const auto latest = probe.model_plan(third, group.id);
+    probe.reply(third, {{"plan", latest}});
+    REQUIRE(probe.until([&] { return ready_count == 1; }));
+    probe.reply(second, {{"plan", probe.model_plan(second, group.id)}});
+    probe.reply(first, {{"plan", probe.model_plan(first, group.id)}});
+    probe.drain();
+    CHECK(ready_count == 1); CHECK(errors.empty()); CHECK(ready == latest);
+    CHECK(host.session().model_selection() == original);
+    CHECK(probe.count("/model-jobs") == 0);
+    REQUIRE(host.confirm_model_selection(ready));
+    REQUIRE(probe.until([&] { return probe.count("/model-jobs") == 1; }));
+    const auto submitted = probe.at("/model-jobs");
+    CHECK(probe.requests[submitted].payload.at("plan_id") == latest.at("id"));
+    CHECK(host.session().model_selection() == std::array<bool,4>{true,false,false,true});
+    probe.reply(submitted, Json::object(), true);
+    REQUIRE(probe.until([&] { return !host.command_pending(); }));
+    CHECK(host.has_pending_receipt()); // A sent request is still reconciled conservatively.
+    host.shutdown();
+}
+
+TEST_CASE("Prepared model candidates recheck changed inputs capabilities expiry and editing guards before posting",
+          "[AdvancedCreation][AdvancedModelSelection][Regression]")
+{
+    using Json = nlohmann::json;
+    wxInitializer init; REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-advanced-model-final-guards"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.string());
+    unsigned suffix = 10;
+    for (const std::string change : {"version", "sha", "epoch", "creation", "draft", "model", "provider", "face-limit",
+                                    "geometry-quality", "texture-quality", "format", "expired", "capability", "read-only", "cancel"}) {
+        CAPTURE(change);
+        AdvancedHttpProbe probe;
+        Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr, probe.endpoint());
+        auto group = host_test_group(suffix++);
+        REQUIRE(host.session().apply_snapshot(group, host.session().begin_open(group.id), true));
+        host.set_service_available(true);
+        REQUIRE(probe.until([&] { return host.eligibility().generate_model; }));
+        const auto original = host.session().model_selection();
+        REQUIRE(host.begin_model_selection());
+        REQUIRE(host.session().toggle_candidate_view(ViewId::Left));
+        Json ready; std::string error;
+        host.prepare_model_selection([&](Json plan) { ready = std::move(plan); }, [&](std::string reason) { error = std::move(reason); });
+        REQUIRE(probe.until([&] { return probe.count("/model-plans") == 1; }));
+        const auto request = probe.at("/model-plans");
+        auto plan = probe.model_plan(request, group.id);
+        if (change == "expired") plan["expires_at"] = 1.0;
+        probe.reply(request, {{"plan", plan}});
+        REQUIRE(probe.until([&] { return !ready.is_null() || !error.empty(); }));
+        REQUIRE(error.empty()); REQUIRE_FALSE(ready.is_null());
+        if (change == "version" || change == "sha" || change == "epoch") {
+            ++group.revision;
+            if (change == "version") group.views[0].version_id = "front-v2";
+            if (change == "sha") group.views[0].sha256 = std::string(64, 'f');
+            if (change == "epoch") group.input_epoch = host_test_group(98).id;
+            REQUIRE(host.session().apply_snapshot(group, host.session().context()));
+        }
+        if (change == "creation") host.new_creation();
+        if (change == "draft") {
+            auto draft = host.session().draft().design; draft.prompt += " changed";
+            REQUIRE(host.session().set_design_draft(draft));
+        }
+        if (change == "model") {
+            auto options = host.session().draft().geometry; options.model = "another-model";
+            host.session().set_model_options(std::move(options));
+        }
+        if (change == "provider" || change == "face-limit" || change == "geometry-quality" ||
+            change == "texture-quality" || change == "format") {
+            auto options = host.session().draft().geometry;
+            if (change == "provider") options.provider = "yoyoclaw";
+            if (change == "face-limit") options.face_limit = 10000;
+            if (change == "geometry-quality") options.geometry_quality = "detailed";
+            if (change == "texture-quality") options.texture_quality = "detailed";
+            if (change == "format") options.output_format = "obj";
+            host.session().set_model_options(std::move(options));
+        }
+        if (change == "capability") {
+            probe.capabilities["model_providers"]["tripo"]["supported_image_counts"] = Json::array();
+            host.refresh_capabilities("geometry");
+            REQUIRE(probe.until([&] { return !host.model_selection_eligibility().generate_model; }));
+        }
+        if (change == "read-only") host.set_editing_guard([] { return false; });
+        if (change == "cancel") host.cancel_model_selection();
+        std::string rejected;
+        CHECK_FALSE(host.confirm_model_selection(ready, [&](std::string reason) { rejected = std::move(reason); }));
+        CHECK_FALSE(rejected.empty());
+        probe.drain(); CHECK(probe.count("/model-jobs") == 0); CHECK_FALSE(host.has_pending_receipt());
+        if (change != "creation") CHECK(host.session().model_selection() == original);
+        if (change == "version" || change == "sha" || change == "epoch" || change == "creation") {
+            if (change == "creation") {
+                group = host_test_group(suffix++);
+                REQUIRE(host.session().apply_snapshot(group, host.session().begin_open(group.id), true));
+            }
+            REQUIRE(host.begin_model_selection());
+            REQUIRE(host.session().toggle_candidate_view(ViewId::Left));
+            Json renewed; std::string renew_error;
+            host.prepare_model_selection([&](Json value) { renewed = std::move(value); },
+                [&](std::string reason) { renew_error = std::move(reason); });
+            REQUIRE(probe.until([&] { return probe.count("/model-plans") == 2; }));
+            const auto next = probe.at("/model-plans", 1);
+            const auto& payload = probe.requests[next].payload;
+            CHECK(probe.requests[next].path == "/v1/orcaslicer/advanced-multiview/groups/" + group.id + "/model-plans");
+            CHECK(payload.at("expected_input_epoch") == group.input_epoch);
+            CHECK(payload.at("visible_versions").at("front").at("version_id") == group.views[0].version_id);
+            CHECK(payload.at("visible_versions").at("front").at("sha256") == group.views[0].sha256);
+            probe.reply(next, {{"plan", probe.model_plan(next, group.id)}});
+            REQUIRE(probe.until([&] { return !renewed.is_null() || !renew_error.empty(); }));
+            REQUIRE(renew_error.empty()); REQUIRE_FALSE(renewed.is_null());
+            CHECK(renewed.at("id") != ready.at("id"));
+            const auto& frozen = renewed.at("approved_multiview_snapshot");
+            CHECK(frozen.at("group_id") == group.id);
+            CHECK(frozen.at("input_epoch") == group.input_epoch);
+            CHECK(frozen.at("views").at("front").at("version_id") == group.views[0].version_id);
+            CHECK(frozen.at("views").at("front").at("sha256") == group.views[0].sha256);
+            CHECK(probe.count("/model-jobs") == 0);
+        }
+        host.shutdown();
+    }
+}
+
+TEST_CASE("Local generation rejects incompatible plans received through the real client without executing them",
+          "[AdvancedCreation][Advanced2DPreview][Regression]")
+{
+    using Json = nlohmann::json;
+    wxInitializer init; REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-advanced-local-plan-guards"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.string());
+    unsigned suffix = 30;
+    for (const std::string variant : {"legacy", "scope", "target", "text", "targets", "dependencies", "calls", "base", "revision", "group", "id"}) {
+        CAPTURE(variant);
+        AdvancedHttpProbe probe;
+        Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr, probe.endpoint());
+        const auto group = host_test_group(suffix++);
+        REQUIRE(host.session().apply_snapshot(group, host.session().begin_open(group.id), true));
+        host.set_service_available(true);
+        REQUIRE(probe.until([&] { return host.eligibility().generate_design; }));
+        const auto original = host.session().local_draft();
+        int callbacks = 0; bool accepted = true;
+        host.generate_single_design(ViewId::Left, "only this left detail", [&](bool value) { accepted = value; ++callbacks; });
+        REQUIRE(probe.until([&] { return probe.count("/plans") == 1; }));
+        const auto request = probe.at("/plans");
+        auto plan = probe.local_plan(request, group);
+        if (variant == "legacy") plan.erase("design_request");
+        if (variant == "scope") plan["design_request"]["scope"] = "all_inputs";
+        if (variant == "target") plan["design_request"]["target_view"] = "right";
+        if (variant == "text") plan["design_request"]["local_prompt"] = "another instruction";
+        if (variant == "targets") plan["targets"].push_back("front");
+        if (variant == "dependencies") plan["dependency_views"].push_back("front");
+        if (variant == "calls") plan["max_new_image_calls"] = 2;
+        if (variant == "base") plan["base_versions"]["left"] = "left-v2";
+        if (variant == "revision") plan["expected_group_revision"] = group.revision + 1;
+        if (variant == "group") plan["group_id"] = host_test_group(99).id;
+        if (variant == "id") plan["id"] = host_test_group(98).id;
+        probe.reply(request, {{"plan", plan}});
+        REQUIRE(probe.until([&] { return callbacks == 1; }));
+        CHECK_FALSE(accepted); CHECK_FALSE(host.command_pending()); CHECK_FALSE(host.has_pending_receipt());
+        CHECK_FALSE(host.message().empty());
+        probe.drain(); CHECK(probe.count("/operations") == 0);
+        CHECK(host.session().draft().design == original.input.design);
+        CHECK(host.session().model_selection() == original.model_selected);
+        for (const auto view : AllViews) CHECK(host.session().group()->views[index(view)].version_id == group.views[index(view)].version_id);
+        host.shutdown();
+    }
+}
+
+TEST_CASE("Late local plans cannot execute changed inputs or release a newer creation command",
+          "[AdvancedCreation][Advanced2DPreview][Regression]")
+{
+    using Json = nlohmann::json;
+    wxInitializer init; REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-advanced-local-plan-order"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.string());
+    unsigned suffix = 50;
+    for (const std::string change : {"draft", "version", "creation"}) {
+        CAPTURE(change);
+        AdvancedHttpProbe probe;
+        Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr, probe.endpoint());
+        auto group = host_test_group(suffix++);
+        REQUIRE(host.session().apply_snapshot(group, host.session().begin_open(group.id), true));
+        host.set_service_available(true);
+        REQUIRE(probe.until([&] { return host.eligibility().generate_design; }));
+        int old_callbacks = 0, new_callbacks = 0;
+        host.generate_single_design(ViewId::Left, "old local", [&](bool accepted) { CHECK_FALSE(accepted); ++old_callbacks; });
+        REQUIRE(probe.until([&] { return probe.count("/plans") == 1; }));
+        const auto old_request = probe.at("/plans");
+        const auto old_plan = probe.local_plan(old_request, group);
+        if (change == "draft") {
+            auto draft = host.session().draft().design; draft.prompt += " changed";
+            REQUIRE(host.session().set_design_draft(draft));
+        }
+        if (change == "version") {
+            ++group.revision; group.views[1].version_id = "left-v2";
+            REQUIRE(host.session().apply_snapshot(group, host.session().context()));
+        }
+        if (change == "creation") {
+            host.new_creation(); group = host_test_group(suffix++);
+            REQUIRE(host.session().apply_snapshot(group, host.session().begin_open(group.id), true));
+            host.generate_single_design(ViewId::Right, "new local", [&](bool accepted) { CHECK_FALSE(accepted); ++new_callbacks; });
+            REQUIRE(probe.until([&] { return probe.count("/plans") == 2; }));
+        }
+        probe.reply(old_request, {{"plan", old_plan}});
+        probe.drain(); CHECK(probe.count("/operations") == 0);
+        if (change == "creation") {
+            CHECK(old_callbacks == 0); CHECK(new_callbacks == 0); CHECK(host.command_pending());
+            const auto current = probe.at("/plans", 1);
+            const auto plan = probe.local_plan(current, group);
+            probe.reply(current, {{"plan", plan}});
+            REQUIRE(probe.until([&] { return probe.count("/operations") == 1; }));
+            const auto submitted = probe.at("/operations");
+            CHECK(probe.requests[submitted].path == "/v1/orcaslicer/advanced-multiview/groups/" + group.id + "/operations");
+            CHECK(probe.requests[submitted].payload.at("plan_id") == plan.at("id"));
+            probe.reply(submitted, Json::object(), true);
+            REQUIRE(probe.until([&] { return new_callbacks == 1; }));
+            CHECK(host.has_pending_receipt());
+        } else {
+            CHECK(old_callbacks == 1); CHECK_FALSE(host.command_pending()); CHECK_FALSE(host.has_pending_receipt());
+        }
+        host.shutdown();
+    }
+}
+
+TEST_CASE("Late cache failures cannot change a newer local or model command and remain safe after host destruction",
+          "[AdvancedCreation][Advanced2DPreview][AdvancedImageRefresh][Regression]")
+{
+    using Json = nlohmann::json;
+    wxInitializer init; REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-advanced-cache-command-order"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.string());
+    unsigned suffix = 200;
+    // The output directory is process-scoped. The local branch deliberately
+    // leaves an uncertain sent receipt, so exercise it after the other hosts.
+    for (const std::string command : {"model", "destroy", "local"}) {
+        CAPTURE(command);
+        AdvancedHttpProbe probe;
+        auto host = std::make_unique<Slic3r::GUI::AdvancedCreationFeatureHost>(nullptr, probe.endpoint());
+        const auto old_group = host_test_group(suffix++);
+        const auto asset = host_test_group(suffix++).id;
+        const auto group_route = "/groups/" + old_group.id;
+        const auto asset_route = "/assets/" + asset;
+        probe.held_suffixes = {group_route, asset_route};
+        host->set_service_available(true);
+        host->open_group(old_group.id);
+        REQUIRE(probe.until([&] { return probe.count(group_route) == 1; }));
+        const auto draft = AdvancedMultiviewClient::design_json(old_group.saved_draft);
+        Json snapshot {{"schema", "advanced-multiview-group-v1"}, {"workflow_kind", "advanced_multiview_v1"},
+            {"id", old_group.id}, {"input_epoch", old_group.input_epoch}, {"revision", old_group.revision},
+            {"initial_input", draft}, {"saved_draft", draft}, {"latest_submitted_draft", draft},
+            {"active_operation_id", nullptr}, {"stop_intent", false}, {"published", true},
+            {"uploads", Json::object()}, {"views", Json::object()}};
+        for (const auto view : AllViews) {
+            snapshot["uploads"][view_name(view)] = nullptr;
+            snapshot["views"][view_name(view)] = {{"current_version_id", nullptr}, {"current", nullptr}, {"latest_attempt", nullptr}};
+        }
+        snapshot["views"]["front"]["current_version_id"] = asset;
+        snapshot["views"]["front"]["current"] = {{"id", asset}, {"sha256", std::string(64, 'a')}};
+        probe.reply(probe.at(group_route), {{"group", snapshot}});
+        REQUIRE(probe.until([&] { return probe.count(asset_route) == 1; }));
+        REQUIRE(host->session().group()->views[0].asset_pending);
+
+        host->new_creation();
+        const auto current = host_test_group(suffix++);
+        REQUIRE(host->session().apply_snapshot(current, host->session().begin_open(current.id), true));
+        REQUIRE(probe.until([&] { return host->eligibility().generate_design; }));
+        const auto selection = host->session().model_selection();
+        std::vector<bool> submissions;
+        Json model_plan; std::string model_error;
+        if (command == "model") {
+            REQUIRE(host->begin_model_selection());
+            host->prepare_model_selection([&](Json value) { model_plan = std::move(value); },
+                [&](std::string error) { model_error = std::move(error); });
+            REQUIRE(probe.until([&] { return probe.count("/model-plans") == 1; }));
+        } else {
+            host->generate_single_design(ViewId::Left, "new creation only", [&](bool accepted) { submissions.push_back(accepted); });
+            REQUIRE(probe.until([&] { return probe.count("/plans") == 1; }));
+        }
+        const auto request = probe.at(command == "model" ? "/model-plans" : "/plans");
+        if (command == "destroy") {
+            int notifications = 0;
+            host->set_listener([&] { ++notifications; });
+            const auto before = notifications;
+            host->shutdown(); host.reset();
+            probe.drop(probe.at(asset_route)); probe.drop(request); probe.drain();
+            CHECK(notifications == before); CHECK(submissions.empty());
+            CHECK(probe.count("/operations") == 0); CHECK(probe.count("/model-jobs") == 0);
+            continue;
+        }
+        probe.reply(probe.at(asset_route), {{"error", "old image unavailable"}}, true);
+        probe.drain();
+        REQUIRE(host->session().group());
+        CHECK(host->session().group()->id == current.id);
+        CHECK(host->session().model_selection() == selection);
+        for (const auto view : AllViews) {
+            const auto& image = host->session().group()->views[index(view)];
+            CHECK(image.version_id == current.views[index(view)].version_id);
+            CHECK(image.usable); CHECK_FALSE(image.display_error); CHECK_FALSE(image.asset_pending);
+        }
+        CHECK(submissions.empty()); CHECK(model_plan.is_null()); CHECK(model_error.empty());
+        CHECK(probe.count("/operations") == 0); CHECK(probe.count("/model-jobs") == 0);
+        if (command == "model") {
+            REQUIRE(host->session().model_candidate().has_value());
+            probe.reply(request, {{"plan", probe.model_plan(request, current.id)}});
+            REQUIRE(probe.until([&] { return !model_plan.is_null() || !model_error.empty(); }));
+            CHECK(model_error.empty()); CHECK(model_plan.at("group_id") == current.id);
+            host->cancel_model_selection();
+        } else {
+            REQUIRE(host->command_pending());
+            const auto plan = probe.local_plan(request, current);
+            probe.reply(request, {{"plan", plan}});
+            REQUIRE(probe.until([&] { return probe.count("/operations") == 1; }));
+            const auto execute = probe.at("/operations");
+            CHECK(probe.requests[execute].payload.at("plan_id") == plan.at("id"));
+            CHECK(probe.requests[request].payload.at("design_request").at("target_view") == "left");
+            probe.reply(execute, Json::object(), true);
+            REQUIRE(probe.until([&] { return submissions == std::vector<bool>{false}; }));
+            CHECK(host->has_pending_receipt());
+        }
+        host->shutdown();
+    }
+}
+
+TEST_CASE("A late verified image preserves a new creation and its initial guidance",
+          "[AdvancedCreation][Advanced2DPreview][AdvancedImageRefresh][AdvancedInitialGuidance][Regression]")
+{
+    using Json = nlohmann::json;
+    wxInitializer init; REQUIRE(init.IsOk());
+    wxInitAllImageHandlers();
+    ScopedTemporaryDir temporary {"orca-advanced-late-image-guidance"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.string());
+    const auto source = temporary.path() / "old-image.png";
+    wxImage image(64, 64); image.SetRGB(wxRect(0, 0, 64, 64), 40, 140, 180);
+    REQUIRE(image.SaveFile(wxString(source.wstring()), wxBITMAP_TYPE_PNG));
+    std::ifstream input(source.string(), std::ios::binary);
+    const std::string body((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    std::array<unsigned char, EVP_MAX_MD_SIZE> digest {}; unsigned length = 0;
+    REQUIRE(EVP_Digest(body.data(), body.size(), digest.data(), &length, EVP_sha256(), nullptr) == 1);
+    std::string hash;
+    for (unsigned i = 0; i < length; ++i) {
+        constexpr char hex[] = "0123456789abcdef";
+        hash += hex[digest[i] >> 4]; hash += hex[digest[i] & 15];
+    }
+    unsigned suffix = 400;
+    for (const bool old_image_first : {true, false}) for (const std::size_t count : {1u, 2u, 3u, 4u}) {
+        CAPTURE(old_image_first, count);
+        AdvancedHttpProbe probe;
+        Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr, probe.endpoint());
+        const auto old_group = host_test_group(suffix++);
+        const auto asset = host_test_group(suffix++).id;
+        const auto group_route = "/groups/" + old_group.id;
+        const auto asset_route = "/assets/" + asset;
+        probe.held_suffixes = {group_route, asset_route};
+        host.set_service_available(true);
+        host.open_group(old_group.id);
+        REQUIRE(probe.until([&] { return probe.count(group_route) == 1; }));
+        const auto draft = AdvancedMultiviewClient::design_json(old_group.saved_draft);
+        Json snapshot {{"schema", "advanced-multiview-group-v1"}, {"workflow_kind", "advanced_multiview_v1"},
+            {"id", old_group.id}, {"input_epoch", old_group.input_epoch}, {"revision", old_group.revision},
+            {"initial_input", draft}, {"saved_draft", draft}, {"latest_submitted_draft", draft},
+            {"active_operation_id", nullptr}, {"stop_intent", false}, {"published", true},
+            {"uploads", Json::object()}, {"views", Json::object()}};
+        for (const auto view : AllViews) {
+            snapshot["uploads"][view_name(view)] = nullptr;
+            snapshot["views"][view_name(view)] = {{"current_version_id", nullptr}, {"current", nullptr}, {"latest_attempt", nullptr}};
+        }
+        snapshot["views"]["front"]["current_version_id"] = asset;
+        snapshot["views"]["front"]["current"] = {{"id", asset}, {"sha256", hash}};
+        probe.reply(probe.at(group_route), {{"group", snapshot}});
+        REQUIRE(probe.until([&] { return probe.count(asset_route) == 1; }));
+        REQUIRE(host.session().group()->views[0].asset_pending);
+
+        host.new_creation();
+        auto current = host_test_group(suffix++);
+        current.design_targets.fill(false);
+        std::vector<ViewId> targets;
+        for (std::size_t i = 0; i < count; ++i) {
+            targets.push_back(AllViews[i]); current.design_targets[i] = true;
+            current.uploads[i] = std::string(view_name(AllViews[i])) + "-upload.png";
+            current.views[i].canonical_version_id = current.views[i].version_id;
+        }
+        const auto last = index(targets.back());
+        auto pending = current;
+        pending.views[last].usable = false; pending.views[last].asset_pending = true;
+        const auto context = host.session().begin_open(current.id);
+        REQUIRE(host.session().apply_snapshot(pending, context, true));
+        host.session().arm_initial_design_guidance(context, targets, current.input_epoch);
+        CHECK_FALSE(host.session().consume_initial_design_guidance());
+        const auto release_old_image = [&] {
+            const auto preferences = host.session().model_selection();
+            probe.reply_bytes(probe.at(asset_route), body, "image/png");
+            const auto cached = AdvancedMultiviewClient::asset_path(temporary.path() / "advanced-cache", old_group.id, asset);
+            REQUIRE(probe.until([&] { return AdvancedMultiviewClient::cached_asset_matches(cached, hash); }));
+            probe.drain();
+            REQUIRE(host.session().group());
+            CHECK(host.session().group()->id == current.id);
+            CHECK(host.session().group()->input_epoch == current.input_epoch);
+            CHECK(host.session().context().epoch == context.epoch);
+            CHECK(host.session().model_selection() == preferences);
+            CHECK(probe.count("/operations") == 0); CHECK(probe.count("/model-jobs") == 0);
+        };
+        if (old_image_first) {
+            release_old_image();
+            CHECK(host.session().group()->views[last].asset_pending);
+            CHECK_FALSE(host.session().group()->views[last].usable);
+            CHECK_FALSE(host.session().consume_initial_design_guidance());
+        }
+        ++current.revision;
+        REQUIRE(host.session().apply_snapshot(current, context));
+        REQUIRE(host.session().consume_initial_design_guidance());
+        CHECK_FALSE(host.session().consume_initial_design_guidance());
+        if (!old_image_first) release_old_image();
+        for (const auto view : targets) {
+            CHECK(host.session().group()->views[index(view)].version_id == current.views[index(view)].version_id);
+            CHECK(host.session().group()->views[index(view)].usable);
+        }
+        CHECK_FALSE(host.session().consume_initial_design_guidance());
+        CHECK_FALSE(host.has_pending_receipt());
+        host.shutdown();
+    }
+}
+
+TEST_CASE("Serialized upload saves preserve a newer replacement and deletion while an older cache result arrives",
+          "[AdvancedCreation][Advanced2DPreview][AdvancedDraftInput][AdvancedImageRefresh][Regression]")
+{
+    using Json = nlohmann::json;
+    wxInitializer init; REQUIRE(init.IsOk());
+    wxInitAllImageHandlers();
+    ScopedTemporaryDir temporary {"orca-advanced-upload-save-order"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.string());
+    const auto replacement = temporary.path() / "replacement.png";
+    wxImage image(64, 64); image.SetRGB(wxRect(0, 0, 64, 64), 40, 140, 180);
+    REQUIRE(image.SaveFile(wxString(replacement.wstring()), wxBITMAP_TYPE_PNG));
+    std::ifstream image_input(replacement.string(), std::ios::binary);
+    const std::string body((std::istreambuf_iterator<char>(image_input)), std::istreambuf_iterator<char>());
+    std::array<unsigned char, EVP_MAX_MD_SIZE> digest {}; unsigned length = 0;
+    REQUIRE(EVP_Digest(body.data(), body.size(), digest.data(), &length, EVP_sha256(), nullptr) == 1);
+    std::string hash;
+    for (unsigned i = 0; i < length; ++i) {
+        constexpr char hex[] = "0123456789abcdef";
+        hash += hex[digest[i] >> 4]; hash += hex[digest[i] & 15];
+    }
+    auto group = host_test_group(240);
+    const auto front = host_test_group(241).id, left = host_test_group(242).id;
+    const auto first_upload = host_test_group(243).id;
+    const auto cache = temporary.path() / "advanced-cache";
+    boost::filesystem::create_directories(cache / group.id);
+    for (const auto& asset : {front, left}) {
+        std::ofstream stored(AdvancedMultiviewClient::asset_path(cache, group.id, asset).string(), std::ios::binary);
+        stored.write(body.data(), static_cast<std::streamsize>(body.size())); stored.close(); REQUIRE(stored.good());
+    }
+    group.uploads = {AdvancedMultiviewClient::asset_path(cache, group.id, front).string(),
+                     AdvancedMultiviewClient::asset_path(cache, group.id, left).string(), "", ""};
+    group.design_targets = {true, true, false, false};
+    for (std::size_t slot = 0; slot < 2; ++slot) {
+        auto& view = group.views[slot];
+        view.version_id = view.canonical_version_id = slot ? left : front;
+        view.image_path = group.uploads[slot]; view.sha256 = hash;
+    }
+    group.views[2] = group.views[3] = {};
+    const auto snapshot = [&](std::uint64_t revision, const std::string& upload) {
+        const auto draft = AdvancedMultiviewClient::design_json(group.saved_draft);
+        Json value {{"schema", "advanced-multiview-group-v1"}, {"workflow_kind", "advanced_multiview_v1"},
+            {"id", group.id}, {"input_epoch", host_test_group(unsigned(250 + revision)).id}, {"revision", revision},
+            {"initial_input", draft}, {"saved_draft", draft}, {"latest_submitted_draft", draft},
+            {"active_operation_id", nullptr}, {"stop_intent", false}, {"published", true},
+            {"design_targets", upload.empty() ? Json::array({"front"}) : Json::array({"front", "left"})},
+            {"pending_views", upload.empty() ? Json::array() : Json::array({"left"})},
+            {"uploads", Json::object()}, {"views", Json::object()}};
+        for (const auto view : AllViews) {
+            value["uploads"][view_name(view)] = nullptr;
+            value["views"][view_name(view)] = {{"current_version_id", nullptr}, {"current", nullptr}, {"latest_attempt", nullptr}};
+        }
+        value["uploads"]["front"] = {{"asset_id", front}, {"sha256", hash}};
+        if (!upload.empty()) value["uploads"]["left"] = {{"asset_id", upload}, {"sha256", hash}};
+        value["views"]["front"]["current_version_id"] = front;
+        value["views"]["front"]["current"] = {{"id", front}, {"sha256", hash}};
+        return value;
+    };
+    AdvancedHttpProbe probe;
+    const auto delayed_asset = "/assets/" + first_upload;
+    const auto group_route = "/groups/" + group.id;
+    probe.held_suffixes = {"/inputs", delayed_asset, group_route};
+    Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr, probe.endpoint());
+    REQUIRE(host.session().apply_snapshot(group, host.session().begin_open(group.id), true));
+    host.set_service_available(true);
+    REQUIRE(probe.until([&] { return host.eligibility().generate_design; }));
+    REQUIRE(host.session().set_upload(ViewId::Left, replacement.string(), true)); host.changed();
+    REQUIRE(probe.until([&] { return probe.count("/inputs") == 1; }));
+    CHECK_FALSE(host.session().group()->views[1].usable);
+    const auto& multipart = probe.requests[probe.at("/inputs")].payload;
+    REQUIRE(multipart.is_string());
+    CHECK(multipart.get<std::string>().find("name=\"replaced_views\"") != std::string::npos);
+    REQUIRE(host.session().set_upload(ViewId::Left, replacement.string(), true)); host.changed();
+    REQUIRE(host.session().set_upload(ViewId::Left, "")); host.changed();
+    const auto newest_input = host.session().draft();
+    // Editing remains available, but background saves are serialized. An
+    // inverse HTTP completion order cannot be manufactured through this host.
+    const auto deferred_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(800);
+    while (std::chrono::steady_clock::now() < deferred_until) probe.pump();
+    CHECK(probe.count("/inputs") == 1); CHECK_FALSE(host.draft_editing_locked());
+    probe.reply(probe.at("/inputs", 0), {{"group", snapshot(group.revision + 1, first_upload)}});
+    REQUIRE(probe.until([&] { return probe.count(delayed_asset) == 1; }));
+    CHECK(host.session().draft_dirty()); CHECK(host.session().draft().uploads[1].empty());
+    CHECK(host.session().draft().upload_revisions[1] == newest_input.upload_revisions[1]);
+    CHECK_FALSE(host.session().group()->views[1].usable);
+    CHECK(probe.count("/inputs") == 1);
+    probe.reply(probe.at(delayed_asset), {{"error", "obsolete upload unavailable"}}, true);
+    REQUIRE(probe.until([&] { return probe.count("/inputs") == 2; }));
+    CHECK(host.session().draft_dirty()); CHECK(host.session().draft().uploads[1].empty());
+    probe.reply(probe.at("/inputs", 1), {{"group", snapshot(group.revision + 2, "")}});
+    REQUIRE(probe.until([&] { return !host.session().draft_dirty() && host.eligibility().generate_design; }));
+    CHECK_FALSE(host.session().group()->views[1].usable);
+    CHECK(host.session().draft().upload_revisions[1] == newest_input.upload_revisions[1]);
+    CHECK_FALSE(host.session().draft().replaced_uploads[1]);
+
+    host.open_group(group.id);
+    REQUIRE(probe.until([&] { return probe.count(group_route) == 1; }));
+    probe.reply(probe.at(group_route), {{"group", snapshot(group.revision + 2, "")}});
+    REQUIRE(probe.until([&] { return host.eligibility().generate_design; }));
+    REQUIRE(host.session().group());
+    CHECK(host.session().group()->revision == group.revision + 2);
+    CHECK(host.session().draft().uploads[1].empty()); CHECK_FALSE(host.session().draft_dirty());
+    CHECK_FALSE(host.session().group()->views[1].usable);
+    CHECK(host.session().group()->views[0].version_id == front);
+    CHECK_FALSE(host.session().draft().replaced_uploads[1]);
+    CHECK(probe.count("/inputs") == 2); CHECK(probe.count("/plans") == 0);
+    CHECK(probe.count("/operations") == 0); CHECK(probe.count("/model-jobs") == 0);
+    host.shutdown();
+}
+
+TEST_CASE("Local submission closes only after its original acceptance is verified without another execute",
+          "[AdvancedCreation][AdvancedLocalDesign][Regression]")
+{
+    using Json = nlohmann::json;
+    const bool accepted = GENERATE(false, true);
+    const bool mismatched_response = GENERATE(false, true);
+    CAPTURE(accepted, mismatched_response);
+    wxInitializer init; REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-advanced-local-acceptance"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.string());
+    AdvancedHttpProbe probe;
+    Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr, probe.endpoint());
+    const auto group = host_test_group(80 + unsigned(accepted) * 2 + unsigned(mismatched_response));
+    REQUIRE(host.session().apply_snapshot(group, host.session().begin_open(group.id), true));
+    host.set_service_available(true);
+    REQUIRE(probe.until([&] { return host.eligibility().generate_design; }));
+    std::vector<bool> callbacks;
+    host.generate_single_design(ViewId::Left, "only this left detail", [&](bool value) { callbacks.push_back(value); });
+    REQUIRE(probe.until([&] { return probe.count("/plans") == 1; }));
+    const auto plan = probe.local_plan(probe.at("/plans"), group);
+    probe.reply(probe.at("/plans"), {{"plan", plan}});
+    REQUIRE(probe.until([&] { return probe.count("/operations") == 1; }));
+    CHECK(callbacks.empty()); CHECK(host.has_pending_receipt());
+    const auto execute = probe.at("/operations");
+    CHECK(probe.requests[execute].payload.at("plan_id") == plan.at("id"));
+    CHECK(probe.requests[execute].payload.at("confirmation_fingerprint") == plan.at("confirmation_fingerprint"));
+    if (mismatched_response) {
+        auto wrong = plan.at("design_request"); wrong["target_view"] = "right";
+        probe.reply(execute, {{"operation", {{"id", plan.at("id")}, {"group_id", group.id}, {"design_request", wrong}}}});
+    } else {
+        probe.reply(execute, Json::object(), true);
+    }
+    REQUIRE(probe.until([&] { return !host.command_pending(); }));
+    CHECK(callbacks == (mismatched_response ? std::vector<bool>{} : std::vector<bool>{false}));
+    CHECK(host.has_pending_receipt());
+    for (const auto view : AllViews) CHECK(host.session().group()->views[index(view)].version_id == group.views[index(view)].version_id);
+    int blocked_callbacks = 0;
+    host.generate_single_design(ViewId::Left, "only this left detail", [&](bool value) { CHECK_FALSE(value); ++blocked_callbacks; });
+    CHECK(blocked_callbacks == 1); probe.drain(); CHECK(probe.count("/operations") == 1);
+    host.reconcile_submission();
+    REQUIRE(probe.until([&] { return probe.count("/reconcile") == 1; }));
+    const auto reconcile = probe.at("/reconcile");
+    CHECK(probe.requests[reconcile].path == "/v1/orcaslicer/advanced-multiview/groups/" + group.id +
+          "/operations/" + plan.at("id").get<std::string>() + "/reconcile");
+    const auto draft = AdvancedMultiviewClient::design_json(group.saved_draft);
+    Json restored {{"schema", "advanced-multiview-group-v1"}, {"workflow_kind", "advanced_multiview_v1"},
+        {"id", group.id}, {"input_epoch", group.input_epoch}, {"revision", group.revision + 1},
+        {"initial_input", draft}, {"saved_draft", draft}, {"latest_submitted_draft", draft},
+        {"active_operation_id", nullptr}, {"stop_intent", false}, {"published", true},
+        {"uploads", Json::object()}, {"views", Json::object()}};
+    // Receipt acceptance precedes image-cache synchronization; no supplier or
+    // downloadable asset is needed to verify this callback and command identity.
+    for (const auto view : AllViews) {
+        restored["uploads"][view_name(view)] = nullptr;
+        restored["views"][view_name(view)] = {{"current_version_id", nullptr}, {"current", nullptr}, {"latest_attempt", nullptr}};
+    }
+    probe.reply(reconcile, {{"accepted", accepted}, {"group", restored}});
+    REQUIRE(probe.until([&] { return !host.has_pending_receipt(); }));
+    const auto expected = accepted
+        ? (mismatched_response ? std::vector<bool>{true} : std::vector<bool>{false, true})
+        : (mismatched_response ? std::vector<bool>{} : std::vector<bool>{false});
+    CHECK(callbacks == expected); CHECK(probe.count("/operations") == 1);
+    if (!accepted) {
+        host.generate_single_design(ViewId::Left, "explicit corrected retry", [&](bool value) { CHECK_FALSE(value); });
+        REQUIRE(probe.until([&] { return probe.count("/plans") == 2; }));
+        const auto retry = probe.at("/plans", 1);
+        CHECK(probe.requests[retry].payload.at("command_id") != plan.at("id"));
+        CHECK(probe.requests[retry].payload.at("design_request").at("target_view") == "left");
+        CHECK(probe.requests[retry].payload.at("design_request").at("local_prompt") == "explicit corrected retry");
+        probe.reply(retry, Json::object(), true);
+        REQUIRE(probe.until([&] { return !host.command_pending(); }));
+        CHECK_FALSE(host.has_pending_receipt()); CHECK(probe.count("/operations") == 1);
+    }
+    host.shutdown();
+}
+
+TEST_CASE("An unsent local receipt failure permits an explicit retry after storage recovers",
+          "[AdvancedCreation][AdvancedLocalDesign][Regression]")
+{
+    using Json = nlohmann::json;
+    wxInitializer init; REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-advanced-local-receipt-failure"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.string());
+    AdvancedHttpProbe probe;
+    Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr, probe.endpoint());
+    const auto group = host_test_group(88);
+    REQUIRE(host.session().apply_snapshot(group, host.session().begin_open(group.id), true));
+    host.set_service_available(true);
+    REQUIRE(probe.until([&] { return host.eligibility().generate_design; }));
+    int callbacks = 0;
+    const auto submit = [&] {
+        host.generate_single_design(ViewId::Left, "only this left detail", [&](bool value) {
+            CHECK_FALSE(value); ++callbacks;
+        });
+    };
+    submit(); REQUIRE(probe.until([&] { return probe.count("/plans") == 1; }));
+    const auto plan = probe.local_plan(probe.at("/plans"), group);
+    const auto blocked = temporary.path() / "advanced-cache" / "pending-submissions" /
+        (plan.at("id").get<std::string>() + ".json.part");
+    boost::filesystem::create_directories(blocked.parent_path());
+    REQUIRE(boost::filesystem::create_directory(blocked));
+    probe.reply(probe.at("/plans"), {{"plan", plan}});
+    REQUIRE(probe.until([&] { return callbacks == 1; }));
+    CHECK_FALSE(host.command_pending());
+    CHECK(probe.count("/operations") == 0);
+    CHECK(probe.count("/reconcile") == 0);
+    CHECK(host.session().draft().design == group.saved_draft);
+    for (const auto view : AllViews)
+        CHECK(host.session().group()->views[index(view)].version_id == group.views[index(view)].version_id);
+    REQUIRE_FALSE(host.has_pending_receipt());
+    REQUIRE(boost::filesystem::remove(blocked));
+    submit(); REQUIRE(probe.until([&] { return probe.count("/plans") == 2; }));
+    const auto retry = probe.at("/plans", 1);
+    const auto retry_plan = probe.local_plan(retry, group);
+    CHECK(retry_plan.at("id") != plan.at("id"));
+    CHECK(probe.requests[retry].payload.at("design_request").at("target_view") == "left");
+    CHECK(probe.requests[retry].payload.at("design_request").at("local_prompt") == "only this left detail");
+    probe.reply(retry, {{"plan", retry_plan}});
+    REQUIRE(probe.until([&] { return probe.count("/operations") == 1; }));
+    CHECK(probe.requests[probe.at("/operations")].payload.at("plan_id") == retry_plan.at("id"));
+    probe.reply(probe.at("/operations"), Json::object(), true);
+    REQUIRE(probe.until([&] { return callbacks == 2; }));
+    CHECK(host.has_pending_receipt()); // This retry was sent, so preserve its uncertain receipt.
+    CHECK(probe.count("/reconcile") == 0);
+    host.shutdown();
+}
+
+TEST_CASE("A failed design stop keeps its operation stoppable and retries only the original stop",
+          "[AdvancedCreation][AdvancedStopNavigation][Regression]")
+{
+    using Json = nlohmann::json;
+    wxInitializer init; REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-advanced-local-stop-retry"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.string());
+    AdvancedHttpProbe probe;
+    Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr, probe.endpoint());
+    auto group = host_test_group(71);
+    group.active_operation_id = host_test_group(72).id; group.execution_state = "running";
+    group.views[1].operation_id = group.active_operation_id; group.views[1].attempt_state = "submitting";
+    REQUIRE(host.session().apply_snapshot(group, host.session().begin_open(group.id), true));
+    host.set_service_available(true);
+    REQUIRE(probe.until([&] { return host.eligibility().stop; }));
+    const auto versions = host.session().group()->views;
+    host.stop(); REQUIRE(probe.until([&] { return probe.count("/stop") == 1; }));
+    const auto first = probe.at("/stop");
+    probe.reply(first, Json::object(), true);
+    REQUIRE(probe.until([&] { return !host.command_pending(); }));
+    CHECK(host.session().group()->active_operation_id == group.active_operation_id);
+    CHECK_FALSE(host.session().group()->stop_intent); CHECK(host.eligibility().stop);
+    host.stop(); REQUIRE(probe.until([&] { return probe.count("/stop") == 2; }));
+    const auto second = probe.at("/stop", 1);
+    CHECK(probe.requests[second].path == probe.requests[first].path);
+    CHECK(probe.requests[second].payload == probe.requests[first].payload);
+    CHECK(probe.count("/plans") == 0); CHECK(probe.count("/operations") == 0);
+    for (const auto view : AllViews) CHECK(host.session().group()->views[index(view)].version_id == versions[index(view)].version_id);
+    probe.reply(second, Json::object(), true);
+    REQUIRE(probe.until([&] { return !host.command_pending(); }));
+    CHECK(host.eligibility().stop); host.shutdown();
 }
 
 TEST_CASE("Opening history or starting a creation releases the previous model stop observation",
@@ -1255,6 +2724,8 @@ TEST_CASE("Advanced late saves cannot replace a new group and explicit restores 
 TEST_CASE("Advanced upload and style changes select in-place design targets", "[AdvancedCreation]")
 {
     auto session = ready_session();
+    auto uploaded = *session.group(); uploaded.uploads[0] = "front-upload.png";
+    REQUIRE(session.apply_snapshot(uploaded, session.context(), true));
     CHECK(session.set_upload(ViewId::Right, "replacement.png"));
     CHECK(session.selection()[index(ViewId::Right)]);
     CHECK(session.group()->id == "group-a");
@@ -1401,7 +2872,43 @@ TEST_CASE("Advanced old failed submissions allow new 2D generation while retaini
     session.apply_snapshot(group, session.context());
     CHECK_FALSE(session.eligibility(capabilities, guards).generate_model);
     CHECK(session.eligibility(capabilities, guards).generate_design);
-    CHECK(session.eligibility(capabilities, guards).recover);
+    CHECK_FALSE(session.eligibility(capabilities, guards).recover);
+}
+
+TEST_CASE("Advanced model generation ignores only unselected terminal unknown designs",
+          "[AdvancedCreation][AdvancedModelSelection]")
+{
+    const auto problem = GENERATE(ViewId::Front, ViewId::Left, ViewId::Back, ViewId::Right);
+    auto group = complete_group();
+    group.views[index(problem)].attempt_state = "ambiguous";
+    Session session;
+    REQUIRE(session.apply_snapshot(group, session.begin_open(group.id), true));
+    const Capabilities caps {true, true, true, true, true, {true, true, true, true}, true};
+    const HostGuards guards {true, true, true};
+    CHECK(session.eligibility(caps, guards).model_reason == "design_result_unknown");
+    CHECK(session.eligibility(caps, guards).click_generate_model);
+    CHECK(session.model_selection_entry_eligibility(caps, guards).generate_model == (problem != ViewId::Front));
+    if (problem == ViewId::Front) {
+        CHECK_FALSE(session.toggle_model_view(problem));
+        return;
+    }
+    REQUIRE(session.toggle_model_view(problem));
+    CHECK(session.eligibility(caps, guards).generate_model);
+    CHECK(session.effective_model_views().size() == 3);
+    for (const auto view : AllViews)
+        if (view != ViewId::Front && view != problem) REQUIRE(session.toggle_model_view(view));
+    CHECK(session.effective_model_views() == std::vector<ViewId>{ViewId::Front});
+    CHECK(session.eligibility(caps, guards).generate_model);
+    auto limited = caps;
+    limited.model_image_counts = {false, false, false, true};
+    CHECK(session.eligibility(limited, guards).model_reason == "unsupported_multiview");
+    for (const std::string state : {"result_pending", "result_saved"}) {
+        ++group.revision;
+        group.views[index(problem)].attempt_state = state;
+        REQUIRE(session.apply_snapshot(group, session.context()));
+        CHECK(session.eligibility(caps, guards).model_reason == "recovery_required");
+        CHECK_FALSE(session.eligibility(caps, guards).click_generate_model);
+    }
 }
 
 TEST_CASE("Failed empty cards can be selected for generation but cannot open a preview", "[AdvancedCreation]")
@@ -1418,8 +2925,9 @@ TEST_CASE("Failed empty cards can be selected for generation but cannot open a p
     CHECK(session.selection()[1]);
     Capabilities capabilities {true, true, true, true, true};
     HostGuards guards {true, true, true};
-    CHECK(session.eligibility(capabilities, guards).generate_design);
-    CHECK_FALSE(session.eligibility(capabilities, guards).generate_model);
+    const auto eligibility = session.eligibility(capabilities, guards);
+    CHECK(eligibility.generate_design == (state != "result_pending" && state != "result_saved"));
+    CHECK_FALSE(eligibility.generate_model);
     guards.can_start = false;
     CHECK_FALSE(session.eligibility(capabilities, guards).generate_design);
     guards.can_start = true;
@@ -1515,9 +3023,11 @@ TEST_CASE("Advanced uploads require a front reference and support a separate tex
     Capabilities capabilities {true, true, true, true, true};
     HostGuards guards {true, true, true};
     CHECK_FALSE(session.eligibility(capabilities, guards).generate_design);
-    session.set_upload(ViewId::Left, "left.png");
+    CHECK_FALSE(session.set_upload(ViewId::Left, "left.png"));
+    CHECK(session.draft().uploads[1].empty());
     CHECK_FALSE(session.eligibility(capabilities, guards).generate_design);
     session.set_upload(ViewId::Front, "front.png");
+    CHECK(session.set_upload(ViewId::Left, "left.png"));
     CHECK(session.eligibility(capabilities, guards).generate_design);
     session.new_creation();
     auto draft = session.draft().design;
@@ -1778,5 +3288,60 @@ TEST_CASE("The shared workflow lock rejects advanced draft replacement until exp
     CHECK_FALSE(host.draft_editing_locked());
     host.new_creation();
     CHECK_FALSE(host.session().matches(context));
+    host.shutdown();
+}
+
+TEST_CASE("Model selection eligibility rejects creations without a loaded group while text generation remains available",
+          "[AdvancedCreation][AdvancedModelSelection][Regression]")
+{
+    const std::string state = GENERATE("initial", "new-creation", "opening");
+    Session session;
+    if (state == "new-creation") {
+        REQUIRE(session.apply_snapshot(complete_group(), session.begin_open("group-a"), true));
+        session.new_creation();
+    }
+    if (state == "opening") session.begin_open("group-a");
+    REQUIRE_FALSE(session.group());
+    auto draft = session.draft().design;
+    draft.prompt = "A friendly toy robot";
+    REQUIRE(session.set_design_draft(draft));
+    const Capabilities capabilities {true, true, true, true, true, {true, true, true, true}, true};
+    const HostGuards guards {true, true, true};
+    const auto entry = session.model_selection_entry_eligibility(capabilities, guards);
+    CHECK(entry.generate_design);
+    CHECK_FALSE(entry.generate_model);
+    CHECK(entry.model_reason == "missing_current_view");
+    session.begin_model_selection();
+    const auto candidate = session.candidate_model_eligibility(capabilities, guards);
+    CHECK_FALSE(candidate.generate_model);
+    CHECK(candidate.model_reason == "missing_current_view");
+    CHECK_FALSE(session.group());
+}
+
+TEST_CASE("Model selection entry rejects initial and reset creations without preparing requests or changing context",
+          "[AdvancedCreation][AdvancedModelSelection][Regression]")
+{
+    const bool reset = GENERATE(false, true);
+    wxInitializer init; REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-advanced-empty-model-selection"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.string());
+    AdvancedHttpProbe probe;
+    Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr, probe.endpoint());
+    if (reset) {
+        REQUIRE(host.session().apply_snapshot(complete_group(), host.session().begin_open("group-a"), true));
+        host.new_creation();
+    }
+    const auto context = host.session().context();
+    std::string reason;
+    CHECK_FALSE(host.begin_model_selection([&](const std::string& value) { reason = value; }));
+    CHECK(reason == "missing_current_view");
+    CHECK_FALSE(host.session().group());
+    CHECK_FALSE(host.session().model_candidate());
+    CHECK_FALSE(host.command_pending());
+    CHECK_FALSE(host.has_pending_receipt());
+    CHECK(host.session().matches(context));
+    probe.drain();
+    CHECK(probe.count("/model-plans") == 0);
+    CHECK(probe.count("/model-jobs") == 0);
     host.shutdown();
 }

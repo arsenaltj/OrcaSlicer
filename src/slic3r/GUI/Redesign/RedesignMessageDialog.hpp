@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <vector>
+#include <functional>
 
 #include <wx/msgdlg.h>
 
@@ -86,6 +87,9 @@ public:
                           bool scroll_message = false);
     void set_action_label(wxWindowID id, const wxString& label);
     void enable_action(wxWindowID id, bool enabled);
+    // Optional advanced confirmation body; ordinary dialogs keep their layout.
+    void set_confirmation_content(wxWindow* content, std::function<bool()> before_confirm);
+    void fit_confirmation_content();
     RedesignMessageDialog(wxWindow* parent, const wxString& message,
                           const wxString& caption, long style, Appearance appearance,
                           int minimum_message_height = 105, bool scroll_message = false,
@@ -141,6 +145,8 @@ private:
     wxPanel* m_icon { nullptr };
     RedesignDialogCloseButton* m_close_button { nullptr };
     wxBoxSizer* m_action_sizer { nullptr };
+    wxBoxSizer* m_confirmation_content { nullptr };
+    std::function<bool()> m_before_confirm;
     std::vector<RedesignDialogActionButton*> m_action_buttons;
 };
 

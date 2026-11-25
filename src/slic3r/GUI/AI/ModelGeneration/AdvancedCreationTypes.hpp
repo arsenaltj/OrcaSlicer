@@ -157,6 +157,12 @@ struct CommandContext {
     std::uint64_t model_selection_revision {0};
 };
 
+struct ModelSelectionCandidate {
+    std::uint64_t id {0}, revision {0};
+    CommandContext command;
+    std::array<bool, 4> selected {};
+};
+
 struct LayoutRect { int x {0}, y {0}, width {0}, height {0}; };
 struct GridLayout { std::array<LayoutRect, 4> cards; std::array<LayoutRect, 4> images; };
 
@@ -164,5 +170,6 @@ GridLayout grid_layout(int width, int height, int margin, int gap, int caption_h
 LayoutRect contain_image(LayoutRect available, int image_width, int image_height);
 bool design_attempt_generating(const std::string& state);
 bool design_attempt_failed(const std::string& state);
+bool design_attempt_recoverable(const std::string& state);
 
 } // namespace Slic3r::GUI::AdvancedCreation

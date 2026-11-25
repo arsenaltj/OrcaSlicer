@@ -3117,15 +3117,15 @@ void RedesignShell::refresh_prompt_count()
             ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES));
         m_prompt_count->SetForegroundColour(over_limit ? wxColour(255, 128, 112) :
             smart_creation_opaque_colour(wxColour(255, 255, 255, 115), m_prompt->GetBackgroundColour()));
-        m_prompt_count->SetToolTip(text("按输入容量计数，上限2000字节；英文通常占1，汉字通常占3。超限保留全文，请精简后生成。"));
+        m_prompt_count->SetToolTip(text("上限 2000 字符，以输入框容量计数为准。超限保留全文，请精简后生成。"));
         m_prompt_count->Refresh();
         if (m_prompt_limit_warning) m_prompt_limit_warning->Show(over_limit);
     } else m_prompt_count->SetLabel(wxString::Format("%zu/%zu", bytes,
-        ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES) + text(" UTF-8 字节") +
+        ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES) + text(" 字符") +
         (over_limit ? text("（已超限）") : wxString()));
     if (!m_smart_creation) {
         m_prompt_count->SetForegroundColour(over_limit ? wxColour(255, 128, 112) : secondary_text_colour());
-        m_prompt_count->SetToolTip(text("中文通常占3字节。超限时保留完整文字，请精简后生成。"));
+        m_prompt_count->SetToolTip(text("以输入框容量计数为准。超限时保留完整文字，请精简后生成。"));
     }
     m_prompt_count->GetParent()->Layout();
     if (m_smart_creation) layout_image_settings();
@@ -3192,7 +3192,7 @@ void RedesignShell::request_prompt_polish()
         return;
     }
     if (prompt.size() > ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES) {
-        m_prompt_polish_status->SetLabel(text("描述超过 2000 UTF-8 字节，请精简后再润色。"));
+        m_prompt_polish_status->SetLabel(text("描述超过 2000 字符，请精简后再润色。"));
         refresh_prompt_polish_controls();
         return;
     }
@@ -3291,7 +3291,9 @@ void RedesignShell::fail_prompt_polish(
     if (!m_prompt_polish_state.fail(sequence))
         return;
     m_prompt_polish_request.reset();
-    wxString message = wxString::FromUTF8(error.message);
+    wxString message = error.code == "description_too_long" ? text("描述超过 2000 字符，请精简后再润色。") :
+        error.code == "result_too_long" ? text("润色结果超过 2000 字符，已保留原描述。") :
+        wxString::FromUTF8(error.message);
     if (!error.diagnostic_id.empty())
         message += text(" 诊断编号：") + wxString::FromUTF8(error.diagnostic_id);
     m_prompt_polish_status->SetLabel(message);

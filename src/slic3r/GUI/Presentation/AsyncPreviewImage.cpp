@@ -14,21 +14,49 @@ wxImage prepare_preview_image(const PreviewImageRequest& key, const std::functio
     if (stopped() || key.path.empty() || key.bounds.x <= 0 || key.bounds.y <= 0) return {};
     wxImage source;
     if (!source.LoadFile(wxString(boost::filesystem::path(key.path).wstring())) || stopped()) return {};
-    const double sx = double(key.bounds.x) / source.GetWidth(), sy = double(key.bounds.y) / source.GetHeight();
-    const double scale = key.cover ? std::max(sx, sy) : std::min(sx, sy);
-    const int width = key.cover ? std::max(1, int(std::ceil(source.GetWidth() * scale))) :
-        std::clamp(int(std::lround(source.GetWidth() * scale)), 1, key.bounds.x);
-    const int height = key.cover ? std::max(1, int(std::ceil(source.GetHeight() * scale))) :
-        std::clamp(int(std::lround(source.GetHeight() * scale)), 1, key.bounds.y);
-    auto image = source.Scale(width, height, wxIMAGE_QUALITY_HIGH);
+    const bool center_cover = key.cover && key.alignment == PreviewCropAlignment::Center;
+    wxImage image;
+    if (center_cover) {
+        // Crop the source first so extreme aspect ratios cannot allocate a large intermediate bitmap.
+        const double aspect = double(key.bounds.x) / key.bounds.y;
+        const int width = source.GetWidth(), height = source.GetHeight();
+        const int crop_width = std::max(1, int(std::lround(std::min(double(width), height * aspect))));
+        const int crop_height = std::max(1, int(std::lround(std::min(double(height), width / aspect))));
+        image = source.GetSubImage(wxRect((width - crop_width) / 2, (height - crop_height) / 2,
+                                          crop_width, crop_height)).Scale(key.bounds.x, key.bounds.y, wxIMAGE_QUALITY_HIGH);
+    } else {
+        const double sx = double(key.bounds.x) / source.GetWidth(), sy = double(key.bounds.y) / source.GetHeight();
+        const double fit = key.cover ? std::max(sx, sy) : std::min(sx, sy);
+        const double scale = key.limit_to_source && !key.cover ? std::min(fit, 1.0) : fit;
+        const int width = key.cover ? std::max(1, int(std::ceil(source.GetWidth() * scale))) :
+            std::clamp(int(std::lround(source.GetWidth() * scale)), 1, key.bounds.x);
+        const int height = key.cover ? std::max(1, int(std::ceil(source.GetHeight() * scale))) :
+            std::clamp(int(std::lround(source.GetHeight() * scale)), 1, key.bounds.y);
+        image = width == source.GetWidth() && height == source.GetHeight() ? std::move(source) :
+            source.Scale(width, height, wxIMAGE_QUALITY_HIGH);
+        if (key.cover && image.IsOk())
+            image = image.GetSubImage(wxRect(std::max(0, (width - key.bounds.x) / 2),
+                std::max(0, int(std::lround((height - key.bounds.y) * 0.1))), key.bounds.x, key.bounds.y));
+    }
     if (!image.IsOk() || stopped()) return {};
     if (key.cover) {
-        image = image.GetSubImage(wxRect(std::max(0, (width-key.bounds.x)/2),
-            std::max(0, int(std::lround((height-key.bounds.y)*0.1))), key.bounds.x, key.bounds.y));
         if (!image.HasAlpha()) image.InitAlpha();
         const int radius = std::clamp(key.radius, 0, std::min(key.bounds.x, key.bounds.y)/2);
         auto* alpha = image.GetAlpha();
-        for (int y=0; y<key.bounds.y; ++y) {
+        if (center_cover) {
+            // Only the four corners need alpha work. Smooth the boundary at the target pixel size.
+            for (int y = 0; y < radius; ++y) {
+                if (stopped()) return {};
+                for (int x = 0; x < radius; ++x) {
+                    const double coverage = std::clamp(radius + 0.5 - std::hypot(radius - 0.5 - x, radius - 0.5 - y), 0.0, 1.0);
+                    for (const int row : {y, key.bounds.y - 1 - y})
+                        for (const int col : {x, key.bounds.x - 1 - x}) {
+                            auto& pixel = alpha[row * key.bounds.x + col];
+                            pixel = static_cast<unsigned char>(std::lround(pixel * coverage));
+                        }
+                }
+            }
+        } else for (int y=0; y<key.bounds.y; ++y) {
             if ((y & 63) == 0 && stopped()) return {};
             for (int x=0; x<key.bounds.x; ++x) {
                 double dx=0, dy=0;
@@ -69,6 +97,12 @@ AsyncPreviewImage::AsyncPreviewImage(wxWindow* owner, TaskRunner& tasks) : m_sta
 }
 AsyncPreviewImage::~AsyncPreviewImage() { m_state->stopped=true; m_state->scope.cancel(); }
 const wxBitmap& AsyncPreviewImage::bitmap() const { return m_state->bitmap; }
+const wxBitmap& AsyncPreviewImage::bitmap_for(const std::string& path, const std::string& revision, PreviewCropAlignment alignment) const
+{
+    const auto& installed = m_state->installed;
+    return installed && installed->path == path && installed->revision == revision && installed->alignment == alignment
+        ? m_state->bitmap : wxNullBitmap;
+}
 void AsyncPreviewImage::request(PreviewImageRequest key)
 {
     assert_gui_thread();

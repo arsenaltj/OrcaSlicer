@@ -105,7 +105,8 @@ class AdvancedMultiviewRuntime:
             self.repository.save(group)
         # Known output download/local commit only, never a supplier creation request.
         self.workflow.recover_interrupted(group_id, expected_operation=operation_id,
-                                          operation_running=self.application.operation_running)
+                                          operation_running=self.application.operation_running,
+                                          allow_failed_result_retry=True)
         return self.application.operation(group_id, operation_id)
 
     def reconcile(self, group_id: str, operation_id: str) -> dict[str, Any]:

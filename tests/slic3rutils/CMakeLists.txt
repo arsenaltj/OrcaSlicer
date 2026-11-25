@@ -271,11 +271,11 @@ endif()
 
 orcaslicer_discover_tests(${_TEST_NAME}_tests)
 
-# Presentation contracts do not depend on the application or slicing kernel.
-# Keep their concurrency/lifecycle gate runnable before migrating consumers.
+# Exercise presentation contracts without linking the desktop application.
+# The slicing label case includes the core types used by the details panel.
 add_executable(ui_lifecycle_tests test_ui_lifecycle.cpp test_redesign_restore_capture.cpp)
 target_include_directories(ui_lifecycle_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(ui_lifecycle_tests PRIVATE test_common Catch2::Catch2WithMain orca_ui_runtime)
+target_link_libraries(ui_lifecycle_tests PRIVATE test_common Catch2::Catch2WithMain orca_ui_runtime OrcaSlicer::Core cereal::cereal semver)
 if(WIN32)
     target_link_libraries(ui_lifecycle_tests PRIVATE glad ${_opengl_link_lib})
 endif()

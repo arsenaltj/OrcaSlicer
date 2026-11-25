@@ -1,4 +1,18 @@
-# 2026-11-24 当前 · 高级模式可变视角及补修本地提交
+# 2026-11-25 当前 · 高级创作两项高优先级修复已验收
+
+**主线**　`UX/ADVANCED-MULTIVIEW-20261107`。 [两项修复及 Windows 验收](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#advanced-creation-exit-model-gate-verified-20261125)
+
+**本轮**　修复退出崩溃和终态未知辅助图的建模限制。独立实窗 6 次干净退出，两家均完成主图单图实单并能重开成品。C++ 107 + 57 项、Python 147 项通过。Tripo 累计 3/5。
+
+**未结**　本次两项的专项用例已验收。前序点击等待、历史缩略图及原验收缺口仍在主计划。
+
+**下一步**　Windows 内部验收版已备妥，收据 `20261125-213104-384`。
+
+**计划变更**　在原编号记录 11 条专项用例结果、任务回执和退出证据。相关改动已并入本节所在的最后一笔本地提交。
+
+---
+
+# 2026-11-24 此前 · 高级模式可变视角及补修本地提交
 
 **主线**　`UX/ADVANCED-MULTIVIEW-20261107`／`ADV-FLEX-03`补修及文案补充；单代理，`codex/team/integration`。[方案、用例、复核及返回点](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#advanced-flexible-views-review-20261124)
 

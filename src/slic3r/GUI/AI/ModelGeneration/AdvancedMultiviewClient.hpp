@@ -29,6 +29,9 @@ public:
                         std::function<void()> complete, Error error);
     void cancel();
     static Json design_json(const AdvancedCreation::DesignDraft& draft);
+    static bool design_plan_matches(const Json& plan, const Json& request, const std::string& group,
+                                    const std::vector<AdvancedCreation::ViewId>& targets);
+    static bool model_plan_matches(const Json& plan, const Json& request, const std::string& group);
     static std::optional<AdvancedCreation::GroupSnapshot> parse_group(const Json& group,
                                                                      const boost::filesystem::path& cache_root);
     static std::optional<AdvancedCreation::ModelJobProjection> parse_model_job(
