@@ -695,12 +695,12 @@ class VirtualPrinterSession:
                     self.file_position = self._stream.tell()
                     self.progress = min(.999, self.file_position / max(1, self.metadata["size"]))
                     text = line.decode("utf-8", errors="replace").strip()
-                    if re.match(r";\s*(LAYER_CHANGE|layer\s+num/total_layer_count)", text, re.I):
+                    if re.fullmatch(r";\s*(?:LAYER_CHANGE|layer\s+num/total_layer_count\s*:\s*\d+\s*/\s*\d+)\s*", text, re.I):
                         if not self._explicit_layers:
                             self.layer = 0
                         self._explicit_layers = True
                         self.layer += 1
-                    layer_match = re.match(r";\s*LAYER:\s*(\d+)", text, re.I)
+                    layer_match = re.fullmatch(r";\s*LAYER:\s*(\d+)\s*", text, re.I)
                     if layer_match:
                         self._explicit_layers = True
                         self.layer = int(layer_match[1]) + 1
