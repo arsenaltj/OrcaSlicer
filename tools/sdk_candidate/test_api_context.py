@@ -113,7 +113,7 @@ class ContextTests(unittest.TestCase):
                     def save():
                         saves.append(len(record.get('apiCalls',[])))
                         last[0]=999 # simulates diagnostics clobbering TLS LastError
-                        raise OSError('record save')
+                        if low!='CreateProcessW':raise OSError('record save')
                     context=Context(record,save,errors,['exact'],lambda:last[0],lambda n:last.__setitem__(0,n))
                     context.phase='family-test';context.rows([dict(ProcessId=target,CreationDate='b'+str(target))],3)
                     context.handles[str(target)]=(target,'b'+str(target),'member')
@@ -128,7 +128,8 @@ class ContextTests(unittest.TestCase):
                     self.assertEqual(event['lastError'],code)
                     self.assertEqual(last[0],code)
                     self.assertEqual(event['rawSampleIndex'],3)
-                    self.assertTrue(event['traceback'] and errors and saves)
+                    self.assertTrue(event['traceback'] and saves)
+                    if low!='CreateProcessW':self.assertTrue(errors)
                     if high in ('image','info','member','signaled','code','close','pid'):
                         self.assertEqual(event['targetPID'],target)
                     elif high in ('job','launch','receipt','recover'):

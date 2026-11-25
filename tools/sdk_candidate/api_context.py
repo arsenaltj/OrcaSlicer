@@ -2,10 +2,54 @@
 import hashlib
 import json
 import traceback
+import os
+import time
+import datetime
+from pathlib import Path
+
+
+class Journal:
+    """One command/thread; append complete checksummed records, never truncate."""
+    def __init__(self,path):
+        self.path=Path(path);self.stream=self.path.open('xb');self.rows=[];self.failed=False
+    def append(self,kind,value):
+        if self.failed:raise OSError('journal permanently failed')
+        payload=dict(seq=len(self.rows),kind=kind,value=json.loads(json.dumps(value)))
+        digest=hashlib.sha256(json.dumps(payload,sort_keys=True).encode()).hexdigest()
+        row=dict(payload,sha256=digest)
+        try:
+            encoded=(json.dumps(row,sort_keys=True)+'\n').encode()
+            if self.stream.write(encoded)!=len(encoded):raise OSError('short journal write')
+            self.stream.flush();os.fsync(self.stream.fileno())
+        except BaseException:
+            self.failed=True;raise
+        self.rows.append(row)
+    def finish(self,record):
+        self.stream.close()
+        if self.failed:raise OSError('incomplete journal')
+        rows=[]
+        with self.path.open('rb') as source:
+            for line in source:
+                if not line.endswith(b'\n'):raise ValueError('partial journal line')
+                row=json.loads(line);digest=row.pop('sha256')
+                if row['seq']!=len(rows) or hashlib.sha256(json.dumps(row,sort_keys=True).encode()).hexdigest()!=digest:
+                    raise ValueError('journal sequence/checksum differs')
+                rows.append(row)
+        expected=[dict(seq=x['seq'],kind=x['kind'],value=x['value']) for x in self.rows]
+        if rows!=expected:raise ValueError('journal data differs')
+        calls=[x['value'] for x in rows if x['kind']=='api']
+        histories=[x['value'] for x in rows if x['kind']=='closed']
+        if calls!=record.get('apiCalls',[]) or (histories[-1] if histories else [])!=record.get('closedHandleHistory',[]):
+            raise ValueError('full trace/closed history not equivalent')
+        with self.path.open('rb') as source:digest=hashlib.file_digest(source,'sha256').hexdigest()
+        return dict(path=str(self.path),bytes=self.path.stat().st_size,sha256=digest,
+                    records=len(rows),apiCalls=len(calls),closedUpdates=len(histories),fullTraceEquivalent=True,
+                    apiCallsSha256=hashlib.sha256(json.dumps(calls,sort_keys=True).encode()).hexdigest(),
+                    closedHistorySha256=hashlib.sha256(json.dumps(record.get('closedHandleHistory',[]),sort_keys=True).encode()).hexdigest())
 
 
 class Context:
-    def __init__(self, record, save, errors, argv, last_error, restore_error=lambda value:None):
+    def __init__(self, record, save, errors, argv, last_error, restore_error=lambda value:None,journal_path=None):
         self.record, self.save, self.errors = record, save, errors
         self.argv = hashlib.sha256(json.dumps(argv).encode()).hexdigest()
         self.last_error = last_error
@@ -17,9 +61,14 @@ class Context:
         self.closed_history = []
         self.job = None
         self.frame = {}
+        self.journal=Journal(journal_path) if journal_path is not None else None
+        self.written_calls=0;self.written_history=None;self.broken=False
+        self.after_create=None;self.root_image=None;self.root_tainted=False
+        self.first_exception_snapshot=False
 
     def closed(self, handle):
         key = str(handle)
+        if self.root_image and self.root_image['handle']==key:self.root_tainted=True
         previous = self.handles.pop(key,None)
         if previous is not None or key == self.job:
             self.closed_history.append(dict(handle=key,status='closed',historyOnly=True,
@@ -82,9 +131,61 @@ class Context:
 
     def persist(self):
         try:
-            self.save()
+            if self.journal is None:self.save()
+            else:
+                calls=self.record.get('apiCalls',[])
+                for event in calls[self.written_calls:]:
+                    self.journal.append('api',event);self.written_calls+=1
+                history=self.record.get('closedHandleHistory',[])
+                if history!=self.written_history:
+                    self.journal.append('closed',history);self.written_history=json.loads(json.dumps(history))
         except BaseException as exc:
+            self.broken=True
+            self.record['apiJournalStatus']='INCOMPLETE_STICKY_FAILURE'
             self.errors.append(dict(stage='api_context_save', error=repr(exc)))
+            try:self.save()
+            except BaseException as save_error:self.errors.append(dict(stage='first_error_snapshot',error=repr(save_error)))
+
+    def finish(self):
+        if self.journal is not None:
+            self.persist()
+            try:self.record['apiJournal']=self.journal.finish(self.record)
+            except BaseException:
+                self.broken=True;self.record['apiJournalStatus']='INCOMPLETE_STICKY_FAILURE';raise
+        if self.broken:raise OSError('API journal incomplete; cannot qualify')
+        self.record['apiJournalStatus']='COMPLETE_VERIFIED' if self.journal else 'LEGACY_TEST_CONTEXT'
+
+    def capture_root(self,receipt,query):
+        assert not self.broken and not self.root_tainted and self.root_image is None,'root capture unavailable'
+        assert receipt is not None and receipt.process and receipt.pid,'partial PI cannot certify image'
+        handle=receipt.process;pid=int(receipt.pid)
+        self.handles[str(handle)]=(pid,None,'root')
+        image=self.call('root.early_image',lambda:query(handle),targetPID=pid,handle=str(handle),handleRole='root')
+        assert isinstance(image,str) and image and not self.broken and not self.root_tainted,'missing actual early image'
+        events=self.record['apiCalls']
+        direct=[(i,e) for i,e in enumerate(events) if e['operation']=='QueryFullProcessImageNameW'
+                and e['status']=='outcome' and e.get('handle')==str(handle) and e.get('result') not in ('0','False','None')]
+        assert len(direct)==1,'missing/ambiguous actual root query outcome'
+        index,event=direct[0]
+        self.root_image=dict(handle=str(handle),pid=pid,birth=None,image=image,eventIndex=index,
+                             capturedMonotonicNs=event['completedMonotonicNs'],closedGenerationCount=len(self.closed_history))
+        self.record['rootEarlyImage']=dict(self.root_image)
+
+    def prior_root_image(self,handle,api,pid):
+        fact=self.root_image
+        assert fact and not self.root_tainted and not self.broken and fact['handle']==str(handle) and fact['pid']==pid,'no continuous early root fact'
+        assert str(handle) in self.handles and not any(x['handle']==str(handle) for x in self.closed_history),'closed/reused root handle'
+        actual=api.info(handle)
+        assert actual[0]==pid and api.member(handle,api.artifact_job),'root identity/member differs'
+        assert not self.broken and not self.root_tainted,'root proof became incomplete'
+        assert fact['birth'] is None or fact['birth']==actual[1],'root birth generation conflict'
+        fact['birth']=actual[1]
+        self.call('root.image_reference',lambda:dict(evidence='PRIOR_DIRECT_SAME_GENERATION',
+             eventIndex=fact['eventIndex'],capturedMonotonicNs=fact['capturedMonotonicNs']),
+             targetPID=pid,knownBirth=actual[1],handle=str(handle),handleRole='root')
+        self.record['rootEarlyImage']=dict(fact)
+        assert not self.broken,'root reference journal incomplete'
+        return fact['image']
 
     def rows(self, rows, index):
         self.raw_index = index
@@ -97,23 +198,33 @@ class Context:
         event.update(self.frame)
         event.update(target)
         event['status'] = 'attempt'
+        event['monotonicNs']=time.monotonic_ns();event['utc']=datetime.datetime.now(datetime.timezone.utc).isoformat()
         calls = self.record.setdefault('apiCalls', [])
         calls.append(event)
         prior = self.last_error()
         self.persist()  # failure remains sticky but cannot block native cleanup/wait
         self.restore_error(prior)
+        if self.broken and operation=='CreateProcessW':raise OSError('journal failure prohibits new launch')
+        invoked_ns=time.monotonic_ns()
         try:
             result = action()
             last = self.last_error()  # capture before serialization/diagnostics/another API
+            completed_ns=time.monotonic_ns()
         except BaseException as exc:
             last = self.last_error()
+            completed_ns=time.monotonic_ns()
             calls.append(dict(event, status='exception', lastError=last, error=repr(exc),
-                              winerror=getattr(exc,'winerror',None), traceback=traceback.format_exc()))
+                              winerror=getattr(exc,'winerror',None), traceback=traceback.format_exc(),
+                              invokedMonotonicNs=invoked_ns,completedMonotonicNs=completed_ns))
             self.persist()
+            if not self.first_exception_snapshot:
+                self.first_exception_snapshot=True
+                try:self.save()
+                except BaseException as save_error:self.errors.append(dict(stage='first_api_exception_snapshot',error=repr(save_error)))
             self.restore_error(last)
             raise
         calls.append(dict(event, status='outcome', lastError=last,
-                          result=repr(result)))
+                          result=repr(result),invokedMonotonicNs=invoked_ns,completedMonotonicNs=completed_ns))
         self.persist()
         self.restore_error(last)
         return result
@@ -152,6 +263,9 @@ class Context:
             elif name == 'close':
                 self.closed(args[0])
             return result
+        except BaseException:
+            if name=='image' and (self.root_image is None or self.root_image['handle']==str(args[0])):self.root_tainted=True
+            raise
         finally:
             self.frame = before
 
@@ -182,6 +296,12 @@ class Context:
                     self.handles[str(receipt.process)] = (int(receipt.pid),None,'root')
                     self.call('native.launch_receipt', lambda:dict(processHandle=str(receipt.process),pid=int(receipt.pid)),
                               targetPID=int(receipt.pid), handle=str(receipt.process),handleRole='root')
+                if result:
+                    original_error=self.last_error()
+                    try:
+                        assert self.after_create is not None,'missing genuine root capture hook'
+                        self.after_create(receipt)
+                    finally:self.restore_error(original_error)
             return result
         return invoke
 

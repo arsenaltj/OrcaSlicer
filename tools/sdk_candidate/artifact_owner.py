@@ -33,6 +33,7 @@ def runtime():
             from api_context import instrument
             assert TRACE_CONTEXT is not None, 'missing artifact API context'
             instrument(self, TRACE_CONTEXT)
+            TRACE_CONTEXT.after_create=lambda receipt:TRACE_CONTEXT.capture_root(receipt,self.image)
         def image(self, handle):
             fn = self.k.QueryFullProcessImageNameW
             fn.argtypes = [H, U32, C.c_wchar_p, C.POINTER(U32)]
@@ -46,12 +47,14 @@ def runtime():
     class ArtifactDomain(KernelDomain):
         def __init__(self):
             super().__init__(ImageAPI())
+            self.api.artifact_job=self.job
         def launch(self, argv, *args):
             self.expected = os.path.normcase(str(Path(argv[0]).resolve()))
             return super().launch(argv, *args)
         def prove_root(self):
             super().prove_root()
-            assert os.path.normcase(self.api.image(self.root.h)) == self.expected, 'retained root image differs'
+            actual=TRACE_CONTEXT.prior_root_image(self.root.h,self.api,self.root.pid)
+            assert os.path.normcase(actual) == self.expected, 'retained root image differs'
         def allowed(self, row, owned, images):
             if identity(row) not in owned:
                 return False
@@ -61,7 +64,9 @@ def runtime():
             if len(matches) != 1:
                 return False
             handle = self.handles[matches[0]]
-            image = os.path.normcase(self.api.image(handle))
+            actual=(TRACE_CONTEXT.prior_root_image(handle,self.api,self.root.pid)
+                    if matches[0][0]==self.root.pid else self.api.image(handle))
+            image = os.path.normcase(actual)
             # Only one interpreter root is authorized. An arbitrary nested
             # ctypes SDK script is not exempt just because its image is Python.
             interpreter_child = (matches[0][0] != self.root.pid
@@ -87,7 +92,8 @@ def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=720
     import ctypes
     from api_context import Context
     TRACE_CONTEXT = Context(record, save, errors, argv, lambda:getattr(ctypes,'get_last_error',lambda:None)(),
-                            lambda value:getattr(ctypes,'set_last_error',lambda v:None)(value) if value is not None else None)
+                            lambda value:getattr(ctypes,'set_last_error',lambda v:None)(value) if value is not None else None,
+                            journal_path=Path(log_path).with_suffix('.api.jsonl'))
     domain = child = None
     code = None
     failure = None
@@ -141,6 +147,7 @@ def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=720
         except BaseException as exc:
             remember(errors, 'launch_or_owner', exc)
             failure = failure or 'launch_or_owner'
+            persist()  # first full error snapshot; never bypass natural finally
         finally:
             if domain is not None:
                 if child is None:
@@ -166,6 +173,7 @@ def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=720
                 else:
                     attempt(errors, 'unused_job_close', lambda: domain.api.close(domain.job))
     record.update(exitCode=code, cancelReason=failure, state='failed' if failure or errors or code != 0 else 'returned')
+    attempt(errors,'journal_finalize',TRACE_CONTEXT.finish)
     persist()
     if errors:
         record.update(state='failed', cancelReason=failure or 'monitor_error')
