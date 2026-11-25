@@ -1,0 +1,199 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Orca 产品平台 · 业务到内核",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1180,
+      475
+    ],
+    "legend": {
+      "mode": "hidden"
+    }
+  },
+  "components": [
+    {
+      "id": "native_workspace",
+      "type": "frontend",
+      "label": "原生设计与打印",
+      "sublabel": "编辑 · 准备 · 切片 · 预览",
+      "pos": [
+        70,
+        42
+      ],
+      "size": [
+        290,
+        61
+      ]
+    },
+    {
+      "id": "ai_workspace",
+      "type": "frontend",
+      "label": "AI 创作与 3D 后处理",
+      "sublabel": "图文生成 · 美颜 · 配色",
+      "pos": [
+        445,
+        42
+      ],
+      "size": [
+        290,
+        61
+      ]
+    },
+    {
+      "id": "asset_account",
+      "type": "frontend",
+      "label": "模型库与账号",
+      "sublabel": "作品管理 · 登录与会话",
+      "pos": [
+        820,
+        42
+      ],
+      "size": [
+        290,
+        61
+      ]
+    },
+    {
+      "id": "application_state",
+      "type": "backend",
+      "label": "应用编排与状态",
+      "sublabel": "任务 · 会话 · 候选与撤销",
+      "pos": [
+        445,
+        154
+      ],
+      "size": [
+        290,
+        64
+      ]
+    },
+    {
+      "id": "diagnostics",
+      "type": "backend",
+      "label": "DFX 与工程保障",
+      "sublabel": "诊断 · 可靠性 · 定向回归",
+      "pos": [
+        70,
+        260
+      ],
+      "size": [
+        290,
+        64
+      ]
+    },
+    {
+      "id": "integration_ports",
+      "type": "backend",
+      "label": "共享契约与接入适配",
+      "sublabel": "产物 · 工作区 · 供应商 · 设备",
+      "pos": [
+        445,
+        260
+      ],
+      "size": [
+        290,
+        64
+      ]
+    },
+    {
+      "id": "native_kernel",
+      "type": "backend",
+      "label": "Orca 内核",
+      "sublabel": "几何 · CAD · 配置 · G-code",
+      "pos": [
+        70,
+        376
+      ],
+      "size": [
+        290,
+        61
+      ]
+    },
+    {
+      "id": "local_runtime",
+      "type": "backend",
+      "label": "本地运行与资产存储",
+      "sublabel": "Python Sidecar · 文件与历史",
+      "pos": [
+        445,
+        376
+      ],
+      "size": [
+        290,
+        61
+      ]
+    },
+    {
+      "id": "device_adapters",
+      "type": "external",
+      "label": "供应商与打印设备",
+      "sublabel": "外部 AI · OAuth · 打印协议",
+      "pos": [
+        820,
+        376
+      ],
+      "size": [
+        290,
+        61
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "from": "native_workspace",
+      "to": "application_state",
+      "label": "原生操作"
+    },
+    {
+      "from": "ai_workspace",
+      "to": "application_state",
+      "label": "创作与编辑",
+      "labelDy": 24
+    },
+    {
+      "from": "asset_account",
+      "to": "application_state",
+      "label": "资产与身份"
+    },
+    {
+      "from": "application_state",
+      "to": "integration_ports",
+      "label": "明确的命令和结果",
+      "labelDy": 24
+    },
+    {
+      "from": "application_state",
+      "to": "diagnostics",
+      "label": "诊断与验证"
+    },
+    {
+      "from": "integration_ports",
+      "to": "native_kernel",
+      "label": "显式应用与撤销"
+    },
+    {
+      "from": "integration_ports",
+      "to": "local_runtime",
+      "label": "认证本地调用",
+      "labelDy": 24
+    },
+    {
+      "from": "integration_ports",
+      "to": "device_adapters",
+      "label": "外部协议"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "slate",
+      "title": "阅读方式",
+      "items": [
+        "逻辑职责分层；不表示已独立部署或编译。",
+        "具体源码、共享状态与验证入口在交互全景中下钻。"
+      ]
+    }
+  ]
+}

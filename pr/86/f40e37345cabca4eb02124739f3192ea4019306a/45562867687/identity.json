@@ -1,0 +1,27 @@
+{
+  "pr": 86,
+  "run": 45562867687,
+  "head": "f40e37345cabca4eb02124739f3192ea4019306a",
+  "base": "d8c2bfa7f4cf09fbbb15db9c562478e3bcc9e9cb",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "修复模型库下载与导入，完善工作台试色和启动呈现",
+  "path": "pr/86/f40e37345cabca4eb02124739f3192ea4019306a/45562867687",
+  "created": "2026-11-25T06:48:38+00:00",
+  "files": {
+    "index.html": "8df063713919c79b333d9de9d67719f658862c5c9daaa14e3003a85bcef0088f",
+    "details.html": "393d10a90a6c0c35656b14dc45c3cfa775251727feaf16a640ac08048aeea5b1",
+    "report.json": "2035ffaf7d6253530885891234a1facab54eb07519cab07a36f5910454acbf53",
+    "summary.md": "b70ff922898db7d87a913765c519abd492dd17db61a3183986e01b3e4761853d",
+    "archify-receipts.json": "71bd6a6baedad0a4d47302b8d709f9a5e7ff22c2421cb145c40fe937c3b0020d",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l0-platform.html": "99935095d905d448319e796148e04715478224ba9576c63820c2d1ba37e75aa2",
+    "l0-platform.json": "cf11ddcc6ebffc6bb2ab8f18b82871e1b72d147778df05af8f63b1c196dcaefa",
+    "l1-modules.html": "3ce97638e75d9449218bd63934352f26b6d70e16eb86eeb8eba3d19726be1f44",
+    "l1-modules.json": "99a2f01dc0774e014520b96cfb49e0fac4941670465944f5bb836560a52ddf24",
+    "l2-generation.html": "5ab5558ef137d23eda721ae0ddaa25f82afe2839900e0e142691cb8020e85350",
+    "l2-generation.json": "9d870a02f238a819088346855f3b6c4f912a733fb48dec971a7ab4e6ed8caea5",
+    "l2-slicing.html": "d90d8be9e8d358423e04a3e12617d88a0796cd9e9740d2339cbfeeb1b5277a0d",
+    "l2-slicing.json": "5137fddbf8b9b2e17bd079e501454a6cdb667e6e12f11f40f49207ca165d243c"
+  }
+}
