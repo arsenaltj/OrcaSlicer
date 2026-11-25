@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <optional>
+#include <utility>
 
 namespace Slic3r::GUI {
 
@@ -11,6 +12,8 @@ namespace Slic3r::GUI {
 // supply a complete orientation (including the bottom view) without losing it
 // when the user next orbits, compares appearances, or restores an edit snapshot.
 struct ModelPreviewCameraRotation {
+    static constexpr std::pair<double, double> front_angles {-0.5 * PI, -0.5 * PI};
+
     double yaw {-0.65};
     double pitch {-1.05};
     std::optional<Eigen::Quaterniond> navigator;
@@ -47,5 +50,10 @@ struct ModelPreviewCameraRotation {
         else yaw = std::remainder(yaw + angle, 6.283185307179586);
     }
 };
+
+inline Transform3d workbench_model_display_basis()
+{
+    return Geometry::rotation_transform(ModelPreviewCameraRotation::front_angles.first * Vec3d::UnitZ());
+}
 
 } // namespace Slic3r::GUI

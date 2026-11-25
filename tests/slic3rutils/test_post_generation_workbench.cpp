@@ -466,12 +466,13 @@ TEST_CASE("Round base preview is reversible and bound to one geometry identity",
     const auto layout = preview.layout("geometry-a", bounds);
     REQUIRE(layout);
     CHECK_THAT(layout->height, Catch::Matchers::WithinAbs(3.0, 1e-9));
-    CHECK_THAT(layout->body_scale, Catch::Matchers::WithinAbs(0.93, 1e-9));
-    CHECK_THAT(layout->radius, Catch::Matchers::WithinAbs(20.6, 1e-9));
+    CHECK(layout->body_transform.linear().isIdentity());
+    CHECK(layout->bounds.size().isApprox(Slic3r::Vec3d(44.0, 44.0, 42.8)));
+    CHECK_THAT(layout->radius, Catch::Matchers::WithinAbs(22.0, 1e-9));
     CHECK_THAT((layout->body_transform * Slic3r::Vec3d(0, 0, 5)).z(),
         Catch::Matchers::WithinAbs(7.8, 1e-9));
     CHECK_THAT((layout->body_transform * Slic3r::Vec3d(0, 0, 45)).z(),
-        Catch::Matchers::WithinAbs(45.0, 1e-9));
+        Catch::Matchers::WithinAbs(47.8, 1e-9));
     CHECK_THAT((layout->base_transform * Slic3r::Vec3d(0, 0, 0)).z(),
         Catch::Matchers::WithinAbs(5.0, 1e-9));
 
@@ -481,16 +482,26 @@ TEST_CASE("Round base preview is reversible and bound to one geometry identity",
     CHECK_FALSE(preview.enabled("geometry-b"));
 }
 
-TEST_CASE("Round base preview rejects unsafe dimensions without retaining the toggle",
+TEST_CASE("Round base supports thin bodies and rejects degenerate geometry",
           "[PostGenerationWorkbench][OrcaModelPreparation]")
 {
     Slic3r::BoundingBoxf3 bounds;
     bounds.merge(Slic3r::Vec3d(0., 0., 0.));
-    bounds.merge(Slic3r::Vec3d(20., 20., 3.));
+    const double thickness = GENERATE(0.2, 0.4, 3.0);
+    bounds.merge(Slic3r::Vec3d(2., 3., thickness));
     WorkbenchRoundBasePreviewState preview;
     preview.reset("geometry");
     std::string error;
-    CHECK_FALSE(preview.set_enabled(true, bounds, error));
+    REQUIRE(preview.set_enabled(true, bounds, error));
+    const auto layout = preview.layout("geometry", bounds);
+    REQUIRE(layout);
+    const double lift = 3.0 - std::min(0.2, thickness / 2.0);
+    CHECK(layout->body_transform.linear().isIdentity());
+    CHECK_THAT(layout->body_transform.translation().z(), Catch::Matchers::WithinAbs(lift, 1e-9));
+    CHECK(layout->bounds.size().isApprox(Slic3r::Vec3d(8.0, 8.0, thickness + lift)));
+    auto degenerate = bounds;
+    degenerate.max.z() = degenerate.min.z();
+    CHECK_FALSE(preview.set_enabled(true, degenerate, error));
     CHECK_FALSE(error.empty());
     CHECK_FALSE(preview.enabled("geometry"));
 }
@@ -521,12 +532,17 @@ TEST_CASE("Workbench placement adds a round base only to its detached import cop
     Model source;
     auto* object = source.add_object();
     object->input_file = "portrait.glb";
-    auto* body = object->add_volume(TriangleMesh(its_make_cube(20, 30, 40)));
+    const double thickness = GENERATE(40.0, 0.2);
+    auto* body = object->add_volume(TriangleMesh(its_make_cube(20, 40, thickness)));
     body->source.input_file = object->input_file;
     body->config.set("extruder", 3);
+    const auto vertices = body->mesh().its.vertices;
+    const auto indices = body->mesh().its.indices;
 
     std::unique_ptr<Model> prepared;
     std::string error;
+    const auto layout = workbench_round_base_layout(body->mesh().bounding_box());
+    REQUIRE(layout);
     REQUIRE(LocalPrintModelImport::prepare(*object, {100, 100}, {250, 250}, prepared, error, true));
     REQUIRE(error.empty());
     REQUIRE(prepared);
@@ -536,7 +552,7 @@ TEST_CASE("Workbench placement adds a round base only to its detached import cop
     REQUIRE(imported->volumes.size() == 2);
     CHECK(imported->volumes.back()->name == "AI round base");
     CHECK(imported->volumes.back()->extruder_id() == 3);
-    CHECK_THAT(imported->instance_bounding_box(0).size().z(), Catch::Matchers::WithinAbs(40., 0.001));
+    CHECK((imported->instance_bounding_box(0).size() - layout->bounds.size()).norm() < 0.001);
     TriangleMesh base_mesh = imported->volumes.back()->mesh();
     base_mesh.transform(imported->instances.front()->get_matrix() * imported->volumes.back()->get_matrix());
     const auto base_bounds = base_mesh.bounding_box();
@@ -545,17 +561,20 @@ TEST_CASE("Workbench placement adds a round base only to its detached import cop
     TriangleMesh body_mesh = imported->volumes.front()->mesh();
     body_mesh.transform(imported->instances.front()->get_matrix() * imported->volumes.front()->get_matrix());
     const auto body_bounds = body_mesh.bounding_box();
-    CHECK_THAT(body_bounds.min.z(), Catch::Matchers::WithinAbs(2.8, 0.001));
+    CHECK_THAT(body_bounds.min.z(), Catch::Matchers::WithinAbs(layout->body_transform.translation().z(), 0.001));
+    CHECK((body_bounds.size() - Vec3d(20.0, 40.0, thickness)).norm() < 0.001);
     CHECK_THAT(base_bounds.size().x(), Catch::Matchers::WithinAbs(base_bounds.size().y(), 0.001));
     CHECK_THAT(base_bounds.size().x(), Catch::Matchers::WithinAbs(
         std::max(body_bounds.size().x(), body_bounds.size().y()) + 4.0, 0.001));
     CHECK(object->instances.empty());
     REQUIRE(object->volumes.size() == 1);
+    CHECK(body->mesh().its.vertices == vertices);
+    CHECK(body->mesh().its.indices == indices);
 
-    Model too_short;
-    auto* unsafe = too_short.add_object();
+    Model flat;
+    auto* unsafe = flat.add_object();
     unsafe->input_file = "unsafe.glb";
-    auto* unsafe_body = unsafe->add_volume(TriangleMesh(its_make_cube(10, 10, 3)));
+    auto* unsafe_body = unsafe->add_volume(TriangleMesh(its_make_cube(10, 10, 0)));
     unsafe_body->source.input_file = unsafe->input_file;
     std::unique_ptr<Model> rejected;
     CHECK_FALSE(LocalPrintModelImport::prepare(*unsafe, {100, 100}, {250, 250}, rejected, error, true));

@@ -47,6 +47,8 @@
 
 模型库网页维护：在仓库根目录运行`npm ci --prefix tools/model-library-web`与`npm run build --prefix tools/model-library-web`，将固定依赖打包到`resources/web/model_library/viewer.bundle.js`；其余HTML/CSS/JS直接随安装资源交付，运行时不需要Node或Next.js。展示投影回归运行`node --test tests/web/test_model_library.cjs`；原生下载、账号和本地资产回归使用`./dev.ps1 CppTest -TestSuite slic3rutils_tests -TestLabel 'PlatformLibrary|HonorAccount|ModelLibrary|ModelHistoryOpen'`。网站OpenAPI、迁移039与兼容回归在独立网站仓库交付，客户端构建通过不代表网站已部署或真实账号下载已验收。
 
+智能切片画布按当前视图的对象信息卡边界对齐进度浮层，并避让全部通知。布局复用 [CanvasNotificationLayout](../src/slic3r/GUI/CanvasNotificationLayout.hpp)，边界由通知管理器在渲染后发布。模型编辑页负责网格检查修复与导入资格，切片页进入后直接显示切片设置，正式切片由 Orca 原生校验当前盘与配置。
+
 ## 选择验证范围
 
 命令从仓库根执行，使用已有可用 Python 和构建环境。按实际改动选择，不要求每个文档任务运行全量构建。

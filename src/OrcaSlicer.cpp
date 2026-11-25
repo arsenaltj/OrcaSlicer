@@ -3956,7 +3956,14 @@ int CLI::run(int argc, char **argv)
             }
 
             //computing
+            // Standalone filament presets may omit these: a missing diameter follows the first filament, a missing
+            // support flag is off.
+            auto *filament_diameter = m_print_config.option<ConfigOptionFloats>("filament_diameter", true);
+            if (filament_diameter->size() < project_filament_count)
+                filament_diameter->resize(project_filament_count, print_config_def.get("filament_diameter")->default_value.get());
             ConfigOptionBools* filament_is_support = m_print_config.option<ConfigOptionBools>("filament_is_support", true);
+            if (filament_is_support->size() < project_filament_count)
+                filament_is_support->values.resize(project_filament_count, false);
 
             const std::vector<int> &min_flush_volumes = Slic3r::GUI::get_min_flush_volumes(m_print_config, 0);
 
@@ -5532,10 +5539,7 @@ int CLI::run(int argc, char **argv)
                     arrange_cfg.align_to_y_axis = (printer_structure_opt->value == PrinterStructure::psI3);
                 }
 
-                arrangement::update_arrange_params(arrange_cfg, &m_print_config, selected);
-                arrangement::update_selected_items_inflation(selected, &m_print_config, arrange_cfg);
-                arrangement::update_unselected_items_inflation(unselected, &m_print_config, arrange_cfg);
-                arrangement::update_selected_items_axis_align(selected, &m_print_config, arrange_cfg);
+                arrangement::update_arrange_items(selected, unselected, &m_print_config, arrange_cfg);
 
                 beds = get_shrink_bedpts(&m_print_config, arrange_cfg);
 
@@ -6007,10 +6011,7 @@ int CLI::run(int argc, char **argv)
                     arrange_cfg.align_to_y_axis = (printer_structure_opt->value == PrinterStructure::psI3);
                 }
 
-                arrangement::update_arrange_params(arrange_cfg, &m_print_config, selected);
-                arrangement::update_selected_items_inflation(selected, &m_print_config, arrange_cfg);
-                arrangement::update_unselected_items_inflation(unselected, &m_print_config, arrange_cfg);
-                arrangement::update_selected_items_axis_align(selected, &m_print_config, arrange_cfg);
+                arrangement::update_arrange_items(selected, unselected, &m_print_config, arrange_cfg);
 
                 beds=get_shrink_bedpts(&m_print_config, arrange_cfg);
 
@@ -6836,6 +6837,12 @@ int CLI::run(int argc, char **argv)
                                     }
                                     else
                                         filament_maps = part_plate->get_real_filament_maps(m_print_config);
+
+                                    if (filament_map_has_invalid_nozzle(filament_maps, new_extruder_count)) {
+                                        BOOST_LOG_TRIVIAL(error) << "Plate " << index + 1 << ": filament map refers to an unavailable nozzle.";
+                                        record_exit_reson(outfile_dir, CLI_FILAMENT_CAN_NOT_MAP, index + 1, cli_errors[CLI_FILAMENT_CAN_NOT_MAP], sliced_info);
+                                        flush_and_exit(CLI_FILAMENT_CAN_NOT_MAP);
+                                    }
 
                                     // Multi-nozzle printers need the per-filament volume assignment as a grouping
                                     // input in the manual modes: synthesize it from the per-extruder flow types when

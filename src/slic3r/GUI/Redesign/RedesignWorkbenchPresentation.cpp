@@ -135,6 +135,7 @@ void RedesignShell::release_navigation_waits()
 bool RedesignShell::begin_workbench_presentation(bool history_loading)
 {
     if (m_workbench_transition) return true;
+    if (history_loading) m_history_started = std::chrono::steady_clock::now();
     if (m_generation_toast) m_generation_toast->dismiss();
     auto* source = active_page_focus_root();
     auto* content = m_content_host ? m_content_host->GetSizer() : nullptr;
@@ -197,7 +198,6 @@ bool RedesignShell::begin_workbench_presentation(bool history_loading)
     m_workbench_prepared_size = wxSize();
     m_workbench_history_loading = history_loading;
     if (history_loading) {
-        m_history_started = std::chrono::steady_clock::now();
         m_history_elapsed->SetLabel(_L("已用时 0.0 秒"));
         m_history_cancel->Enable();
         update_history_loading(ModelHistoryOpenEvent::Stage::Reading);
@@ -379,6 +379,7 @@ void RedesignShell::finish_workbench_presentation(bool ready, bool report_failur
     }
     const auto token = *m_workbench_transition;
     const bool detached = m_workbench_presentation_detached;
+    const auto history_request = m_history_open_request;
     auto* owner = wxDynamicCast(wxGetTopLevelParent(this), wxTopLevelWindow);
     if (ready && !detached && (!owner || owner->IsIconized() || !IsShownOnScreen())) return;
     if (ready && !detached && m_workbench_prepared_size != m_content_host->GetClientSize()) {
@@ -430,6 +431,10 @@ void RedesignShell::finish_workbench_presentation(bool ready, bool report_failur
     restore_active_page_focus();
     present_active_page(!ready);
     m_workbench_transition_cover->Hide();
+    if (ready && !detached && history_request)
+        BOOST_LOG_TRIVIAL(info) << "[ModelHistoryOpen] visible request=" << history_request << " elapsed_ms="
+            << std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - m_history_started).count();
     finish_history_loading();
     static_cast<RetainedWorkbenchPageFrame*>(m_workbench_transition_cover)->release();
     refresh_creation_workflow();

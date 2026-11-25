@@ -4,6 +4,7 @@
 #include "ModelLibraryObservations.hpp"
 #include "ModelPreview3D.hpp"
 #include "ModelImageDisplayCopy.hpp"
+#include "slic3r/GUI/DiagnosticStageTimer.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/I18N.hpp"
@@ -30,7 +31,7 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
                                                const std::string& job_id, const wxString& title, bool new_asset,
                                                std::shared_ptr<const ModelHistoryRepairIndex> repairs,
                                                std::shared_ptr<ModelHistoryOpenRequest> restoration,
-                                               const std::string& expected_model_sha256)
+                                               const std::string& expected_model_sha256, bool generated)
 {
     if (m_role != Role::WorkbenchAssets && !restoration && !model_path.empty()) {
         if (!m_asset_open) return false;
@@ -67,6 +68,8 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     }
     if (!restoration && !can_replace_model_asset()) return false;
     auto request = restoration ? restoration : std::make_shared<ModelHistoryOpenRequest>();
+    request->generated = generated;
+    request->started = std::chrono::steady_clock::now();
     request->expected_model_sha256 = expected_model_sha256;
     request->selected_asset = job_id;
     request->root = generated_models_root();
@@ -92,6 +95,8 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     const bool direct_history = bool(m_history_model_open) && (m_role == Role::WorkbenchAssets || !new_asset);
     if (direct_history || restoration) {
         request->generation = ++m_history_open_generation;
+        BOOST_LOG_TRIVIAL(info) << "[ModelHistoryOpen] accepted request=" << request->generation
+            << " asset=" << request->selected_asset << " rollback=" << bool(restoration);
         if (!restoration) {
             const auto previous = std::find_if(m_library_entries.begin(), m_library_entries.end(),
                 [&](const auto& entry) { return entry.model_path == m_displayed_model_path; });
@@ -186,7 +191,7 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
         if (!ModelLibraryObservations::write_observations(library_metadata_path(job_id), metadata,
                 {{"load_seconds", load_seconds}}))
             BOOST_LOG_TRIVIAL(warning) << "Unable to update certified model load metrics for " << job_id;
-    } else if (metadata.is_object()) {
+    } else if (metadata.is_object() && !direct_history) {
         metadata["schema_version"] = std::max(4, metadata.value("schema_version", 0));
         metadata["triangle_count"] = triangle_count;
         metadata["color_count"] = color_count;
@@ -429,6 +434,12 @@ void ModelGenerationPanel::finish_history_model_open(bool accepted, std::functio
     auto request = std::move(m_history_open);
     m_history_open.reset();
     if (!request) { if (complete) complete(); return; }
+    if (!request->restoring) {
+        finish_workbench_check_timing(accepted ? "history-committed" : "history-canceled");
+        if (accepted && std::getenv("ORCASLICER_UI_LATENCY_TRACE"))
+            m_workbench_check_timing = std::make_shared<DiagnosticStageTimer>("ORCASLICER_UI_LATENCY_TRACE",
+                "WorkbenchHistoryUsable", std::to_string(request->generation), request->started);
+    }
     request->canceled = !accepted;
     if (accepted || !request->installed) {
         m_model_preview->retain_history_rollback(false);

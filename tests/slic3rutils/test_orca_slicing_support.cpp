@@ -39,10 +39,13 @@ TEST_CASE("Recommendation planner emits baseline and three native quality plans"
     CHECK(candidates[1].candidateId == "balanced");
     CHECK(candidates[2].candidateId == "speed");
     CHECK(candidates[3].candidateId == "quality");
+    CHECK_THAT(candidates[1].config.option<Slic3r::ConfigOptionFloat>("layer_height")->value,
+               Catch::Matchers::WithinAbs(0.20, 1e-9));
     CHECK_THAT(candidates[2].config.option<Slic3r::ConfigOptionFloat>("layer_height")->value,
                Catch::Matchers::WithinAbs(0.26, 1e-9));
+    // A flat-sided cube needs less vertical detail than a curved model.
     CHECK_THAT(candidates[3].config.option<Slic3r::ConfigOptionFloat>("layer_height")->value,
-               Catch::Matchers::WithinAbs(0.12, 1e-9));
+               Catch::Matchers::WithinAbs(0.16, 1e-9));
 }
 
 TEST_CASE("Recommendation selection consumes only validated native trial metrics", "[OrcaSlicingSupport]")

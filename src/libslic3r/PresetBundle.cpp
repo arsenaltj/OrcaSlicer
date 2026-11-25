@@ -5537,10 +5537,10 @@ std::vector<int> PresetBundle::get_default_nozzle_volume_types_for_filaments(std
     return result;
 }
 
-DynamicPrintConfig PresetBundle::full_config(bool apply_extruder, std::optional<std::vector<int>>filament_maps, std::optional<std::vector<int>> filament_volume_maps) const
+DynamicPrintConfig PresetBundle::full_config(bool apply_extruder, std::optional<std::vector<int>>filament_maps, std::optional<std::vector<int>> filament_volume_maps, const DynamicPrintConfig* process) const
 {
     return (this->printers.get_edited_preset().printer_technology() == ptFFF) ?
-        this->full_fff_config(apply_extruder, filament_maps, filament_volume_maps) :
+        this->full_fff_config(apply_extruder, filament_maps, filament_volume_maps, process) :
         this->full_sla_config();
 }
 
@@ -5608,11 +5608,11 @@ std::set<std::string> PresetBundle::project_different_keys(const std::string &di
     return keys_set;
 }
 
-DynamicPrintConfig PresetBundle::full_fff_config(bool apply_extruder, std::optional<std::vector<int>> filament_maps_new, std::optional<std::vector<int>> filament_volume_maps_new) const
+DynamicPrintConfig PresetBundle::full_fff_config(bool apply_extruder, std::optional<std::vector<int>> filament_maps_new, std::optional<std::vector<int>> filament_volume_maps_new, const DynamicPrintConfig* process) const
 {
     DynamicPrintConfig out;
     out.apply(FullPrintConfig::defaults());
-    out.apply(this->prints.get_edited_preset().config);
+    out.apply(process ? *process : this->prints.get_edited_preset().config);
     // Add the default filament preset to have the "filament_preset_id" defined.
 	out.apply(this->filaments.default_preset().config);
 	out.apply(this->printers.get_edited_preset().config);

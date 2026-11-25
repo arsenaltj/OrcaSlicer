@@ -26,7 +26,6 @@
 #include "PrinterWorkspace.hpp"
 #include "../MainFrame.hpp"
 #include "../GUI_App.hpp"
-#include "../ParamsPanelScrollbar.hpp"
 #include "../AI/AIDesktopFeatureHost.hpp"
 #include "../AI/ModelGeneration/ModelGenerationPresentation.hpp"
 #include "../AI/ModelGeneration/WorkbenchOpenRequest.hpp"
@@ -1536,8 +1535,7 @@ void RedesignShell::disconnect_model_generation_host()
     // shutdown(), MainFrame's destructor and this panel's destructor share
     // this cleanup. Child windows may already be gone on subsequent calls.
     if (!m_model_generation_host && !m_slicing_host && !m_plater_mount.active()) return;
-    if (auto* parameters = wxGetApp().params_panel())
-        set_parameter_scrollbar_theme(parameters->get_paged_view(), false);
+    mount_custom_process(false);
     m_native_theme.restore();
     m_slice_tools.reset();
     if (m_slice_stats_overlay) { m_slice_stats_overlay->Destroy(); m_slice_stats_overlay=nullptr; }
@@ -2374,7 +2372,15 @@ void RedesignShell::connect_model_generation_host()
             [this,library](const boost::filesystem::path& path) {
                 if(!m_plater || !library->can_replace()) return false;
                 wxArrayString files;files.Add(from_path(path));
-                if(!m_plater->load_files(files)) return false;
+                // The native loader can select Prepare before returning.
+                const bool was_fitted = m_slice_camera_fitted;
+                request_initial_slicing_camera();
+                if (!m_plater->load_files(files)) {
+                    request_initial_slicing_camera();
+                    m_slice_camera_fitted = was_fitted;
+                    refresh_workflow_layout();
+                    return false;
+                }
                 return show_model_view(ModelView::Slicing);
             }});
     m_assets_workspace->attach(m_asset_service,library);
@@ -3721,6 +3727,8 @@ bool RedesignShell::navigate_to_tab(const wxString& id)
     if (id.empty())
         return true;
     if (owns_model_workflow() && (id == TAB_ID_PREPARE || id == TAB_ID_PREVIEW)) {
+        if (id == TAB_ID_PREPARE && m_plater->is_loading_project() && !m_plater->model().objects.empty())
+            request_initial_slicing_camera();
         return show_model_view(id == TAB_ID_PREVIEW ? ModelView::Preview : ModelView::Slicing);
     }
 

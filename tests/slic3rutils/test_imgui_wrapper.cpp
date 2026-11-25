@@ -104,6 +104,60 @@ TEST_CASE("A navigator face click survives press and release before painting",
     CHECK_FALSE(input.pending());
 }
 
+TEST_CASE("The first axial navigator frame draws three readable axis marks",
+          "[ImGuiWrapper][View3DNavigator]")
+{
+    const float side = GENERATE(128.f, 256.f);
+    ImGuiWrapper gui;
+    gui.set_display_size(side, side);
+    unsigned char* pixels = nullptr;
+    int width = 0, height = 0;
+    ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+    const std::array<float, 16> identity {1.f,0.f,0.f,0.f, 0.f,1.f,0.f,0.f, 0.f,0.f,1.f,0.f, 0.f,0.f,0.f,1.f};
+    auto view = identity;
+    ImGuizmo::ViewManipulateState state;
+    const std::array<ImU32, 3> colors {IM_COL32(231,83,62,255), IM_COL32(81,205,98,255), IM_COL32(54,124,233,255)};
+    auto& style = ImGuizmo::GetStyle();
+    const auto original_style = style;
+    for (size_t axis = 0; axis < colors.size(); ++axis)
+        style.Colors[ImGuizmo::DIRECTION_X + axis] = ImGui::ColorConvertU32ToFloat4(colors[axis]);
+    ImGui::NewFrame();
+    ImGuizmo::BeginFrame();
+    const auto result = ImGuizmo::ViewManipulate(view.data(), identity.data(), ImGuizmo::ROTATE,
+        ImGuizmo::WORLD, nullptr, 8.f, ImVec2(0.f, 0.f), ImVec2(side, side), 0, state);
+    ImGui::Render();
+    style = original_style;
+
+    CHECK_FALSE(result.changed);
+    CHECK(view == identity);
+    const auto* draw_data = ImGui::GetDrawData();
+    for (size_t axis = 0; axis < colors.size(); ++axis) {
+        CAPTURE(axis);
+        ImRect mark(ImVec2(side, side), ImVec2(0.f, 0.f));
+        bool drawn = false;
+        for (int list = 0; list < draw_data->CmdListsCount; ++list) {
+            for (const auto& vertex : draw_data->CmdLists[list]->VtxBuffer) {
+                constexpr ImU32 rgb_mask = ~ImU32(IM_COL32_A_MASK);
+                if ((vertex.col & rgb_mask) != (colors[axis] & rgb_mask) ||
+                    (vertex.col & IM_COL32_A_MASK) == 0) continue;
+                mark.Add(vertex.pos);
+                drawn = true;
+            }
+        }
+        REQUIRE(drawn);
+        CHECK(mark.Min.x >= 0.f);
+        CHECK(mark.Min.y >= 0.f);
+        CHECK(mark.Max.x <= side);
+        CHECK(mark.Max.y <= side);
+        if (axis == 0) CHECK(mark.Max.x > side * 0.75f);
+        if (axis == 1) CHECK(mark.Min.y < side * 0.25f);
+        if (axis == 2) {
+            CHECK(mark.Max.x < side * 0.25f);
+            CHECK(mark.Min.y > side * 0.75f);
+        }
+    }
+}
+
 TEST_CASE("Workbench navigation creation cancellation and destruction preserve the slicer context",
           "[ImGuiWrapper][View3DNavigator]")
 {
@@ -485,21 +539,26 @@ TEST_CASE("an active ImGui field claims every key, whether it edits text or not"
     CHECK(f.imgui.claim_key_event(key_event(wxEVT_KEY_UP, key, wxMOD_CONTROL)));
 }
 
-TEST_CASE("Workbench navigation follows the GL edge when beauty reduces its viewport", "[View3DNavigator]")
+TEST_CASE("Workbench navigation follows the canvas edge without overlapping the footer window", "[View3DNavigator]")
 {
     using Slic3r::GUI::workbench_navigator_bounds;
-    const wxRect host(0,0,1200,800), footer(0,700,1200,100);
-    const auto overview = workbench_navigator_bounds(wxRect(0,0,1200,700), footer, host, 128);
-    REQUIRE(overview); CHECK(overview->x == 1072); CHECK(overview->y == 672);
-    const auto beauty = workbench_navigator_bounds(wxRect(0,0,800,700), footer, host, 128);
-    REQUIRE(beauty); CHECK(beauty->x == 672); CHECK(beauty->y == overview->y);
+    const wxRect host(0, 0, 1200, 800), footer(0, 700, 800, 100);
+    const auto overview = workbench_navigator_bounds(wxRect(0, 0, 1200, 700), footer, host, 128);
+    REQUIRE(overview);
+    CHECK(overview->x == 1072);
+    CHECK(overview->y == 672);
+    CHECK_FALSE(overview->Intersects(footer));
+    const auto beauty = workbench_navigator_bounds(wxRect(0, 0, 800, 700), footer, host, 128);
+    REQUIRE(beauty);
+    CHECK(beauty->x == 672);
+    CHECK(beauty->y == 572);
     CHECK(beauty->GetRight() < 800);
-    const auto narrow = workbench_navigator_bounds(wxRect(0,0,800,700), wxRect(850,700,350,100), host, 128);
-    REQUIRE(narrow); CHECK(narrow->y == 572);
-    const auto protected_tools = workbench_navigator_bounds(wxRect(0,0,800,700), footer, host, 128, {wxRect(680,710,40,40)});
-    REQUIRE(protected_tools); CHECK(protected_tools->y == 572);
-    CHECK_FALSE(workbench_navigator_bounds(wxRect(0,0,100,700), footer, host, 128));
+    CHECK_FALSE(beauty->Intersects(footer));
+    CHECK_FALSE(workbench_navigator_bounds(wxRect(0, 0, 100, 700), footer, host, 128));
     CHECK_FALSE(workbench_navigator_bounds(wxRect(), footer, host, 128));
-    const auto moved = workbench_navigator_bounds(wxRect(70,20,800,700), wxRect(70,720,800,100), wxRect(70,20,1200,800), 128);
-    REQUIRE(moved); CHECK(moved->x == beauty->x + 70); CHECK(moved->y == beauty->y + 20);
+    const auto moved = workbench_navigator_bounds(wxRect(70, 20, 1200, 700),
+        wxRect(70, 720, 800, 100), wxRect(70, 20, 1200, 800), 128);
+    REQUIRE(moved);
+    CHECK(moved->x == overview->x + 70);
+    CHECK(moved->y == overview->y + 20);
 }

@@ -1807,10 +1807,10 @@ static StringObjectException layered_print_cleareance_valid(const Print &print, 
         }
     }
     if (!intersection(prime_tower_exclude_polys, tower_polys_checked).empty()) {
-        return {L("Prime tower is too close to an exclusion area, and collisions will be caused.\n")};
+        return {L("Prime tower is too close to an exclusion area, and collisions will be caused.\n"), nullptr, "wipe_tower_x"};
     }
     if (print_config.enable_wrapping_detection.value && !intersection({wrapping_poly}, tower_polys_checked).empty()) {
-        return {L("Prime tower is too close to the clumping detection area, and collisions will be caused.\n")};
+        return {L("Prime tower is too close to the clumping detection area, and collisions will be caused.\n"), nullptr, "wipe_tower_x"};
     }
     if (warning && !intersection(prime_tower_exclude_polys, tower_polys_estimated).empty()) {
         warning->string += L("Prime tower is too close to an exclusion area. There may be collisions when printing.") + "\n";
@@ -1828,8 +1828,8 @@ static StringObjectException layered_print_cleareance_valid(const Print &print, 
     if (!diff(tower_polys_checked, printable_polys).empty()) {
         // Moving the tower does not help when no area is reached by every extruder.
         if (printable_polys.empty())
-            return {L("The extruder printable areas share no common area, so the prime tower cannot be printed.\n")};
-        return {L("Prime tower is partially outside the printable area, and it cannot be printed.\n")};
+            return {L("The extruder printable areas share no common area, so the prime tower cannot be printed.\n"), nullptr, "wipe_tower_x"};
+        return {L("Prime tower is partially outside the printable area, and it cannot be printed.\n"), nullptr, "wipe_tower_x"};
     }
     if (warning && !diff(tower_polys_estimated, printable_polys).empty())
         warning->string += L("Prime tower is partially outside the printable area, and it cannot be printed.\n");
@@ -2147,6 +2147,20 @@ bool Print::wipe_tower_certain_before_slicing() const
     return extruders.size() > 1;
 }
 
+static std::string invalid_filament_map_message()
+{
+    return L("Not all filaments used in slicing are mapped to the printer. Please check the mapping of filaments.");
+}
+
+bool Print::has_invalid_input_filament_map() const
+{
+    std::scoped_lock<std::mutex> lock(this->state_mutex());
+    const auto *map = m_last_input_filament_mapping.option<ConfigOptionInts>("filament_map");
+    const auto *nozzles = m_last_input_filament_mapping.option<ConfigOptionFloats>("nozzle_diameter");
+    const size_t nozzle_count = nozzles ? std::max(size_t(1), nozzles->size()) : 1;
+    return map && filament_map_has_invalid_nozzle(map->values, nozzle_count);
+}
+
 StringObjectException Print::validate(std::vector<StringObjectException> *warnings, Polygons* collison_polygons, std::vector<std::pair<Polygon, float>>* height_polygons) const
 {
     auto add_warning = [warnings](StringObjectException w) {
@@ -2162,12 +2176,14 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
         add_warning(std::move(w));
     };
 
-    std::vector<unsigned int> extruders = this->extruders();
-    unsigned int nozzles = m_config.nozzle_diameter.size();
-
     if (m_objects.empty())
         return {std::string()};
 
+    if (has_invalid_input_filament_map())
+        return { invalid_filament_map_message(), nullptr, "filament_map" };
+
+    std::vector<unsigned int> extruders = this->extruders();
+    unsigned int nozzles = m_config.nozzle_diameter.size();
     if (extruders.empty())
         return { L("No extrusions under current settings.") };
 
@@ -3425,6 +3441,8 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": this=%1%, enter, use_cache=%2%, object size=%3%")%this%use_cache%m_objects.size();
     if (m_objects.empty())
         return;
+    if (has_invalid_input_filament_map())
+        throw SlicingError(invalid_filament_map_message());
 
     // Belt purge prism: _plan_belt_purge() (psWipeTower) truncates the prism's
     // layers and drops its unclaimed fills, stashing both so a replan can undo
@@ -4143,6 +4161,9 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
 // It is up to the caller to show an error message.
 std::string Print::export_gcode(const std::string& path_template, GCodeProcessorResult* result, ThumbnailsGeneratorCallback thumbnail_cb)
 {
+    if (has_invalid_input_filament_map())
+        throw SlicingError(invalid_filament_map_message());
+
     // output everything to a G-code file
     // The following call may die if the filename_format template substitution fails.
     std::string path = this->output_filepath(path_template);
@@ -5213,6 +5234,95 @@ Polygons Print::get_extruder_shared_printable_polygon() const
     return shared_printable_polys;
 }
 
+WipeTowerPositionStatus Print::WipeTowerPositionGeometry::check(const Vec2d& position) const
+{
+    if (footprint.points.size() < 3 || !position.allFinite())
+        return WipeTowerPositionStatus::Unavailable;
+    auto placed = footprint;
+    placed.translate(Point::new_scale(position.x(), position.y()));
+    if (printable.empty() || !diff(Polygons{placed}, printable).empty())
+        return WipeTowerPositionStatus::Outside;
+    if (!intersection(Polygons{placed}, exclusions).empty())
+        return WipeTowerPositionStatus::Exclusion;
+    if (!intersection(Polygons{placed}, occupied).empty())
+        return WipeTowerPositionStatus::ModelOverlap;
+    return WipeTowerPositionStatus::Valid;
+}
+
+Print::WipeTowerPositionGeometry Print::wipe_tower_position_geometry(double estimate_reserve_mm) const
+{
+    WipeTowerPositionGeometry geometry;
+    if (!has_wipe_tower() || m_objects.empty())
+        return geometry;
+    const bool generated = bool(m_wipe_tower_data.wipe_tower_mesh_data);
+    Polygon& footprint = geometry.footprint;
+    if (generated) {
+        footprint = m_wipe_tower_data.wipe_tower_mesh_data->bottom;
+    } else {
+        const auto tools = extruders(true);
+        if (tools.empty()) return geometry;
+        const auto& estimate = wipe_tower_data(tools.size());
+        double height = 0.;
+        for (const PrintObject* object : m_objects)
+            height = std::max(height, unscale_(object->size().z()));
+        footprint = estimate_wipe_tower_first_layer_outline(
+            m_config, wipe_tower_type(), estimate.width, estimate.depth, height);
+        if (!footprint.empty()) {
+            // This early suggestion consumes the same single retry as an
+            // exact relocation. Leave room for purge-path rounding and the
+            // generated base, then validate the definitive outline on retry.
+            auto outlines = offset(footprint, float(scaled(estimate.brim_width + estimate_reserve_mm)));
+            if (!outlines.empty()) footprint = std::move(outlines.front());
+        }
+    }
+    if (footprint.points.size() < 3) return geometry;
+    footprint.rotate(Geometry::deg2rad(m_config.wipe_tower_rotation_angle.value));
+    geometry.printable = get_extruder_shared_printable_polygon();
+    geometry.exclusions = get_bed_excluded_area(m_config);
+    if (m_config.enable_wrapping_detection && m_config.wrapping_exclude_area.values.size() >= 3)
+        geometry.exclusions.emplace_back(Polygon::new_scale(m_config.wrapping_exclude_area.values));
+    const Point origin(scale_(m_origin.x()), scale_(m_origin.y()));
+    for (const PrintObject* object : m_objects) {
+        const auto& config = object->config();
+        const double brim = std::max(0., config.brim_width.value) +
+                            std::max(0., config.extra_brim_width.value) +
+                            std::max(0., config.leading_brim_length.value);
+        for (const auto& instance : object->instances()) {
+            Polygon hull = object->model_object()->convex_hull_2d(instance.model_instance->get_matrix());
+            hull.translate(-origin);
+            for (auto& region : offset(hull, float(scale_(brim + 0.2))))
+                geometry.occupied.emplace_back(std::move(region));
+        }
+    }
+    if (generated && std::all_of(m_objects.begin(), m_objects.end(),
+            [](const PrintObject* object) { return !object->layers().empty(); })) {
+        for (Polygon island : first_layer_islands()) {
+            island.translate(-origin);
+            geometry.occupied.emplace_back(std::move(island));
+        }
+    }
+    return geometry;
+}
+
+WipeTowerPositionStatus Print::check_wipe_tower_position(const Vec2d& position) const
+{
+    if (!has_wipe_tower() || m_objects.empty()) return WipeTowerPositionStatus::NotRequired;
+    return wipe_tower_position_geometry().check(position);
+}
+
+std::optional<Vec2d> Print::find_wipe_tower_position() const
+{
+    // Reserve extra room when proposing an anchor from an estimate. The actual
+    // bottom is verified after generation.
+    auto geometry = wipe_tower_position_geometry(2.);
+    append(geometry.occupied, std::move(geometry.exclusions));
+    const Point saved(scale_(m_config.wipe_tower_x.get_at(m_plate_index)),
+                      scale_(m_config.wipe_tower_y.get_at(m_plate_index)));
+    const auto anchor = fit_wipe_tower_anchor(geometry.printable, geometry.footprint, geometry.occupied, saved);
+    if (!anchor) return std::nullopt;
+    return Vec2d(unscaled(anchor->x()), unscaled(anchor->y()));
+}
+
 void Print::set_nozzle_group_result(std::shared_ptr<MultiNozzleUtils::NozzleGroupResultBase> result)
 {
     m_nozzle_group_result         = std::move(result);
@@ -5710,8 +5820,8 @@ void Print::_make_wipe_tower()
 
         // Lets go through the wipe tower layers and determine pairs of extruder changes for each
         // to pass to wipe_tower (so that it can use it for planning the layout of the tower)
-        unsigned int current_extruder_id = m_wipe_tower_data.tool_ordering.all_extruders().back();
         {
+            unsigned int current_extruder_id = m_wipe_tower_data.tool_ordering.all_extruders().back();
             for (auto &layer_tools : m_wipe_tower_data.tool_ordering.layer_tools()) { // for all layers
                 if (!layer_tools.has_wipe_tower)
                     continue;
@@ -5772,12 +5882,14 @@ void Print::_make_wipe_tower()
             } else {
                 // There is yet enough space at this layer of the wipe tower for the final purge.
             }
-        } else if (m_config.single_extruder_multi_material || m_config.filament_multitool_ramming.get_at(current_extruder_id)) {
-            // The tower stops below the last print layer, but the last filament has to ram out. Unload at the
-            // object's top layer so the nozzle doesn't descend into the part on its way to the tower.
+        } else if (m_config.single_extruder_multi_material) {
+            // The tower stops below the last print layer, but a single-extruder MMU still has to unload the last
+            // filament. Unload at the object's top layer so the nozzle doesn't descend into the part on its way
+            // to the tower.
             wipe_tower.set_layer(float(m_wipe_tower_data.tool_ordering.back().print_z), float(layer_height), 0, false, true);
         } else {
-            // The wipe tower does not reach the last print layer and nothing needs ramming.
+            // The wipe tower does not reach the last print layer and nothing needs unloading: without SEMM the
+            // final purge only rams, with no retraction or parking, so it would just extrude in mid-air.
             // Skip final purge to avoid generating purge lines in mid-air.
             generate_final_purge = false;
         }
@@ -5823,11 +5935,11 @@ void Print::_make_wipe_tower()
             BOOST_LOG_TRIVIAL(error) << boost::format("wipe tower footprint [%1%,%2%]-[%3%,%4%] leaves printable [%5%,%6%]-[%7%,%8%]") %
                 unscaled(fp.min.x()) % unscaled(fp.min.y()) % unscaled(fp.max.x()) % unscaled(fp.max.y()) %
                 unscaled(pr.min.x()) % unscaled(pr.min.y()) % unscaled(pr.max.x()) % unscaled(pr.max.y());
-            throw Slic3r::SlicingError(L("Prime tower is partially outside the printable area, and it cannot be printed.\n"));
+            throw Slic3r::WipeTowerPlacementError(L("Prime tower is partially outside the printable area, and it cannot be printed.\n"));
         }
         // The cutter/purge corner is a physical obstacle — the brim must stay out like the body.
         if (!intersection(get_bed_excluded_area(m_config), Polygons{footprint}).empty())
-            throw Slic3r::SlicingError(L("Prime tower is too close to an exclusion area, and collisions will be caused.\n"));
+            throw Slic3r::WipeTowerPlacementError(L("Prime tower is too close to an exclusion area, and collisions will be caused.\n"));
     }
 }
 

@@ -60,6 +60,7 @@ public:
     }
 
     const nlohmann::json& restoration_fields() const { return m_fields; }
+    const std::string& fingerprint() const { return m_fingerprint; }
 
     // A changed/missing record takes the existing fresh-read path. Failed
     // handoffs leave the outputs untouched, and every handoff is single-use.

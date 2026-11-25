@@ -386,6 +386,7 @@ inline constexpr float DEFAULT_FILAMENT_DENSITY = 1.245f;
         std::vector<float> filament_diameters;
         std::vector<int>   required_nozzle_HRC;
         std::vector<float> filament_densities;
+        std::optional<double> material_weight_grams(const std::map<size_t, double>& volumes) const;
         std::vector<float> filament_costs;
         std::vector<int> filament_vitrification_temperature;
         std::vector<int>   filament_maps;

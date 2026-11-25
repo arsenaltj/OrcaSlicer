@@ -140,6 +140,13 @@ Model current_plate_model_copy(const Plater& plater, PartPlate& plate)
 
 AI::SmartSlicing::WorkspaceRevision OrcaSmartSlicingAdapter::current_revision() const { return capture_context_impl(false).revision; }
 
+OrcaSliceInputIdentity OrcaSmartSlicingAdapter::current_slice_input() const
+{
+    OrcaSliceInputIdentity identity;
+    capture_context_impl(false, &identity);
+    return identity;
+}
+
 AI::SmartSlicing::WorkspaceContext OrcaSmartSlicingAdapter::capture_context() const { return capture_context_impl(true); }
 
 bool OrcaSmartSlicingAdapter::set_usage_purpose(AI::SmartSlicing::UsagePurpose purpose)
@@ -310,6 +317,32 @@ OrcaModelFeatureCaptureResult OrcaSmartSlicingAdapter::capture_model_feature_inp
     return OrcaModelFeatureAnalyzer::capture_current_plate(*m_plater, target, limits);
 }
 
+bool OrcaSmartSlicingAdapter::current_plate_has_user_marked_surface() const
+{
+    if (m_user_marked_regions.size() == 0 || m_plater == nullptr)
+        return false;
+    auto* plate = m_plater->get_partplate_list().get_curr_plate();
+    if (plate == nullptr)
+        return false;
+    const auto& objects = m_plater->model().objects;
+    for (size_t i = 0; i < objects.size(); ++i) {
+        const auto* object = objects[i];
+        if (object == nullptr)
+            continue;
+        for (size_t j = 0; j < object->instances.size(); ++j) {
+            if (!plate->contain_instance(static_cast<int>(i), static_cast<int>(j)))
+                continue;
+            // The lightweight comparison has no per-face contact proof. A
+            // registered mark bars this rotation even if its binding needs refresh.
+            for (const auto* volume : object->volumes)
+                if (volume && m_user_marked_regions.contains(object->id().id, volume->id().id))
+                    return true;
+            break;
+        }
+    }
+    return false;
+}
+
 OrcaTrialSliceInput OrcaSmartSlicingAdapter::capture_trial_slice_input() const
 {
     if (m_plater == nullptr || wxGetApp().preset_bundle == nullptr)
@@ -321,15 +354,21 @@ OrcaTrialSliceInput OrcaSmartSlicingAdapter::capture_trial_slice_input() const
 
     OrcaTrialSliceInput input;
     input.model                    = current_plate_model_copy(*m_plater, *plate);
-    input.config                   = wxGetApp().preset_bundle->full_config(false);
-    input.config.apply(*plate->config(), true);
+    input.config                   = plate->smart_slice_baseline(*wxGetApp().preset_bundle);
+    input.plate_overrides          = *plate->config();
+    input.plate_origin             = plate->get_origin();
+    input.check_filament_compatibility = wxGetApp().app_config->get("enable_high_low_temp_mixed_printing") == "false";
+    for (auto* object : input.model.objects)
+        object->sync_painted_modifiers();
     input.plate_index              = plates.get_curr_plate_index();
     input.plate_id                 = plate->id().id;
+    input.automatic_tower           = plate->automatic_wipe_tower_position();
     input.plate_name               = plate->get_plate_name();
     input.extruder_filament_info   = wxGetApp().preset_bundle->get_extruder_filament_info();
     const AI::SmartSlicing::WorkspaceContext context = capture_context_impl(false);
     input.intent_constraints       = context.intent_constraints;
     input.evidence_revision        = context.revision;
+    input.has_user_marked_surface  = current_plate_has_user_marked_surface();
     if (!context.material_compatibility.registry_version.empty() &&
         !context.material_compatibility.materials.empty()) {
         input.materials_compatible = AI::SmartSlicing::MetricValue<bool>::known(
@@ -476,7 +515,7 @@ OrcaSmartSlicingAdapter::candidate_proposals(const AI::SmartSlicing::WorkspaceRe
     return candidates;
 }
 
-AI::SmartSlicing::WorkspaceContext OrcaSmartSlicingAdapter::capture_context_impl(bool include_diagnostics) const
+AI::SmartSlicing::WorkspaceContext OrcaSmartSlicingAdapter::capture_context_impl(bool include_diagnostics, OrcaSliceInputIdentity* slice_input) const
 {
     using namespace AI::SmartSlicing;
     if (m_plater == nullptr || wxGetApp().preset_bundle == nullptr)
@@ -757,8 +796,10 @@ AI::SmartSlicing::WorkspaceContext OrcaSmartSlicingAdapter::capture_context_impl
     plate_stream << context.plate_index << ':' << plate->id().id << ':' << static_cast<int>(plate->get_bed_type(true)) << ':'
                  << static_cast<int>(plate->get_real_print_seq()) << ':' << static_cast<int>(plate->get_filament_map_mode()) << ':'
                  << plate->is_locked() << ':' << plate->get_spiral_vase_mode();
-    plate_stream << ":config:\n" << canonical_config(slice_input_plate_config(
-        *plate->config(), plate->get_real_filament_map_mode(bundle.project_config)));
+    auto plate_config = slice_input_plate_config(*plate->config(), plate->get_real_filament_map_mode(bundle.project_config));
+    plate_config.erase("wipe_tower_x");
+    plate_config.erase("wipe_tower_y");
+    plate_stream << ":config:\n" << canonical_config(plate_config);
     for (const int extruder : plate->get_first_layer_print_sequence())
         plate_stream << ":first_layer_extruder:" << extruder;
     for (const LayerPrintSequence& layer_sequence : plate->get_other_layers_print_sequence()) {
@@ -773,7 +814,15 @@ AI::SmartSlicing::WorkspaceContext OrcaSmartSlicingAdapter::capture_context_impl
                          << item.color << ':' << item.extra;
     }
 
-    std::string config_text = canonical_config(full_config);
+    auto effective = slice_input_plate_config(plate->effective_slice_config(bundle),
+        plate->get_real_filament_map_mode(bundle.project_config));
+    const Vec2d tower(effective.opt_float("wipe_tower_x", context.plate_index),
+                      effective.opt_float("wipe_tower_y", context.plate_index));
+    effective.erase("wipe_tower_x");
+    effective.erase("wipe_tower_y");
+    std::string config_text = canonical_config(effective);
+    config_text.append("mixed_temperature_restriction=")
+        .append(wxGetApp().app_config->get("enable_high_low_temp_mixed_printing")).append("\n");
     config_text.append("printer_preset=")
         .append(context.printer_preset_id)
         .append("\nprocess_preset=")
@@ -781,10 +830,45 @@ AI::SmartSlicing::WorkspaceContext OrcaSmartSlicingAdapter::capture_context_impl
         .append("\n");
     for (const MaterialSnapshot& material : context.materials)
         config_text.append("material_preset=").append(material.preset_id).append("\n");
-    context.revision.model_revision  = fnv1a(model_stream.str());
+    const auto model_text = model_stream.str();
+    const auto plate_text = plate_stream.str();
+    context.revision.model_revision = fnv1a(model_text);
+    context.revision.plate_revision = fnv1a(plate_text);
+    if (slice_input) {
+        auto baseline = slice_input_plate_config(plate->smart_slice_baseline(bundle),
+            plate->get_real_filament_map_mode(bundle.project_config));
+        baseline.erase("wipe_tower_x");
+        baseline.erase("wipe_tower_y");
+        baseline.erase("print_settings_id");
+        const auto process_text = canonical_config(baseline) + context.printer_preset_id +
+            wxGetApp().app_config->get("enable_high_low_temp_mixed_printing");
+        slice_input->plate_id = plate->id().id;
+        slice_input->tower_position = tower;
+        slice_input->automatic_tower = plate->automatic_wipe_tower_position();
+        slice_input->process = {context.revision.model_revision, fnv1a(process_text),
+            context.revision.plate_revision, hex_hash(fnv1a(model_text + process_text + plate_text))};
+    }
+    if (plate->uses_workbench_smart_process()) {
+        std::ostringstream profiles;
+        profiles.imbue(std::locale::classic());
+        profiles << std::setprecision(std::numeric_limits<double>::max_digits10) << "smart_process\n";
+        for (const auto& [id, values] : plate->workbench_smart_layers()) {
+            profiles << id << ':';
+            for (double value : values) profiles << value << ',';
+            profiles << '\n';
+        }
+        config_text += profiles.str();
+    }
+    config_text += plate->automatic_wipe_tower_position() ? "tower_auto\n" : "tower_fixed\n";
+    // Only this plate's tower contributes to its exact revision.
+    std::ostringstream coordinates;
+    coordinates.imbue(std::locale::classic());
+    coordinates << std::setprecision(std::numeric_limits<double>::max_digits10)
+                << "wipe_tower_xy=" << tower.x() << ',' << tower.y();
+    config_text += coordinates.str();
     context.revision.config_revision = fnv1a(config_text);
-    context.revision.plate_revision  = fnv1a(plate_stream.str());
-    context.revision.fingerprint     = hex_hash(fnv1a(model_stream.str() + config_text + plate_stream.str()));
+    context.revision.fingerprint = hex_hash(fnv1a(model_text + config_text + plate_text));
+    if (slice_input) slice_input->exact = context.revision;
 
     if (!include_diagnostics)
         return context;

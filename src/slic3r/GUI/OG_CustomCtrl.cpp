@@ -25,6 +25,7 @@
 #include "slic3r/GUI/Widgets/StateColor.hpp"
 #include "slic3r/GUI/GUI.hpp"
 #include "libslic3r/Config.hpp"
+#include "libslic3r/Preset.hpp"
 #include <algorithm>
 #include <wx/utils.h>
 #include <boost/algorithm/string/split.hpp>
@@ -37,6 +38,20 @@ namespace Slic3r { namespace GUI {
  // BBS: modify param ui style
     constexpr int titleWidth = 20;
     constexpr int ctrlWidth = 50;
+
+static bool uses_workbench_process_theme(const OG_CustomCtrl& control)
+{
+    if (control.GetName() != "ai_content_color")
+        return false;
+    const auto* group = dynamic_cast<const ConfigOptionsGroup*>(control.opt_group);
+    return group && group->config_type() == Preset::TYPE_PRINT;
+}
+
+static size_t display_label_width(const OG_CustomCtrl& control)
+{
+    const size_t native_width = control.opt_group->label_width;
+    return uses_workbench_process_theme(control) ? std::min<size_t>(native_width, 13) : native_width;
+}
 
 #define DISABLE_BLINKING
 #define DISABLE_UNDO_SYS
@@ -124,9 +139,9 @@ void OG_CustomCtrl::init_ctrl_lines()
                 if (option_set.size() > 1) // BBS
                     height = (label_sz.y + m_v_gap2) * option_set.size() + m_v_gap - m_v_gap2;
                 else
-                    height = label_sz.y * (label_sz.GetWidth() > int(opt_group->label_width * m_em_unit) ? 2 : 1) + m_v_gap;
+                    height = label_sz.y * (label_sz.GetWidth() > int(display_label_width(*this) * m_em_unit) ? 2 : 1) + m_v_gap;
             } else {
-                height = label_sz.y * (label_sz.GetWidth() > int(opt_group->label_width * m_em_unit) ? 2 : 1) + m_v_gap;
+                height = label_sz.y * (label_sz.GetWidth() > int(display_label_width(*this) * m_em_unit) ? 2 : 1) + m_v_gap;
             }
             ctrl_lines.emplace_back(CtrlLine(height, this, line, false, opt_group->staticbox));
         }
@@ -209,7 +224,7 @@ wxPoint OG_CustomCtrl::get_pos(const Line& line, Field* field_in/* = nullptr*/)
             }
             wxString label = line.label;
             if (opt_group->label_width != 0)
-                add_label_width(ctrl_line, label, opt_group->label_width * m_em_unit);
+                add_label_width(ctrl_line, label, display_label_width(*this) * m_em_unit);
 
             int blinking_button_width = m_bmp_blinking_sz.GetWidth() + m_h_gap;
 
@@ -563,9 +578,9 @@ bool OG_CustomCtrl::update_visibility(ConfigOptionMode mode)
 }
 
 // BBS: call by Tab/Page
-void OG_CustomCtrl::fixup_items_positions()
+void OG_CustomCtrl::fixup_items_positions(bool force)
 {
-    if (GetParent() == nullptr || GetPosition().y + GetSize().y < GetParent()->GetSize().y)
+    if (GetParent() == nullptr || (!force && GetPosition().y + GetSize().y < GetParent()->GetSize().y))
         return;
     for (CtrlLine& line : ctrl_lines) {
         line.correct_items_positions();
@@ -750,9 +765,9 @@ void OG_CustomCtrl::CtrlLine::msw_rescale()
             if (option_set.size() > 1)
                 height = (label_sz.y + ctrl->m_v_gap2) * option_set.size() + ctrl->m_v_gap - ctrl->m_v_gap2;
             else
-                height = label_sz.y * (label_sz.GetWidth() > int(ctrl->opt_group->label_width * ctrl->m_em_unit) ? 2 : 1) + ctrl->m_v_gap;
+                height = label_sz.y * (label_sz.GetWidth() > int(display_label_width(*ctrl) * ctrl->m_em_unit) ? 2 : 1) + ctrl->m_v_gap;
         } else {
-            height = label_sz.y * (label_sz.GetWidth() > int(ctrl->opt_group->label_width * ctrl->m_em_unit) ? 2 : 1) + ctrl->m_v_gap;
+            height = label_sz.y * (label_sz.GetWidth() > int(display_label_width(*ctrl) * ctrl->m_em_unit) ? 2 : 1) + ctrl->m_v_gap;
         }
     }
 
@@ -870,6 +885,17 @@ void OG_CustomCtrl::CtrlLine::render(wxDC& dc, wxCoord h_pos, wxCoord v_pos)
     bool is_url_string = false;
     if (ctrl->opt_group->label_width != 0 && !label.IsEmpty()) {
         const wxColour* text_clr = field ? field->label_color() : og_line.label_color();
+        // Native system values use the application palette, while this form can
+        // be mounted on a dark surface independently of that palette.
+        const wxColour muted(153, 153, 160);
+        const wxColour normal = ctrl->GetForegroundColour();
+        if (uses_workbench_process_theme(*ctrl)) {
+            if (field && field->getWindow() && !field->getWindow()->IsEnabled())
+                text_clr = &muted;
+            else if (!text_clr || *text_clr == wxGetApp().get_label_clr_sys() ||
+                     *text_clr == wxGetApp().get_label_clr_default())
+                text_clr = &normal;
+        }
         for (const Option& opt : option_set) {
             Field* field = ctrl->opt_group->get_field(opt.opt_id);
             if (field && field->blink()) {
@@ -879,7 +905,7 @@ void OG_CustomCtrl::CtrlLine::render(wxDC& dc, wxCoord h_pos, wxCoord v_pos)
         }
         is_url_string = !suppress_hyperlinks && !og_line.label_path.empty();
         // BBS
-        h_pos = draw_text(dc, wxPoint(h_pos, v_pos), label /* + ":" */, text_clr, h_pos + ctrl->opt_group->label_width * ctrl->m_em_unit - h_pos, is_url_string, true);
+        h_pos = draw_text(dc, wxPoint(h_pos, v_pos), label /* + ":" */, text_clr, h_pos + display_label_width(*ctrl) * ctrl->m_em_unit - h_pos, is_url_string, true);
     }
 
     // If there's a widget, build it and set result to the correct position.

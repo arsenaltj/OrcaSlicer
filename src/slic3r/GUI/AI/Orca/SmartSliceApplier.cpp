@@ -58,6 +58,12 @@ bool SmartSliceApplier::BuildConfig(
     std::string* diagnostic)
 {
     output_config = base_config;
+    if (selected_plan.keep_current_process) {
+        if (selected_plan.support_on_build_plate_only)
+            set_if_present(output_config, base_config, "support_on_build_plate_only",
+                std::make_unique<ConfigOptionBool>(*selected_plan.support_on_build_plate_only), diagnostic);
+        return true;
+    }
     if (!finite_positive(selected_plan.layer_height_mm) ||
         selected_plan.layer_height_mm > 0.8 || selected_plan.wall_loops < 1 ||
         selected_plan.wall_loops > 12 || selected_plan.sparse_infill_density_percent < 0.0 ||
@@ -68,16 +74,15 @@ bool SmartSliceApplier::BuildConfig(
         return false;
     }
 
-    // Orca's process window is bounded by the installed nozzle.  The engine
-    // already clamps its own output; this second guard protects the native
-    // boundary when a plan arrives from a stale/serialized UI state.
+    bool uniform_nozzles = true;
     if (const auto* nozzles = base_config.option<ConfigOptionFloats>("nozzle_diameter");
         nozzles != nullptr && !nozzles->values.empty()) {
-        const double nozzle = nozzles->values.front();
-        if (!finite_positive(nozzle) ||
-            selected_plan.layer_height_mm > std::min(0.8, nozzle * 0.75) ||
-            selected_plan.line_width_mm < nozzle * 0.90 ||
-            selected_plan.line_width_mm > nozzle * 1.25) {
+        const auto [smallest, largest] = std::minmax_element(nozzles->values.begin(), nozzles->values.end());
+        uniform_nozzles = std::abs(*largest - *smallest) <= 1e-6;
+        const bool invalid_width = uniform_nozzles &&
+            (selected_plan.line_width_mm < *smallest * 0.90 || selected_plan.line_width_mm > *largest * 1.25);
+        if (!std::all_of(nozzles->values.begin(), nozzles->values.end(), finite_positive) ||
+            selected_plan.layer_height_mm > std::min(0.8, *largest * 0.75) || invalid_width) {
             set_diagnostic(diagnostic, "smart_slice_plan_physical_bounds");
             return false;
         }
@@ -89,8 +94,12 @@ bool SmartSliceApplier::BuildConfig(
                    std::make_unique<ConfigOptionInt>(selected_plan.wall_loops), diagnostic);
     set_if_present(output_config, base_config, "sparse_infill_density",
                    std::make_unique<ConfigOptionPercent>(selected_plan.sparse_infill_density_percent), diagnostic);
-    set_if_present(output_config, base_config, "outer_wall_line_width",
-                   std::make_unique<ConfigOptionFloatOrPercent>(selected_plan.line_width_mm, false), diagnostic);
+    // Active nozzle limits constrain the recommendation's layer height.
+    // Keep Orca's native line width on a mixed-diameter machine so a narrow
+    // support nozzle does not replace the model's wall width.
+    if (uniform_nozzles)
+        set_if_present(output_config, base_config, "outer_wall_line_width",
+                       std::make_unique<ConfigOptionFloatOrPercent>(selected_plan.line_width_mm, false), diagnostic);
     set_if_present(output_config, base_config, "outer_wall_speed",
                    std::make_unique<ConfigOptionFloatsNullable>(1, selected_plan.outer_wall_speed_mm_s), diagnostic);
     set_if_present(output_config, base_config, "enable_support",
@@ -127,12 +136,9 @@ bool SmartSliceApplier::BuildConfig(
             PerimeterGeneratorType::Arachne : PerimeterGeneratorType::Classic;
         output_config.set_key_value("wall_generator", new ConfigOptionEnum<PerimeterGeneratorType>(generator));
     }
-    // adaptive_layer_height is intentionally capability-gated.  This branch
-    // is compiled only when a profile exposes the option; current Orca builds
-    // commonly keep adaptive layer height as a UI-generated schedule.
-    if (base_config.option("adaptive_layer_height") != nullptr)
-        output_config.set_key_value("adaptive_layer_height", new ConfigOptionBool(selected_plan.adaptive_layer_height));
-
+    if (selected_plan.support_on_build_plate_only)
+        set_if_present(output_config, base_config, "support_on_build_plate_only",
+            std::make_unique<ConfigOptionBool>(*selected_plan.support_on_build_plate_only), diagnostic);
     return true;
 }
 

@@ -318,6 +318,90 @@ SCENARIO("Export+Import geometry to/from 3mf file cycle", "[3mf]") {
     }
 }
 
+TEST_CASE("Per-plate SmartSlice process overrides survive a 3MF round-trip", "[3mf][SmartSlicePlateRoundTrip]")
+{
+    ScopedSlic3rTemporaryDir temporary_dir("orca_plate_process");
+    Model model;
+    auto* first_object = model.add_object();
+    first_object->add_volume(make_cube(10., 10., 10.));
+    first_object->add_instance();
+    auto* second_object = model.add_object();
+    second_object->add_volume(make_cube(12., 12., 12.));
+    second_object->add_instance();
+    model.set_backup_path((temporary_dir.path() / "source_backup").string());
+
+    DynamicPrintConfig project;
+    project.set_deserialize_strict("layer_height", "0.2");
+    PlateData fine, coarse;
+    fine.plate_index = 0;
+    coarse.plate_index = 1;
+    fine.objects_and_instances.emplace_back(0, 0);
+    coarse.objects_and_instances.emplace_back(1, 0);
+    fine.config.set_deserialize_strict("layer_height", "0.12");
+    fine.config.set_deserialize_strict("enable_support", "1");
+    fine.config.set_deserialize_strict("support_type", "normal(auto)");
+    fine.config.set_deserialize_strict("outer_wall_speed", "120,140");
+    fine.config.set_deserialize_strict("sparse_infill_density", "15%");
+    coarse.config.set_deserialize_strict("layer_height", "0.24");
+    coarse.config.set_deserialize_strict("enable_support", "0");
+    first_object->name = "Fine plate object";
+    const std::vector<double> adaptive_profile{0., 0.12, 10., 0.16};
+    const std::vector<double> manual_profile{0., 0.2, 5., 0.2, 10., 0.2};
+    first_object->layer_height_profile.set(manual_profile);
+    fine.workbench_slicing = R"({"automatic_tower":true,"smart_active":true,"smart_process":{"layer_height":"0.12"}})";
+    coarse.workbench_slicing = R"({"automatic_tower":false,"smart_active":false,"smart_process":{}})";
+    fine.workbench_layer_profiles.emplace(first_object->id().id, adaptive_profile);
+
+    const std::string file = (temporary_dir.path() / "plate-process.3mf").string();
+    StoreParams store;
+    store.path = file.c_str();
+    store.model = &model;
+    store.config = &project;
+    store.plate_data_list = {&fine, &coarse};
+    store.strategy = SaveStrategy::Zip64 | SaveStrategy::Silence;
+    REQUIRE(store_bbs_3mf(store));
+
+    Model loaded_model;
+    DynamicPrintConfig loaded_config;
+    PlateDataPtrs plates;
+    std::vector<Preset*> presets;
+    ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::Disable};
+    bool is_bbs = false, is_orca = false;
+    Semver version;
+    const bool loaded = load_bbs_3mf(file.c_str(), &loaded_config, &substitutions, &loaded_model, &plates,
+        &presets, &is_bbs, &is_orca, &version, nullptr, LoadStrategy::LoadModel | LoadStrategy::LoadConfig);
+    std::vector<DynamicPrintConfig> configs;
+    std::vector<std::string> workbench_settings;
+    std::vector<std::map<uint64_t, std::vector<double>>> workbench_profiles;
+    for (const auto* plate : plates) {
+        configs.push_back(plate->config);
+        workbench_settings.push_back(plate->workbench_slicing);
+        workbench_profiles.push_back(plate->workbench_layer_profiles);
+    }
+    release_PlateData_list(plates);
+    REQUIRE(loaded);
+    REQUIRE(configs.size() == 2);
+    CHECK(workbench_settings[0] == fine.workbench_slicing);
+    CHECK(workbench_settings[1] == coarse.workbench_slicing);
+    REQUIRE(workbench_profiles[0].size() == 1);
+    CHECK(workbench_profiles[1].empty());
+    const auto restored = std::find_if(loaded_model.objects.begin(), loaded_model.objects.end(),
+        [](const ModelObject* object) { return object->name == "Fine plate object"; });
+    REQUIRE(restored != loaded_model.objects.end());
+    CHECK((*restored)->layer_height_profile.get() == manual_profile);
+    REQUIRE(workbench_profiles[0].count((*restored)->id().id) == 1);
+    CHECK(workbench_profiles[0].at((*restored)->id().id) == adaptive_profile);
+    CHECK(loaded_config.opt_float("layer_height") == 0.2);
+    CHECK(configs[0].opt_float("layer_height") == 0.12);
+    CHECK(configs[1].opt_float("layer_height") == 0.24);
+    CHECK(configs[0].opt_bool("enable_support"));
+    CHECK_FALSE(configs[1].opt_bool("enable_support"));
+    CHECK(configs[0].opt_serialize("support_type") == fine.config.opt_serialize("support_type"));
+    CHECK(configs[0].opt_serialize("outer_wall_speed") == fine.config.opt_serialize("outer_wall_speed"));
+    CHECK(configs[0].opt_serialize("sparse_infill_density") == fine.config.opt_serialize("sparse_infill_density"));
+    CHECK_FALSE(configs[1].has("outer_wall_speed"));
+}
+
 TEST_CASE("Volumetric per-extruder exclusions survive a 3MF round-trip", "[3mf][ExclusionVolume][MultiNozzle]")
 {
     // The importer creates a backup tree for the reloaded model. Give that
@@ -1530,6 +1614,7 @@ SCENARIO("BBS 3MF round-trips per-plate IMEX state (parallel mode + head filamen
         plate0->plate_index = 0;
         plate0->config.set_key_value("imex_parallel_mode",     new ConfigOptionString(hostile_mode));
         plate0->config.set_key_value("imex_head_filament_map", new ConfigOptionString(hostile_hfm));
+        plate0->config.set_key_value("skirt_start_angle",      new ConfigOptionFloat(12.5));
         src_plates.push_back(plate0);
 
         WHEN("the model is saved to BBS 3MF and loaded back") {
@@ -1572,6 +1657,12 @@ SCENARIO("BBS 3MF round-trips per-plate IMEX state (parallel mode + head filamen
                 REQUIRE(hfm_opt != nullptr);
                 REQUIRE(hfm_opt->value == hostile_hfm);
             }
+            THEN("skirt_start_angle round-trips with its fraction") {
+                REQUIRE(dst_plates.size() >= 1);
+                auto *angle_opt = dst_plates[0]->config.option<ConfigOptionFloat>("skirt_start_angle");
+                REQUIRE(angle_opt != nullptr);
+                REQUIRE_THAT(angle_opt->value, Catch::Matchers::WithinAbs(12.5, 1e-6));
+            }
 
             release_PlateData_list(dst_plates);
         }
@@ -1599,6 +1690,7 @@ SCENARIO("BBS 3MF round-trips distinct IMEX state across multiple plates", "[3mf
         plate0->plate_index = 0;
         plate0->config.set_key_value("imex_parallel_mode",     new ConfigOptionString("copy_mode"));
         plate0->config.set_key_value("imex_head_filament_map", new ConfigOptionString("1:2"));
+        plate0->config.set_key_value("skirt_start_angle",      new ConfigOptionFloat(-67.25));
         src_plates.push_back(plate0);
 
         auto *plate1 = new PlateData();
@@ -1641,6 +1733,9 @@ SCENARIO("BBS 3MF round-trips distinct IMEX state across multiple plates", "[3mf
                 REQUIRE(hfm  != nullptr);
                 REQUIRE(mode->value == "copy_mode");
                 REQUIRE(hfm->value  == "1:2");
+                const auto *angle = dst_plates[0]->config.option<ConfigOptionFloat>("skirt_start_angle");
+                REQUIRE(angle != nullptr);
+                REQUIRE_THAT(angle->value, Catch::Matchers::WithinAbs(-67.25, 1e-6));
             }
             THEN("plate 1 retains its own IMEX state (mirror_mode, 2:4,3:5) and does not inherit plate 0's") {
                 REQUIRE(dst_plates.size() == 2);
@@ -1650,6 +1745,7 @@ SCENARIO("BBS 3MF round-trips distinct IMEX state across multiple plates", "[3mf
                 REQUIRE(hfm  != nullptr);
                 REQUIRE(mode->value == "mirror_mode");
                 REQUIRE(hfm->value  == "2:4,3:5");
+                CHECK(dst_plates[1]->config.option<ConfigOptionFloat>("skirt_start_angle") == nullptr);
             }
 
             release_PlateData_list(dst_plates);

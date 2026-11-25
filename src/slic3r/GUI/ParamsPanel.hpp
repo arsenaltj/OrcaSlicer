@@ -77,6 +77,7 @@ class ParamsPanel : public wxPanel
         void refresh_tabs();
 
 	protected:
+        int m_workbench_process_mode{-1};
         wxBoxSizer* m_top_sizer { nullptr };
         wxBoxSizer* m_left_sizer { nullptr };
         wxBoxSizer* m_mode_sizer { nullptr };
@@ -175,6 +176,11 @@ class ParamsPanel : public wxPanel
         void set_active_tab(wxPanel*tab);
         bool is_active_and_shown_tab(wxPanel*tab);
         void update_mode();
+        bool Layout() override;
+        void set_workbench_scroll_host(wxScrolledWindow* host);
+        bool reveal_workbench_parameter(wxWindow* field);
+        void set_workbench_process_mode(int mode);
+        int workbench_process_mode() const { return m_workbench_process_mode; }
         void msw_rescale();
         void switch_to_global();
         void switch_to_object(bool with_tips = false);

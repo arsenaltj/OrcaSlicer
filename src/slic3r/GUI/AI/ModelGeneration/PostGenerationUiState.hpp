@@ -1,6 +1,9 @@
 #pragma once
 
 namespace Slic3r::GUI {
+
+inline constexpr bool workbench_beauty_editing_available = false;
+
 struct PostGenerationUiState
 {
     enum class Mode { Result, Workbench };

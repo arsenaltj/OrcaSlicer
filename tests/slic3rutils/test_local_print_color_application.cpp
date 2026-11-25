@@ -24,6 +24,39 @@
 using namespace Slic3r;
 namespace Application = GUI::LocalPrintColorApplication;
 
+TEST_CASE("Workbench placement faces the model toward the plate handle", "[LocalPrintModelImport][WorkbenchImport]")
+{
+    using namespace GUI::LocalPrintModelImport;
+    Test::RecipeApplicationFixture fixture(2);
+    Model source;
+    auto* object = source.add_object();
+    object->input_file = "workbench.glb";
+    auto* volume = object->add_volume(TriangleMesh(its_make_cube(15, 20, 25)));
+    volume->source.input_file = object->input_file;
+    const auto vertices = volume->mesh().its.vertices;
+    const auto triangles = volume->mesh().its.indices;
+    const PlacementSnapshot plate {
+        Vec2d(50, 50), Vec2d(100, 100),
+        Polygon::new_scale({{0, 0}, {100, 0}, {100, 100}, {0, 100}}),
+        {}, fixture.bundle.full_config(), 100.
+    };
+
+    std::unique_ptr<Model> prepared;
+    std::string error;
+    REQUIRE(plate.prepare_model(*object, prepared, error, false, {}, workbench_front_yaw));
+    const auto* placed = prepared->objects.front();
+    const auto* instance = placed->instances.front();
+    const auto matrix = instance->get_matrix();
+    CHECK((matrix.linear() * Vec3d::UnitX()).isApprox(-Vec3d::UnitY()));
+    CHECK((matrix.linear() * Vec3d::UnitY()).isApprox(Vec3d::UnitX()));
+    CHECK((matrix.linear() * Vec3d::UnitZ()).isApprox(Vec3d::UnitZ()));
+    CHECK(instance->get_assemble_transformation().get_matrix().isApprox(matrix));
+    CHECK(placed->instance_bounding_box(0).size().isApprox(Vec3d(20, 15, 25)));
+    CHECK(object->instances.empty());
+    CHECK(volume->mesh().its.vertices == vertices);
+    CHECK(volume->mesh().its.indices == triangles);
+}
+
 TEST_CASE("safe working copy placement retains the native center or nearest empty position", "[LocalPrintModelImport]")
 {
     Test::RecipeApplicationFixture fixture(2);
@@ -60,6 +93,34 @@ TEST_CASE("safe working copy placement retains the native center or nearest empt
     CHECK_THAT(prepared->objects.front()->instance_bounding_box(0).center().y(), Catch::Matchers::WithinAbs(position.y(), 1e-6));
     CHECK(prepared->objects.front()->volumes.front()->mesh().its.vertices == vertices);
     CHECK(object->instances.empty());
+}
+
+TEST_CASE("Workbench placement checks the combined footprint and height with a base",
+          "[LocalPrintModelImport][OrcaModelPreparation]")
+{
+    using namespace GUI::LocalPrintModelImport;
+    Test::RecipeApplicationFixture fixture(2);
+    Model source;
+    auto* object = source.add_object();
+    object->input_file = "base-limit.glb";
+    const auto* body = object->add_volume(TriangleMesh(its_make_cube(20, 40, 40)));
+    object->volumes.front()->source.input_file = object->input_file;
+
+    const bool height_limit = GENERATE(true, false);
+    const double width = height_limit ? 100.0 : 43.0;
+    const PlacementSnapshot plate {
+        Vec2d(width / 2, 50), Vec2d(width, 100),
+        Polygon::new_scale({{0, 0}, {width, 0}, {width, 100}, {0, 100}}),
+        {}, fixture.bundle.full_config(), height_limit ? 42.0 : 100.0
+    };
+    std::unique_ptr<Model> prepared;
+    std::string error;
+    REQUIRE(plate.prepare_model(*object, prepared, error, false, {}, workbench_front_yaw));
+    CHECK_FALSE(plate.prepare_model(*object, prepared, error, true, {}, workbench_front_yaw));
+    CHECK_FALSE(error.empty());
+    CHECK(object->instances.empty());
+    REQUIRE(object->volumes.size() == 1);
+    CHECK(object->volumes.front() == body);
 }
 
 TEST_CASE("working copy placement uses available plate space without moving fixed obstacles", "[LocalPrintModelImport]")

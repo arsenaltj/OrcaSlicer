@@ -3730,13 +3730,14 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
     // Let the start-up script prime the 1st printing tool.
 
     auto match_physical_extruder_for_each_filament = [](std::vector<int> &filaments, const FullPrintConfig &config) {
-        // match the filament to the physical extruder
-        std::vector<int> physicial_first_filaments;
-        physicial_first_filaments.resize(filaments.size());
-        for (int extruder_id = 0; extruder_id < filaments.size(); extruder_id++) {
-            physicial_first_filaments[config.physical_extruder_map.get_at(extruder_id)] = filaments[extruder_id];
+        std::vector<int> physical_first_filaments(filaments.size());
+        for (size_t extruder_id = 0; extruder_id < filaments.size(); ++extruder_id) {
+            // Firmware tool numbers can be sparse and outside the placeholder table.
+            const int physical_id = config.physical_extruder_map.get_at(extruder_id);
+            if (physical_id >= 0 && static_cast<size_t>(physical_id) < physical_first_filaments.size())
+                physical_first_filaments[physical_id] = filaments[extruder_id];
         }
-        filaments = physicial_first_filaments;
+        filaments = std::move(physical_first_filaments);
     };
     match_physical_extruder_for_each_filament(first_filaments, m_config);
     this->placeholder_parser().set("first_tools", new ConfigOptionInts(first_filaments));
@@ -4418,11 +4419,14 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
     }
 
     // Write IMEX mode G-code first (processed above), then machine_start_gcode.
-    if (!imex_processed_gcode.empty())
+    if (!imex_processed_gcode.empty()) {
         file.writeln(imex_processed_gcode);
+        m_cooling_buffer->remember_motion_settings(imex_processed_gcode);
+    }
 
     // Write the custom start G-code
     file.writeln(machine_start_gcode);
+    m_cooling_buffer->remember_motion_settings(machine_start_gcode);
     if (honor_sdk_thermal) {
         sort_remove_duplicates(honor_startup_filaments);
         std::set<unsigned int> physical_heads;
@@ -4488,6 +4492,7 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
             config.set_key_value("max_layer_z", new ConfigOptionFloat(m_max_layer_z));
             std::string filament_start_gcode = this->placeholder_parser_process("filament_start_gcode", print.config().filament_start_gcode.get_at(initial_non_support_extruder_id), initial_non_support_extruder_id,&config);
             file.writeln(filament_start_gcode);
+            m_cooling_buffer->remember_motion_settings(filament_start_gcode);
             // Mark the first filament used in print. Multi-nozzle printers (H2C) get ";VT%d H%d" where
             // H = dynamic ? nozzle_id : -1; existing single-nozzle printers keep the bare ";VT%d" so their
             // g-code stays byte-identical.
@@ -4626,6 +4631,9 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
     // so that first travel can be planned from the position the G-code actually
     // left the machine at rather than the default last_pos value.
     GCodeProcessor::PositionState startup_position = m_processor.get_current_position();
+    // ORCA: The layer cooling times the first layer from there too.
+    if (startup_position.has_known_xy())
+        m_cooling_buffer->reset(startup_position.position);
     const Vec2f plate_offset = m_writer.get_xy_offset();
     startup_position.position.x() += plate_offset.x();
     startup_position.position.y() += plate_offset.y();

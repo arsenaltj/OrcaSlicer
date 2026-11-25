@@ -369,7 +369,8 @@ void ModelGenerationPanel::accept_model_finishing(std::optional<AI::ModelMatched
         metadata["baked_portrait_appearance"]=m_finishing_candidate_baked_appearance;
     const auto leaf_edits=m_model_preview->leaf_edit_metadata();
     if (!leaf_edits.is_null() && !leaf_edits.empty()) metadata["beauty_leaf_edit"]=leaf_edits;
-    metadata["color_trial"] = m_model_preview->color_trial_metadata();
+    const auto color_trial = m_model_preview->color_trial_metadata();
+    if (!color_trial.is_null()) metadata["color_trial"] = color_trial;
     const auto printer_restore = m_model_preview->printer_filament_restore_metadata();
     if (!printer_restore.empty()) metadata["printer_filament_restore"] = printer_restore;
     if (filament_application && m_apply_filaments_staged) {

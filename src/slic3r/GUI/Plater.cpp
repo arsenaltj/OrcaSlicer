@@ -1309,6 +1309,10 @@ std::vector<int> get_min_flush_volumes(const DynamicPrintConfig &full_config, si
         filament_long_retractions_when_cut = filament_long_retractions_when_cut_opt->values;
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": get filament_long_retractions_when_cut from config, size=%1%, values=%2%")%filament_long_retractions_when_cut.size() %filament_long_retractions_when_cut_opt->serialize();
     }
+    // A standalone preset that omits either key leaves it shorter than the filament list; the rest follow
+    // the first filament, as get_at() reads them when slicing.
+    filament_retraction_distance_when_cut.resize(filament_size, filament_retraction_distance_when_cut.empty() ? 18.0 : filament_retraction_distance_when_cut.front());
+    filament_long_retractions_when_cut.resize(filament_size, filament_long_retractions_when_cut.empty() ? 0 : filament_long_retractions_when_cut.front());
 
     for (size_t idx = 0; idx < filament_size; ++idx) {
         int extra_flush_volume = nozzle_volume_val;
@@ -7559,6 +7563,8 @@ struct Plater::priv
         UPDATE_BACKGROUND_PROCESS_FORCE_EXPORT = 16,
     };
     // returns bit mask of UpdateBackgroundProcessReturnState
+    void fix_loaded_wipe_tower_positions();
+    Print::ApplyStatus apply_native_plate_settings(bool was_running, bool force_validation, unsigned int& state, StringObjectException& error);
     unsigned int update_background_process(bool force_validation = false, bool postpone_error_messages = false, bool switch_print = true);
     // Restart background processing thread based on a bitmask of UpdateBackgroundProcessReturnState.
     bool restart_background_process(unsigned int state);
@@ -7587,6 +7593,8 @@ struct Plater::priv
     void on_select_bed_type(wxCommandEvent&);
     void on_select_preset(wxCommandEvent&);
     void on_slicing_update(SlicingStatusEvent&);
+    bool finish_workbench_slice_attempt(SlicingProcessCompletedEvent& evt, bool is_finished);
+    void publish_workbench_slice_completion(SlicingProcessCompletedEvent& evt, bool publish, bool has_error);
     void on_slicing_completed(wxCommandEvent&);
     void on_process_completed(SlicingProcessCompletedEvent&);
     void on_export_began(wxCommandEvent&);
@@ -9944,7 +9952,7 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                                     *wipe_tower_x = *file_wipe_tower_x;
                                 if (file_wipe_tower_y)
                                     *wipe_tower_y = *file_wipe_tower_y;
-
+                                if (file_wipe_tower_x && file_wipe_tower_y) fix_loaded_wipe_tower_positions();
                                 sync_loaded_project_filament_config(proj_cfg);
                             }
                             // Update filament combobox after loading config
@@ -10254,6 +10262,7 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ":" << __LINE__ << boost::format(", before load_model_objects, count %1%")%model.objects.size();
             auto loaded_idxs = load_model_objects(model.objects, is_project_file, false, true,
                 stage_geometry ? &import_display_options : nullptr);
+            if (is_project_file && load_config) partplate_list.restore_workbench_layer_object_ids(model.objects, loaded_idxs);
             obj_idxs.insert(obj_idxs.end(), loaded_idxs.begin(), loaded_idxs.end());
 
             // load_model_objects only transfers ModelObjects; carry the Model-level CAD recipe
@@ -11384,69 +11393,6 @@ void Plater::priv::schedule_background_process()
     this->view3D->get_canvas3d()->set_config(this->config);
 }
 
-void Plater::priv::schedule_auto_reslice_if_needed()
-{
-    AppConfig* cfg = wxGetApp().app_config;
-    if (cfg == nullptr || !cfg->get_bool("auto_slice_after_change"))
-        return;
-
-    if (!is_preview_shown())
-        return;
-
-    if (model.objects.empty())
-        return;
-
-    PartPlate* plate = partplate_list.get_curr_plate();
-    if (plate == nullptr || !plate->has_printable_instances())
-        return;
-
-    if (background_process.running() || m_is_slicing) {
-        // Remember to restart once the current slice stops and cancel it now.
-        auto_reslice_after_cancel = true;
-        background_process.stop();
-        return;
-    }
-
-    const int delay_seconds = auto_slice_delay_seconds();
-    if (delay_seconds > 0) {
-        auto_reslice_pending = true;
-        auto_reslice_timer.Stop();
-        auto_reslice_timer.Start(delay_seconds * 1000, wxTIMER_ONE_SHOT);
-        return;
-    }
-
-    if (auto_reslice_pending)
-        return;
-
-    auto_reslice_pending = true;
-    auto_reslice_timer.Stop();
-    wxGetApp().CallAfter([this]() { this->trigger_auto_reslice_now(); });
-}
-
-void Plater::priv::trigger_auto_reslice_now()
-{
-    this->auto_reslice_pending = false;
-
-    AppConfig* cfg = wxGetApp().app_config;
-    if (cfg == nullptr || !cfg->get_bool("auto_slice_after_change"))
-        return;
-
-    if (!is_preview_shown())
-        return;
-
-    if (this->model.objects.empty())
-        return;
-
-    if (this->background_process.running() || this->m_is_slicing)
-        return;
-
-    PartPlate* plate = this->partplate_list.get_curr_plate();
-    if (plate == nullptr || !plate->has_printable_instances())
-        return;
-
-    this->q->reslice();
-}
-
 void Plater::priv::confirm_ai_workflow_stability()
 {
     if (!sidebar->ai_workflow_active())
@@ -11719,22 +11665,8 @@ unsigned int Plater::priv::update_background_process(bool force_validation, bool
     for (ModelObject *model_object : this->model.objects)
         model_object->sync_painted_modifiers();
 
-    Print::ApplyStatus invalidated;
-    const auto& preset_bundle = wxGetApp().preset_bundle;
-    if (preset_bundle->get_printer_extruder_count() > 1) {
-        PartPlate* cur_plate = background_process.get_current_plate();
-        std::vector<int> f_maps = cur_plate->get_real_filament_maps(preset_bundle->project_config);
-        std::vector<int> f_volume_maps = cur_plate->get_filament_volume_maps();
-        if (f_volume_maps.empty()) {
-            f_volume_maps = preset_bundle->get_default_nozzle_volume_types_for_filaments(f_maps);
-        }
-        // Set the device filament info before Print::apply: it compares the payload and invalidates the
-        // grouping steps when the AMS material inventory changed, so apply must see it in the same pass.
-        background_process.fff_print()->set_extruder_filament_info(get_extruder_filament_info());
-        invalidated = background_process.apply(this->model, preset_bundle->full_config(false, f_maps, f_volume_maps));
-    }
-    else
-        invalidated = background_process.apply(this->model, preset_bundle->full_config(false));
+    StringObjectException automatic_tower_error;
+    const auto invalidated = apply_native_plate_settings(was_running, force_validation, return_state, automatic_tower_error);
 
     if ((invalidated == Print::APPLY_STATUS_CHANGED) || (invalidated == Print::APPLY_STATUS_INVALIDATED))
         // BBS: add only gcode mode
@@ -11784,6 +11716,7 @@ unsigned int Plater::priv::update_background_process(bool force_validation, bool
         Polygons polygons;
         std::vector<std::pair<Polygon, float>> height_polygons;
         StringObjectException err = background_process.validate(&warnings, &polygons, &height_polygons);
+        if (err.string.empty() && !automatic_tower_error.string.empty()) err = std::move(automatic_tower_error);
         // update string by type
         q->post_process_string_object_exception(err);
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": validate err=%1%, warnings=%2%")%err.string%warnings.size();
@@ -13673,7 +13606,7 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
     // Stop the background task, wait until the thread goes into the "Idle" state.
     // At this point of time the thread should be either finished or canceled,
     // so the following call just confirms, that the produced data were consumed.
-    this->background_process.stop();
+    if (finish_workbench_slice_attempt(evt, is_finished)) return;
     notification_manager->set_slicing_progress_export_possible();
 
     // Reset the "export G-code path" name, so that the automatic background processing will be enabled again.
@@ -13820,11 +13753,7 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
 
     exporting_status = ExportingStatus::NOT_EXPORTING;
 
-    if (is_finished && !ai_internal_restart && smart_slicing_host != nullptr) {
-        const bool success = evt.success() && !has_error && !evt.cancelled();
-        smart_slicing_host->notify_slice_completed(
-            success, evt.cancelled() ? "official_slice_canceled" : "official_slice_failed");
-    }
+    publish_workbench_slice_completion(evt, is_finished && !ai_internal_restart, has_error);
 
 
 
@@ -14115,6 +14044,7 @@ void Plater::priv::on_action_slice_plate(SimpleEvent&)
 //BBS: GUI refactor: slice all
 void Plater::priv::on_action_slice_all(SimpleEvent&)
 {
+    if (smart_slicing_host && smart_slicing_host->workbench_active()) return;
     if (q != nullptr) {
         BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << ":received slice project event\n" ;
         // IMEX parallel mode warnings (all plates)
@@ -14401,13 +14331,6 @@ void Plater::priv::on_action_export_to_sdcard_all(SimpleEvent&)
         BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << ":received export sliced file event\n";
         q->send_to_printer(true);
     }
-}
-
-//BBS: add plate select logic
-void Plater::priv::on_plate_selected(SimpleEvent&)
-{
-    BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << ":received plate selected event\n" ;
-    sidebar->obj_list()->on_plate_selected(partplate_list.get_curr_plate_index());
 }
 
 void Plater::priv::on_action_request_model_id(wxCommandEvent& evt)
@@ -17688,6 +17611,7 @@ void Plater::calib_max_vol_speed(const Calib_Params& params)
     obj_cfg.set_key_value("precise_z_height", new ConfigOptionBool(false));
     print_config->set_key_value("timelapse_type", new ConfigOptionEnum<TimelapseType>(tlTraditional));
     print_config->set_key_value("spiral_mode", new ConfigOptionBool(true));
+    print_config->set_key_value("spiral_starting_flow_ratio", new ConfigOptionFloat(1));
     print_config->set_key_value("max_volumetric_extrusion_rate_slope", new ConfigOptionFloat(0));
     print_config->set_key_value("enable_wrapping_detection", new ConfigOptionBool(false));
 
@@ -22678,16 +22602,7 @@ void Plater::apply_background_progress()
     const auto& preset_bundle = wxGetApp().preset_bundle;
     //always apply the current plate's print
     Print::ApplyStatus invalidated;
-    if (preset_bundle->get_printer_extruder_count() > 1) {
-        std::vector<int> f_maps = part_plate->get_real_filament_maps(preset_bundle->project_config);
-        std::vector<int> f_volume_maps = part_plate->get_filament_volume_maps();
-        if (f_volume_maps.empty()) {
-            f_volume_maps = preset_bundle->get_default_nozzle_volume_types_for_filaments(f_maps);
-        }
-        invalidated = p->background_process.apply(this->model(), preset_bundle->full_config(false, f_maps, f_volume_maps));
-    }
-    else
-        invalidated = p->background_process.apply(this->model(), preset_bundle->full_config(false));
+    invalidated = p->background_process.apply(this->model(), part_plate->slice_preset_config(*preset_bundle));
 
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: plate %2%, after apply, invalidated= %3%, previous result_valid %4% ") % __LINE__ % plate_index % invalidated % result_valid;
     if (invalidated & PrintBase::APPLY_STATUS_INVALIDATED)
@@ -22727,16 +22642,7 @@ int Plater::select_plate(int plate_index, bool need_slice)
         part_plate->get_print(&print, &gcode_result, NULL);
 
         //always apply the current plate's print
-        if (preset_bundle->get_printer_extruder_count() > 1) {
-            std::vector<int> f_maps = part_plate->get_real_filament_maps(preset_bundle->project_config);
-            std::vector<int> f_volume_maps = part_plate->get_filament_volume_maps();
-            if (f_volume_maps.empty()) {
-                f_volume_maps = preset_bundle->get_default_nozzle_volume_types_for_filaments(f_maps);
-            }
-            invalidated = p->background_process.apply(this->model(), preset_bundle->full_config(false, f_maps, f_volume_maps));
-        }
-        else
-            invalidated = p->background_process.apply(this->model(), preset_bundle->full_config(false));
+        invalidated = p->background_process.apply(this->model(), part_plate->slice_preset_config(*preset_bundle));
         bool model_fits, validate_err;
 
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: plate %2%, after apply, invalidated= %3%, previous result_valid %4% ")%__LINE__ %plate_index  %invalidated %result_valid;
@@ -22866,7 +22772,8 @@ int Plater::select_sliced_plate(int plate_index, bool skip_zoom)
     BOOST_LOG_TRIVIAL(info) << "select_sliced_plate plate_idx=" << plate_index;
 
     Freeze();
-    ret = select_plate(plate_index, true);
+    const bool workbench = p->smart_slicing_host && p->smart_slicing_host->workbench_active();
+    ret = select_plate(plate_index, !workbench);
     if (ret)
     {
         BOOST_LOG_TRIVIAL(error) << "select_plate error for plate_idx=" << plate_index;
@@ -23383,16 +23290,7 @@ int Plater::select_plate_by_hover_id(int hover_id, bool right_click, bool isModi
 
             part_plate->get_print(&print, &gcode_result, NULL);
             //always apply the current plate's print
-            if (preset_bundle->get_printer_extruder_count() > 1) {
-                std::vector<int> f_maps = part_plate->get_real_filament_maps(preset_bundle->project_config);
-                std::vector<int> f_volume_maps = part_plate->get_filament_volume_maps();
-                if (f_volume_maps.empty()) {
-                    f_volume_maps = preset_bundle->get_default_nozzle_volume_types_for_filaments(f_maps);
-                }
-                invalidated = p->background_process.apply(this->model(), preset_bundle->full_config(false, f_maps, f_volume_maps));
-            }
-            else
-                invalidated = p->background_process.apply(this->model(), preset_bundle->full_config(false));
+            invalidated = p->background_process.apply(this->model(), part_plate->slice_preset_config(*preset_bundle));
             bool model_fits, validate_err;
             validate_current_plate(model_fits, validate_err);
 

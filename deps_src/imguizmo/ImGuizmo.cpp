@@ -2900,8 +2900,8 @@ namespace IMGUIZMO_NAMESPACE
             viewSpacePoint.TransformPoint(cubeView);
             const vec_t viewSpaceFacePlan = BuildPlan(viewSpacePoint, viewSpaceNormal);
 
-            // back face culling
-            if (viewSpaceFacePlan.w > 0.f)
+            // Edge-on faces have no area to draw or pick in an axis-aligned view.
+            if (viewSpaceFacePlan.w >= -1e-5f)
             {
                continue;
             }
@@ -3017,10 +3017,36 @@ namespace IMGUIZMO_NAMESPACE
       {
          ImDrawList* drawList = gContext.mDrawList;
          const vec_t origin = makeVect(-0.5f, -0.5f, -0.5f);
+         const ImVec2 baseSSpace = worldToPos(origin, res, position, size);
+         const float side = ImMin(size.x, size.y);
          for (int i = 0; i < 3; ++i) {
             vec_t  dirAxis        = directionUnary[i];
-            ImVec2 baseSSpace     = worldToPos(origin, res, position, size);
             ImVec2 worldDirSSpace = worldToPos(origin + dirAxis, res, position, size);
+            const char* axisLabel = gContext.mStyle.AxisLabels[i];
+            const ImVec2 labelSize = ImGui::CalcTextSize(axisLabel);
+
+            // A depth axis projects to the corner shared by the two visible axes.
+            // Keep its direction readable in the free space outside that corner.
+            const float minLength = side * 0.005f;
+            if (ImLengthSqr(worldDirSSpace - baseSSpace) < minLength * minLength) {
+               const ImVec2 outward = baseSSpace - (position + size * 0.5f);
+               const ImVec2 marker = baseSSpace + outward * 0.16f;
+               const float radius = side * 0.019f;
+               const float stroke = ImMax(1.f, radius * 0.45f);
+               const ImU32 color = GetColorU32(DIRECTION_X + i);
+               drawList->AddCircle(marker, radius, color, 0, stroke);
+               vec_t viewAxis = dirAxis;
+               viewAxis.TransformVector(cubeView);
+               if (viewAxis.z > 0.f) {
+                  drawList->AddCircleFilled(marker, radius * 0.42f, color);
+               } else {
+                  const float arm = radius * 0.43f;
+                  drawList->AddLine(marker - ImVec2(arm, arm), marker + ImVec2(arm, arm), color, stroke);
+                  drawList->AddLine(marker - ImVec2(arm, -arm), marker + ImVec2(arm, -arm), color, stroke);
+               }
+               drawList->AddText(baseSSpace + outward * 0.42f - labelSize * 0.5f, color, axisLabel);
+               continue;
+            }
 
             bool visible = false;
             {
@@ -3062,8 +3088,7 @@ namespace IMGUIZMO_NAMESPACE
 
             // Axis text
             ImVec2 labelSSpace = worldToPos(origin + dirAxis * 1.2f, res, position, size);
-            ImVec2 labelSize   = ImGui::CalcTextSize(gContext.mStyle.AxisLabels[i]);
-            drawList->AddText(labelSSpace - labelSize * 0.5, directionColor, gContext.mStyle.AxisLabels[i]);
+            drawList->AddText(labelSSpace - labelSize * 0.5f, directionColor, axisLabel);
          }
       }
 

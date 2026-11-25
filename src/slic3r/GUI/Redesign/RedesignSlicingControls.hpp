@@ -52,24 +52,6 @@ public:
     }
 };
 
-class SlicingCheckBadge final : public wxStaticText {
-public:
-    explicit SlicingCheckBadge(wxWindow* parent) : wxStaticText(parent, wxID_ANY, wxEmptyString) {
-        SetBackgroundStyle(wxBG_STYLE_PAINT);
-        SetMinSize(FromDIP(wxSize(60, 36)));
-        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
-            wxAutoBufferedPaintDC buffer(this);
-            buffer.SetBackground(wxBrush(GetParent()->GetBackgroundColour())); buffer.Clear();
-            wxGCDC dc(buffer);
-            const auto size = GetClientSize();
-            dc.SetPen(*wxTRANSPARENT_PEN); dc.SetBrush(wxBrush(GetBackgroundColour()));
-            dc.DrawRoundedRectangle(0, 0, size.x, size.y, FromDIP(12));
-            dc.SetFont(GetFont()); dc.SetTextForeground(GetForegroundColour());
-            dc.DrawLabel(GetLabel(), wxRect(size), wxALIGN_CENTER);
-        });
-    }
-};
-
 class SlicingGoalCard final : public Button {
 public:
     SlicingGoalCard(wxWindow* parent, const wxString& title) : Button(parent, title), m_title(title) {

@@ -10,7 +10,7 @@
 #include "libslic3r/GCode/WipeTower.hpp"
 #include "libslic3r/GCode/WipeTower2.hpp"
 #include "libslic3r/GCode/WipeTowerEstimate.hpp"
-#include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/Print.hpp"
 #include "libslic3r/FilamentMixer.hpp"
 
 #include <cmath>
@@ -530,4 +530,58 @@ TEST_CASE("A tower slides off a slanted side of an object", "[WipeTowerEstimate]
     REQUIRE(anchor.has_value());
     CHECK(clear_of(square_footprint(10.), *anchor, obstacles));
     CHECK_THAT(unscaled((*anchor - target).cast<double>().norm()), WithinAbs(13.75 / std::sqrt(1. + 1. / 16.), 1e-3));
+}
+
+TEST_CASE("SmartSlice keeps the saved legal tower and relocates the complete enlarged bottom", "[WipeTowerEstimate][SmartSliceTowerPlacement]")
+{
+    const auto rect = [](double x1, double y1, double x2, double y2) {
+        return BoundingBox(Point::new_scale(x1,y1), Point::new_scale(x2,y2)).polygon();
+    };
+    const Polygons bed{rect(0.,0.,300.,270.)};
+    const auto small = rect(-5.,-5.,28.,38.);
+    const auto large = rect(-5.,-5.,28.,56.9);
+    const auto saved = Point::new_scale(165.,228.6);
+    REQUIRE(fit_wipe_tower_anchor(bed, small, {}, saved) == saved);
+    const auto anchor = fit_wipe_tower_anchor(bed, large, {rect(150.,189.,187.,202.)}, saved);
+    REQUIRE(anchor.has_value());
+    auto placed = large;
+    placed.translate(*anchor);
+    CHECK(diff(Polygons{placed}, bed).empty());
+    CHECK(intersection(Polygons{placed}, Polygons{rect(150.,189.,187.,202.)}).empty());
+    CHECK(*anchor != saved);
+    CHECK_FALSE(fit_wipe_tower_anchor(bed, large, bed, saved));
+    CHECK_FALSE(fit_wipe_tower_anchor(bed, rect(0.,0.,400.,40.), {}, saved));
+}
+
+TEST_CASE("Tower vertices alone cannot clear a concave bed notch", "[WipeTowerEstimate][SmartSliceTowerPlacement]")
+{
+    const Polygon bed = Polygon::new_scale({{0.,0.},{70.,0.},{70.,60.},{44.,60.},{44.,30.},
+                                            {30.,30.},{30.,60.},{0.,60.}});
+    const Polygon tower = BoundingBox(Point::new_scale(0.,0.), Point::new_scale(25.,25.)).polygon();
+    const Point bad = Point::new_scale(23.,33.);
+    const auto position = fit_wipe_tower_anchor({bed}, tower, {}, bad);
+    REQUIRE(position.has_value());
+    CHECK(*position != bad);
+    auto placed = tower;
+    placed.translate(*position);
+    CHECK(diff(Polygons{placed}, Polygons{bed}).empty());
+}
+
+TEST_CASE("moving a proven tower tests its rotated bottom against the plate and first layer", "[WipeTowerEstimate]")
+{
+    using namespace Slic3r;
+    const auto rect = [](double x0, double y0, double x1, double y1) {
+        return Polygon::new_scale({{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}});
+    };
+    Print::WipeTowerPositionGeometry geometry;
+    geometry.footprint = rect(-2., -2., 20., 12.);
+    geometry.footprint.rotate(Geometry::deg2rad(15.));
+    geometry.printable = {rect(0., 0., 80., 80.)};
+    geometry.exclusions = {rect(28., 25., 41., 38.)};
+    geometry.occupied = {rect(49., 48., 60., 61.)};
+    CHECK(geometry.check(Vec2d(10., 12.)) == WipeTowerPositionStatus::Valid);
+    CHECK(geometry.check(Vec2d(1., 14.)) == WipeTowerPositionStatus::Outside);
+    CHECK(geometry.check(Vec2d(20., 25.)) == WipeTowerPositionStatus::Exclusion);
+    CHECK(geometry.check(Vec2d(42., 47.)) == WipeTowerPositionStatus::ModelOverlap);
+    CHECK(geometry.check(Vec2d(10., 12.)) == WipeTowerPositionStatus::Valid);
 }

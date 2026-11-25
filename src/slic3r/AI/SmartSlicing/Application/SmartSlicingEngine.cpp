@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <map>
+#include <unordered_map>
 
 namespace Slic3r::AI::SmartSlicing {
 namespace {
@@ -46,7 +46,7 @@ void add_warning(SliceRecommendation& recommendation, const char* warning)
     recommendation.warnings.emplace_back(warning);
 }
 
-ModelMetrics metrics_from_snapshot(const TriangleMeshSnapshot& mesh)
+ModelMetrics metrics_from_snapshot(const TriangleMeshSnapshot& mesh, double build_z)
 {
     ModelMetrics metrics;
     metrics.triangle_count = mesh.triangles.size();
@@ -79,7 +79,7 @@ ModelMetrics metrics_from_snapshot(const TriangleMeshSnapshot& mesh)
     std::array<double, 2> overhang_60_area{};
     double top_micro_area = 0.0;
     double slope_area = 0.0;
-    std::map<std::pair<uint32_t, uint32_t>, size_t> edge_counts;
+    std::unordered_map<uint64_t, unsigned> edge_counts;
 
     const auto subtract = [](const MeshPoint3d& lhs, const MeshPoint3d& rhs) {
         return MeshPoint3d{lhs.x - rhs.x, lhs.y - rhs.y, lhs.z - rhs.z};
@@ -120,7 +120,7 @@ ModelMetrics metrics_from_snapshot(const TriangleMeshSnapshot& mesh)
             slope_area += area;
         if (z_span > 1e-6 && nz >= std::cos(top_micro_slope_degrees * pi / 180.0))
             top_micro_area += area;
-        if (std::max({a.z, b.z, c.z}) > 0.025) {
+        if (std::max({a.z, b.z, c.z}) > build_z + 0.025) {
             // A flat downward face is at zero degrees from the downward
             // axis. It needs more support than a near-vertical face.
             const size_t side = normal.z < 0. ? 0 : 1;
@@ -135,22 +135,24 @@ ModelMetrics metrics_from_snapshot(const TriangleMeshSnapshot& mesh)
              std::max(triangle.vertex_indices[1], triangle.vertex_indices[2])},
             {std::min(triangle.vertex_indices[2], triangle.vertex_indices[0]),
              std::max(triangle.vertex_indices[2], triangle.vertex_indices[0])}}};
-        for (const auto& edge : edges) ++edge_counts[edge];
+        for (const auto& edge : edges) {
+            const uint64_t key = (uint64_t(edge.first) << 32) | edge.second;
+            ++edge_counts[key];
+        }
     }
     const double area = metrics.surface_area_mm2;
     metrics.volume_mm3 = std::abs(signed_volume);
-    // Reflections reverse the winding of a closed mesh.
-    const size_t down = signed_volume < 0.0 ? 1 : 0;
+    const size_t down = signed_volume < 0. ? 1 : 0;
     metrics.high_overhang_area_ratio_45_deg = area > 0.0 ? overhang_45_area[down] / area : 0.0;
     metrics.severe_overhang_area_ratio_60_deg = area > 0.0 ? overhang_60_area[down] / area : 0.0;
     metrics.top_micro_slope_surface_ratio = area > 0.0 ? top_micro_area / area : 0.0;
     metrics.slope_detail_area_ratio = area > 0.0 ? slope_area / area : 0.0;
-    // A short triangle edge measures tessellation, not wall thickness. A
-    // narrow overall span supplies direct evidence for a plate-like body.
+    // A narrow overall span is direct thickness evidence for a plate-like
+    // body. Triangle edge length cannot establish a local wall thickness.
     const auto& bounds = metrics.bounding_box;
     const double smallest_span = std::min({bounds.width_mm(), bounds.depth_mm(), bounds.height_mm()});
-    if (smallest_span > 0.0 && smallest_span <= 0.8)
-        metrics.thin_wall_feature_ratio = 1.0;
+    if (smallest_span > 0. && smallest_span <= 0.8)
+        metrics.thin_wall_feature_ratio = 1.;
     metrics.closed_mesh = std::all_of(edge_counts.begin(), edge_counts.end(),
                                       [](const auto& edge) { return edge.second == 2; });
     return metrics;
@@ -161,7 +163,7 @@ ModelMetrics metrics_from_snapshot(const TriangleMeshSnapshot& mesh)
 SmartAnalysisResult SmartSlicingEngine::AnalyzeAndPrecompute(
     const TriangleMeshSnapshot& mesh, const MachinePreset& machine, const FilamentPreset& filament) const
 {
-    const ModelMetrics metrics = metrics_from_snapshot(mesh);
+    const ModelMetrics metrics = metrics_from_snapshot(mesh, 0.0);
     return AnalyzeAndPrecompute(metrics, machine, filament);
 }
 
@@ -169,10 +171,13 @@ SmartAnalysisResult SmartSlicingEngine::AnalyzeAndPrecompute(
     const std::vector<TriangleMeshSnapshot>& meshes,
     const MachinePreset& machine, const FilamentPreset& filament) const
 {
-    if (meshes.empty())
-        return {SmartAnalysisResult::CONTRACT_VERSION, false, "smart_slice_geometry_unavailable", {}, {}};
-    if (meshes.size() == 1)
-        return AnalyzeAndPrecompute(meshes.front(), machine, filament);
+    return AnalyzeAndPrecompute(MeasureModel(meshes), machine, filament);
+}
+
+ModelMetrics SmartSlicingEngine::MeasureModel(const std::vector<TriangleMeshSnapshot>& meshes) const
+{
+    if (meshes.empty()) return {};
+    if (meshes.size() == 1) return metrics_from_snapshot(meshes.front(), 0.0);
 
     ModelMetrics combined;
     combined.bounding_box.min_x_mm = combined.bounding_box.min_y_mm =
@@ -184,11 +189,11 @@ SmartAnalysisResult SmartSlicingEngine::AnalyzeAndPrecompute(
     double overhang_60_area = 0.0;
     double top_micro_area = 0.0;
     double slope_area = 0.0;
-    double thin_wall_area = 0.0;
+    double thin_span_area = 0.0;
     for (const TriangleMeshSnapshot& mesh : meshes) {
-        const ModelMetrics metrics = metrics_from_snapshot(mesh);
+        const ModelMetrics metrics = metrics_from_snapshot(mesh, 0.0);
         if (!metrics.usable())
-            return AnalyzeAndPrecompute(metrics, machine, filament);
+            return metrics;
         combined.bounding_box.min_x_mm = std::min(combined.bounding_box.min_x_mm, metrics.bounding_box.min_x_mm);
         combined.bounding_box.min_y_mm = std::min(combined.bounding_box.min_y_mm, metrics.bounding_box.min_y_mm);
         combined.bounding_box.min_z_mm = std::min(combined.bounding_box.min_z_mm, metrics.bounding_box.min_z_mm);
@@ -204,22 +209,35 @@ SmartAnalysisResult SmartSlicingEngine::AnalyzeAndPrecompute(
         overhang_60_area += metrics.severe_overhang_area_ratio_60_deg * metrics.surface_area_mm2;
         top_micro_area += metrics.top_micro_slope_surface_ratio * metrics.surface_area_mm2;
         slope_area += metrics.slope_detail_area_ratio * metrics.surface_area_mm2;
-        thin_wall_area += metrics.thin_wall_feature_ratio * metrics.surface_area_mm2;
+        thin_span_area += metrics.thin_wall_feature_ratio * metrics.surface_area_mm2;
     }
     if (combined.surface_area_mm2 > 0.0) {
         combined.high_overhang_area_ratio_45_deg = overhang_45_area / combined.surface_area_mm2;
         combined.severe_overhang_area_ratio_60_deg = overhang_60_area / combined.surface_area_mm2;
         combined.top_micro_slope_surface_ratio = top_micro_area / combined.surface_area_mm2;
         combined.slope_detail_area_ratio = slope_area / combined.surface_area_mm2;
-        combined.thin_wall_feature_ratio = thin_wall_area / combined.surface_area_mm2;
+        combined.thin_wall_feature_ratio = thin_span_area / combined.surface_area_mm2;
     }
-    return AnalyzeAndPrecompute(combined, machine, filament);
+    return combined;
 }
 
 SmartAnalysisResult SmartSlicingEngine::AnalyzeAndPrecompute(
     const ModelMetrics& metrics, const MachinePreset& machine, const FilamentPreset& filament) const
 {
+    return analyze(metrics, machine, filament, std::nullopt);
+}
+
+SmartAnalysisResult SmartSlicingEngine::AnalyzeGoal(const ModelMetrics& metrics, const MachinePreset& machine,
+    const FilamentPreset& filament, SliceMode mode) const
+{
+    return analyze(metrics, machine, filament, mode);
+}
+
+SmartAnalysisResult SmartSlicingEngine::analyze(const ModelMetrics& metrics, const MachinePreset& machine,
+    const FilamentPreset& filament, std::optional<SliceMode> goal) const
+{
     SmartAnalysisResult result;
+    result.recommendation_available.fill(false);
     result.metrics = metrics;
     if (!metrics.usable()) {
         result.diagnostic_code = metrics.finite_geometry ?
@@ -231,9 +249,8 @@ SmartAnalysisResult SmartSlicingEngine::AnalyzeAndPrecompute(
     const double minimum_layer = clamp_finite(
         machine.minimum_layer_height_mm, MIN_SAFE_LAYER_MM, MAX_SAFE_LAYER_MM, nozzle * 0.10);
     const double maximum_layer = std::min(nozzle * 0.75,
-        clamp_finite(machine.maximum_layer_height_mm, MIN_SAFE_LAYER_MM,
-                     MAX_SAFE_LAYER_MM, nozzle * 0.70));
-    if (minimum_layer > maximum_layer) {
+        clamp_finite(machine.maximum_layer_height_mm, MIN_SAFE_LAYER_MM, MAX_SAFE_LAYER_MM, nozzle * 0.70));
+    if (minimum_layer > maximum_layer || !std::isfinite(minimum_layer) || !std::isfinite(maximum_layer)) {
         result.diagnostic_code = "smart_slice_layer_height_no_common_range";
         return result;
     }
@@ -384,6 +401,8 @@ SmartAnalysisResult SmartSlicingEngine::AnalyzeAndPrecompute(
 
     for (size_t index = 0; index < defaults.size(); ++index) {
         const ModeDefaults& policy = defaults[index];
+        if (goal && policy.mode != *goal) continue;
+        result.recommendation_available[index] = true;
         SliceRecommendation& recommendation = result.recommendations[index];
         recommendation.mode = policy.mode;
         recommendation.layer_height_mm = clamp_finite(
@@ -443,6 +462,51 @@ SmartAnalysisResult SmartSlicingEngine::AnalyzeAndPrecompute(
     result.completed = true;
     result.diagnostic_code = "smart_slice_analysis_completed";
     return result;
+}
+
+std::optional<size_t> select_measured_slice_option(SliceMode goal,
+    const std::vector<MeasuredSliceOption>& options)
+{
+    const auto valid = [](const MeasuredSliceOption& value) {
+        return std::isfinite(value.seconds) && value.seconds > 0. &&
+            std::isfinite(value.grams) && value.grams > 0. &&
+            std::isfinite(value.surface_error) && value.surface_error >= 0. &&
+            std::isfinite(value.support_grams) && value.support_grams >= 0.;
+    };
+    const auto configured_baseline = std::find_if(options.begin(), options.end(), [](const auto& x) { return x.baseline; });
+    auto ref = configured_baseline;
+    if (ref == options.end() || !valid(*ref)) ref = std::find_if(options.begin(), options.end(), valid);
+    if (ref == options.end()) return std::nullopt;
+    // Even when the original plate lacks necessary support, its configured
+    // layer height remains the comparison for geometrical detail. Using the
+    // first valid fine-layer candidate as the floor can hide every speed plan.
+    const double baseline_error = configured_baseline != options.end() &&
+        std::isfinite(configured_baseline->surface_error) && configured_baseline->surface_error >= 0. ?
+        configured_baseline->surface_error : ref->surface_error;
+
+    const auto score = [&](const MeasuredSliceOption& value) {
+        // The scanner estimates relative stair-stepping, not measured Ra or
+        // strength. Only compare after the native engine has accepted the plan.
+        if (goal == SliceMode::QUALITY)
+            return std::array<double, 4>{value.surface_error, value.support_grams, value.seconds, value.grams};
+        if (goal == SliceMode::SPEED)
+            return std::array<double, 4>{value.seconds, value.surface_error, value.grams, value.support_grams};
+        const double appearance = (value.surface_error - ref->surface_error) / std::max(0.02, ref->surface_error);
+        const double contacts = (value.support_grams - ref->support_grams) / ref->grams;
+        return std::array<double, 4>{0.45 * appearance + 0.25 * contacts +
+            0.20 * (value.seconds / ref->seconds - 1.) + 0.10 * (value.grams / ref->grams - 1.),
+            value.grams, value.seconds, value.surface_error};
+    };
+    auto chosen = ref;
+    for (auto it = options.begin(); it != options.end(); ++it) {
+        if (!valid(*it)) continue;
+        if (goal != SliceMode::QUALITY && it->surface_error > baseline_error * 1.25 + 0.015)
+            continue;
+        if (goal == SliceMode::QUALITY && (it->seconds > 2. * ref->seconds || it->grams > 1.2 * ref->grams))
+            continue;
+        if (score(*it) < score(*chosen)) chosen = it;
+    }
+    return static_cast<size_t>(std::distance(options.begin(), chosen));
 }
 
 } // namespace Slic3r::AI::SmartSlicing

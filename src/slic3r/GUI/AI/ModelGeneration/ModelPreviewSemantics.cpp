@@ -142,8 +142,6 @@ nlohmann::json ModelPreview3D::printer_filament_restore_metadata() const
 {
     if (!m_printer_filament_restore || m_printer_filament_restore->geometry_id != m_geometry_id) return {};
     const auto& snapshot = *m_printer_filament_restore;
-    auto persisted_trial = snapshot.color_trial;
-    AI::ColorTrialPersistence::normalize_for_persistence(persisted_trial);
     auto semantic = [&](const FaceColorOverrides& faces, const SubfaceColorOverrides& subfaces) {
         nlohmann::json result = {{"schema", "orca.semantic-result/v1"}, {"geometry_id", m_geometry_id},
             {"face_count", m_triangle_count}, {"faces", nlohmann::json::array()}, {"subfaces", nlohmann::json::array()}};
@@ -152,7 +150,7 @@ nlohmann::json ModelPreview3D::printer_filament_restore_metadata() const
         return result;
     };
     nlohmann::json result = {{"schema", "orca.printer-filament-restore/v1"}, {"geometry_id", m_geometry_id},
-        {"color_trial", AI::ColorTrialPersistence::encode(persisted_trial, m_triangle_count, m_geometry_id)},
+        {"color_trial", AI::ColorTrialPersistence::encode_workbench_trial(snapshot.color_trial, m_triangle_count, m_geometry_id)},
         {"face_color_intent", AI::SurfaceSelectionPersistence::encode_colors(snapshot.face_color_overrides, m_triangle_count, m_geometry_id)},
         {"semantic_result", semantic(snapshot.saved_semantic_faces, snapshot.saved_semantic_subfaces)},
         {"automatic_semantic_result", semantic(snapshot.automatic_face_colors, snapshot.automatic_subface_colors)},

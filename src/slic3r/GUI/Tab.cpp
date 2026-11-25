@@ -403,9 +403,10 @@ void Tab::create_preset_tab()
          Freeze();
         if (m_presets_choice) m_presets_choice->Show();
 
-        m_btn_save_preset->Show();
-        m_btn_delete_preset->Show(); // ORCA: fixes delete preset button visible while search box focused
-        m_undo_btn->Show();          // ORCA: fixes revert preset button visible while search box focused
+        const bool workbench = m_type == Preset::TYPE_PRINT && m_parent->workbench_process_mode() >= 0;
+        m_btn_save_preset->Show(!workbench);
+        m_btn_delete_preset->Show(!workbench);
+        m_undo_btn->Show(!workbench);
         m_btn_search->Show();
         m_search_item->Hide();
 
@@ -533,6 +534,7 @@ void Tab::create_preset_tab()
         m_tabctrl->SetItemBold(sel_item, false);
         });
     m_tabctrl->Bind(wxEVT_TAB_SEL_CHANGED, [this](wxCommandEvent& event) {
+        const auto page_before_selection = m_active_page;
 #ifdef __linux__
         // Events queue is opposite On Linux. wxEVT_SET_FOCUS invokes after wxEVT_TAB_SEL_CHANGED,
         // and a result wxEVT_KILL_FOCUS doesn't invoke for the TextCtrls.
@@ -550,6 +552,11 @@ void Tab::create_preset_tab()
                     } while (this->tree_sel_change_delayed(event));
                     m_page_switch_running = false;
                 }
+            }
+            if (m_type == Preset::TYPE_PRINT && m_parent->workbench_process_mode() >= 0) {
+                // Rebuilding the category buttons also emits selection events.
+                event.SetExtraLong(m_active_page != page_before_selection);
+                event.Skip(); // The mounted workbench styles the newly built controls.
             }
         });
 
@@ -1788,7 +1795,8 @@ void Tab::reload_config()
 
 void Tab::update_mode()
 {
-    m_mode = wxGetApp().get_mode();
+    const int workbench_mode = m_type == Preset::TYPE_PRINT ? m_parent->workbench_process_mode() : -1;
+    m_mode = workbench_mode >= 0 ? static_cast<ConfigOptionMode>(workbench_mode) : wxGetApp().get_mode();
 
     // toggle_options reads m_mode to gate Lines whose contents are mode-mixed
     // (e.g., a multi-option row where some options are Advanced and some Expert):
@@ -2749,10 +2757,11 @@ void Tab::activate_option(const std::string& opt_key, const wxString& category)
 
     // focused selected field
     if (field) {
-        set_focus(field->getWindow());
-        if (!field->getWindow()->HasFocus()) {
+        auto* window = field->getWindow();
+        set_focus(window);
+        if (!m_parent->reveal_workbench_parameter(window) && !window->HasFocus()) {
             wxScrollEvent evt(wxEVT_SCROLL_CHANGED);
-            evt.SetEventObject(field->getWindow());
+            evt.SetEventObject(window);
             wxPostEvent(m_page_view, evt);
         }
     }
@@ -3995,8 +4004,9 @@ void TabPrintModel::on_value_change(const std::string& opt_id, const boost::any&
     if (auto n = opt_key.find('#'); n != std::string::npos) {
         opt_key = opt_key.substr(0, n);
         auto iter = m_active_page->m_opt_id_map.lower_bound(opt_key);
-        assert(iter != m_active_page->m_opt_id_map.end() && iter->second == opt_id);
-        opt_id2 = iter->first;
+        // Without a mapping for this field, its own id carries the index.
+        if (iter != m_active_page->m_opt_id_map.end() && iter->second == opt_id)
+            opt_id2 = iter->first;
         opt_index = std::atoi(opt_id2.c_str() + n + 1);
     }
     if (!has_key(opt_key))
@@ -7491,8 +7501,16 @@ void Tab::update_btns_enabling()
     // we can delete any preset from the physical printer
     // and any user preset
     const Preset& preset = m_presets->get_edited_preset();
-    m_btn_delete_preset->Show((m_type == Preset::TYPE_PRINTER && m_preset_bundle->physical_printers.has_selection())
-                              || preset.can_overwrite());
+    const bool workbench = m_type == Preset::TYPE_PRINT && m_parent->workbench_process_mode() >= 0;
+    if (m_type == Preset::TYPE_PRINT) {
+        if (m_presets_choice)
+            m_top_sizer->GetItem(m_presets_choice)->SetBorder(workbench ? 0 : FromDIP(SidebarProps::ElementSpacing()));
+        m_top_sizer->GetItem(m_search_item)->SetBorder(workbench ? 0 : FromDIP(SidebarProps::ContentMargin()));
+        m_btn_save_preset->Show(!workbench && !m_search_item->IsShown());
+        m_undo_btn->Show(!workbench && !m_search_item->IsShown());
+    }
+    m_btn_delete_preset->Show(!workbench &&
+        ((m_type == Preset::TYPE_PRINTER && m_preset_bundle->physical_printers.has_selection()) || preset.can_overwrite()));
 
     //if (m_btn_edit_ph_printer)
     //    m_btn_edit_ph_printer->SetToolTip( m_preset_bundle->physical_printers.has_selection() ?
@@ -9335,8 +9353,23 @@ void Tab::switch_excluder(int extruder_id, bool reload)
     }
     auto get_index_for_extruder =
             [this, &extruders, variant_keys = extruder_variant_keys[m_type >= Preset::TYPE_COUNT ? Preset::TYPE_PRINT : m_type]](int extruder_id, int stride = 1) {
-        return m_config->get_index_for_extruder(extruder_id + 1, variant_keys.first,
-            ExtruderType(extruders->values[extruder_id]), get_actual_nozzle_volume_type(extruder_id), variant_keys.second, stride);
+        const ExtruderType     extruder_type = ExtruderType(extruders->values[extruder_id]);
+        const NozzleVolumeType volume_type   = get_actual_nozzle_volume_type(extruder_id);
+        const int index = m_config->get_index_for_extruder(extruder_id + 1, variant_keys.first, extruder_type, volume_type,
+                                                           variant_keys.second, stride);
+        if (index >= 0)
+            return index;
+        // A config without this extruder's variant (a Bowden printer with a "Direct Drive Standard" process) still
+        // gets its pages mapped: use the extruder's first variant, as slicing does.
+        const std::string variant  = get_extruder_variant_string(extruder_type, volume_type);
+        const auto       *variants = m_config->option<ConfigOptionStrings>(variant_keys.second);
+        const auto       *ids      = variant_keys.first.empty() ? nullptr : m_config->option<ConfigOptionInts>(variant_keys.first);
+        const int fallback = std::max(find_variant_index(variant, extruder_id + 1, variants ? variants->values : std::vector<std::string>(),
+                                                         ids ? ids->values : std::vector<int>()),
+                                      0);
+        BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << ": no " << variant << " variant in " << variant_keys.second << ", using variant "
+                                   << fallback;
+        return fallback * stride;
     };
     auto index = m_variant_combo ? extruder_id : get_index_for_extruder(extruder_id == -1 ? 0 : extruder_id);
     if (index < 0)

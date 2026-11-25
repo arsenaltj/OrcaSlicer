@@ -97,6 +97,7 @@
 #include "GUI_Preview.hpp"
 #include "OpenGLManager.hpp"
 #include "Plater.hpp"
+#include "AI/SmartSlicing/SmartSlicingFeatureHost.hpp"
 #include "MainFrame.hpp"
 #include "Redesign/RedesignFeatureFlags.hpp"
 #include "WipeTowerDialog.hpp"
@@ -4361,9 +4362,6 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
             is_belt_printer = belt_opt->value;
 
         if (wt && !is_belt_printer && (need_wipe_tower || filaments_count > 1) && !wxGetApp().plater()->only_gcode_mode() && !wxGetApp().plater()->is_gcode_3mf()) {
-            // The tower size estimate reads printer- and filament-scope keys, which the print preset
-            // does not carry; built once here rather than per plate.
-            const DynamicPrintConfig full_config = wxGetApp().preset_bundle->full_config();
             for (int plate_id = 0; plate_id < n_plates; plate_id++) {
                 // If print ByObject and there is only one object in the plate, the wipe tower is allowed to be generated.
                 PartPlate* part_plate = ppl.get_plate(plate_id);
@@ -4373,10 +4371,10 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
                         continue;
                 }
 
-                DynamicPrintConfig& proj_cfg = wxGetApp().preset_bundle->project_config;
-                float x = dynamic_cast<const ConfigOptionFloats*>(proj_cfg.option("wipe_tower_x"))->get_at(plate_id);
-                float y = dynamic_cast<const ConfigOptionFloats*>(proj_cfg.option("wipe_tower_y"))->get_at(plate_id);
-                float a = dynamic_cast<const ConfigOptionFloat*>(m_config->option("wipe_tower_rotation_angle"))->value;
+                const auto full_config = part_plate->effective_slice_config(*wxGetApp().preset_bundle);
+                float x = float(full_config.opt_float("wipe_tower_x", plate_id));
+                float y = float(full_config.opt_float("wipe_tower_y", plate_id));
+                const float a = float(full_config.opt_float("wipe_tower_rotation_angle"));
                 Vec3d plate_origin = ppl.get_plate(plate_id)->get_origin();
 
                 const Print* current_print = part_plate->fff_print();
@@ -4391,34 +4389,8 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
                 float brim_width = float(footprint.brim_width);
                 Vec3d wipe_tower_size(footprint.width, footprint.depth, footprint.height);
 
-                // set_default_wipe_tower_pos_for_plate doesn't rerun when painting changes the
-                // filament count, so redo its clamp here on every reload — unconditionally: a
-                // paint-triggered reload can arrive before the background process invalidates
-                // psWipeTower, so gating on it would skip the clamp exactly when it is needed.
-                {
-                    Vec3d clamped_pos, clamped_size;
-                    WipeTowerRelocation relocation;
-                    part_plate->estimate_wipe_tower_polygon(full_config, plate_id, clamped_pos, clamped_size, 0, false, &relocation);
-                    if (std::abs(x - (float) clamped_pos(0)) > EPSILON || std::abs(y - (float) clamped_pos(1)) > EPSILON) {
-                        x = (float) clamped_pos(0);
-                        y = (float) clamped_pos(1);
-                        ConfigOptionFloat wt_x_opt(x), wt_y_opt(y);
-                        dynamic_cast<ConfigOptionFloats*>(proj_cfg.option("wipe_tower_x"))->set_at(&wt_x_opt, plate_id, 0);
-                        dynamic_cast<ConfigOptionFloats*>(proj_cfg.option("wipe_tower_y"))->set_at(&wt_y_opt, plate_id, 0);
-                        // The stored position changes once, so this is shown once per move.
-                        if (NotificationManager *notifications = wxGetApp().notification_manager(); notifications != nullptr && relocation.moved) {
-                            if (relocation.overlaps_objects)
-                                notifications->push_notification(NotificationType::CustomNotification, NotificationManager::NotificationLevel::WarningNotificationLevel,
-                                    // TRN %1% is the plate number.
-                                    format(_u8L("The prime tower on plate %1% no longer fits where it was placed. There is no free space left on the plate for it, so it was moved onto an object."), plate_id + 1));
-                            else
-                                notifications->push_notification(NotificationType::CustomNotification, NotificationManager::NotificationLevel::RegularNotificationLevel,
-                                    // TRN %1% is the plate number.
-                                    format(_u8L("The prime tower on plate %1% no longer fits where it was placed, so it was moved to free space on the plate."), plate_id + 1));
-                        }
-                    }
-                }
-
+                // The plate owns placement. Reloads may occur between
+                // committing a verified position and starting Print.
                 if (!current_print->is_step_done(psWipeTower) || !current_print->wipe_tower_data().wipe_tower_mesh_data) {
                     // update for wipe tower position
                     int volume_idx_wipe_tower_new = m_volumes.load_wipe_tower_preview(1000 + plate_id, x + plate_origin(0), y + plate_origin(1),
@@ -4493,11 +4465,22 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
             const bool fullyOut = (state == ModelInstanceEPrintVolumeState::ModelInstancePVS_Fully_Outside);
            // const bool objectLimited = (state == ModelInstanceEPrintVolumeState::ModelInstancePVS_Limited);
 
-            PartPlate *cur_plate  = wxGetApp().plater()->get_partplate_list().get_curr_plate();
-            bool show_read_wipe_tower = cur_plate->fff_print()->is_step_done(psWipeTower);
-            bool       wipe_tower_outside   = m_volumes.check_wipe_tower_outside_state(m_bed.build_volume(), wxGetApp().plater()->get_partplate_list().get_curr_plate_index());
-            bool show_wipe_tower_outside_error = show_read_wipe_tower ? !wipe_tower_outside : false;
-            _set_warning_notification(EWarning::PrimeTowerOutside, show_wipe_tower_outside_error);
+            auto* cur_plate = wxGetApp().plater()->get_partplate_list().get_curr_plate();
+            const Print* print = cur_plate ? cur_plate->fff_print() : nullptr;
+            bool tower_outside = false;
+            if (print && print->is_step_done(psWipeTower)) {
+                if (const auto& mesh = print->wipe_tower_data().wipe_tower_mesh_data; mesh) {
+                    // Check the same plate-local rotated bottom as Print uses.
+                    // The rendered tower's bounding box may extend farther.
+                    const auto& config = print->config();
+                    Polygon footprint = mesh->bottom;
+                    footprint.rotate(Geometry::deg2rad(config.wipe_tower_rotation_angle.value));
+                    footprint.translate(Point::new_scale(config.wipe_tower_x.get_at(cur_plate->get_index()),
+                                                         config.wipe_tower_y.get_at(cur_plate->get_index())));
+                    tower_outside = !diff(Polygons{footprint}, print->get_extruder_shared_printable_polygon()).empty();
+                }
+            }
+            _set_warning_notification(EWarning::PrimeTowerOutside, tower_outside);
 
             auto clash_flag = construct_error_string(object_results, get_object_clashed_text());
             auto unprintable_flag= construct_extruder_unprintable_error(object_results, get_left_extruder_unprintable_text(), get_right_extruder_unprintable_text());
@@ -6530,7 +6513,7 @@ void GLCanvas3D::do_move(const std::string& snapshot_type, bool force_volume_mov
 
     // BBS: support wipe-tower for multi-plates
     int n_plates = wxGetApp().plater()->get_partplate_list().get_plate_count();
-    std::vector<Vec3d> wipe_tower_origins(n_plates, Vec3d::Zero());
+    std::vector<std::optional<Vec3d>> wipe_tower_origins(n_plates);
 
     Selection::EMode selection_mode = m_selection.get_mode();
 
@@ -6574,8 +6557,8 @@ void GLCanvas3D::do_move(const std::string& snapshot_type, bool force_volume_mov
             model_object->invalidate_bounding_box();
             
         }
-        else if (object_idx >= 1000 && object_idx < 1000 + n_plates) {
-            // Move a wipe tower proxy.
+        else if (object_idx >= 1000 && object_idx < 1000 + n_plates && m_selection.is_wipe_tower()) {
+            // Commit only the selected tower proxy's transform.
             wipe_tower_origins[object_idx - 1000] = v->get_volume_offset();
         }
     }
@@ -6629,22 +6612,22 @@ void GLCanvas3D::do_move(const std::string& snapshot_type, bool force_volume_mov
     }
 
     // BBS: support wipe-tower for multi-plates
+    bool tower_moved = false;
     for (int plate_id = 0; plate_id < wipe_tower_origins.size(); plate_id++) {
-        Vec3d& wipe_tower_origin = wipe_tower_origins[plate_id];
-        if (wipe_tower_origin == Vec3d::Zero())
-            continue;
-
-        PartPlateList& ppl = wxGetApp().plater()->get_partplate_list();
-        DynamicConfig& proj_cfg = wxGetApp().preset_bundle->project_config;
-        Vec3d plate_origin = ppl.get_plate(plate_id)->get_origin();
-        ConfigOptionFloat wipe_tower_x(wipe_tower_origin(0) - plate_origin(0));
-        ConfigOptionFloat wipe_tower_y(wipe_tower_origin(1) - plate_origin(1));
-
-        ConfigOptionFloats* wipe_tower_x_opt = proj_cfg.option<ConfigOptionFloats>("wipe_tower_x", true);
-        ConfigOptionFloats* wipe_tower_y_opt = proj_cfg.option<ConfigOptionFloats>("wipe_tower_y", true);
-        wipe_tower_x_opt->set_at(&wipe_tower_x, plate_id, 0);
-        wipe_tower_y_opt->set_at(&wipe_tower_y, plate_id, 0);
+        const auto& wipe_tower_origin = wipe_tower_origins[plate_id];
+        if (!wipe_tower_origin) continue;
+        PartPlateList& plates = wxGetApp().plater()->get_partplate_list();
+        PartPlate* plate = plates.get_plate(plate_id);
+        const Vec2d position = (*wipe_tower_origin - plate->get_origin()).head<2>();
+        const auto& config = wxGetApp().preset_bundle->project_config;
+        const Vec2d previous(config.opt_float("wipe_tower_x", plate_id), config.opt_float("wipe_tower_y", plate_id));
+        if ((previous - position).norm() <= 1e-6) continue;
+        plates.set_wipe_tower_position_for_plate(plate_id, position);
+        plate->update_slice_result_valid_state(false);
+        tower_moved = true;
     }
+    if (tower_moved && !object_moved)
+        post_event(SimpleEvent(EVT_GLCANVAS_INSTANCE_MOVED));
 
     reset_sequential_print_clearance();
 
@@ -11341,6 +11324,13 @@ void GLCanvas3D::_render_imgui_select_plate_toolbar()
         return;
     }
 
+    const auto* slicing_host = wxGetApp().plater()->smart_slicing_feature_host();
+    if (slicing_host && slicing_host->workbench_active()) {
+        // The workbench preview uses the selection-only plate switcher.
+        m_render_preview = true;
+        return;
+    }
+
     _update_imgui_select_plate_toolbar();
 
     IMToolbarItem* all_plates_stats_item = m_sel_plate_toolbar.m_all_plates_stats_item;
@@ -11761,7 +11751,11 @@ void GLCanvas3D::_render_plate_switcher()
     Plater*        plater      = wxGetApp().plater();
     PartPlateList& plate_list  = plater->get_partplate_list();
     const int      plate_count = plate_list.get_plate_count();
-    if (!_hides_inactive_plates() || plate_count < 2 || m_gizmos.get_current_type() != GLGizmosManager::Undefined)
+    const auto* slicing_host = plater->smart_slicing_feature_host();
+    const bool workbench_preview = m_canvas_type == ECanvasType::CanvasPreview &&
+        slicing_host && slicing_host->workbench_active();
+    if ((!workbench_preview && !_hides_inactive_plates()) || plate_count < 2 ||
+        m_gizmos.get_current_type() != GLGizmosManager::Undefined)
         return;
 
     // The thumbnails are the ones of the Preview plate toolbar.
@@ -11837,7 +11831,7 @@ void GLCanvas3D::_render_plate_switcher()
         }
         draw_list->AddText(pos + ImVec2(4.f, 2.f) * sc, ImGui::GetColorU32(plate->empty() ? empty_color : text_color), std::to_string(i + 1).c_str());
 
-        if (clicked && !current)
+        if (clicked && !current && (!workbench_preview || !m_process || !m_process->running()))
             plater->CallAfter([i]() {
                 wxGetApp().plater()->select_plate(i);
                 wxGetApp().plater()->deselect_all();
@@ -13820,15 +13814,9 @@ const SLAPrint* GLCanvas3D::sla_print() const
 void GLCanvas3D::WipeTowerInfo::apply_wipe_tower(Vec2d pos, double rot) const
 {
     // BBS: add partplate logic
-    DynamicConfig& proj_cfg = wxGetApp().preset_bundle->project_config;
-    Vec3d plate_origin = wxGetApp().plater()->get_partplate_list().get_plate(m_plate_idx)->get_origin();
-    ConfigOptionFloat wipe_tower_x(pos(X) - plate_origin(0));
-    ConfigOptionFloat wipe_tower_y(pos(Y) - plate_origin(1));
-
-    ConfigOptionFloats* wipe_tower_x_opt = proj_cfg.option<ConfigOptionFloats>("wipe_tower_x", true);
-    ConfigOptionFloats* wipe_tower_y_opt = proj_cfg.option<ConfigOptionFloats>("wipe_tower_y", true);
-    wipe_tower_x_opt->set_at(&wipe_tower_x, m_plate_idx, 0);
-    wipe_tower_y_opt->set_at(&wipe_tower_y, m_plate_idx, 0);
+    auto& plates = wxGetApp().plater()->get_partplate_list();
+    const Vec2d origin = plates.get_plate(m_plate_idx)->get_origin().head<2>();
+    plates.set_wipe_tower_position_for_plate(m_plate_idx, pos - origin);
 
     //q->update();
 }

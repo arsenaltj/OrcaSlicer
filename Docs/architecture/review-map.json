@@ -498,6 +498,26 @@
       "needle": "AI::SmartSlicing::OfficialSliceResult SmartSlicingFeatureHost::start_workbench_slice("
     },
     {
+      "id": "workbench_native_trial",
+      "path": "src/slic3r/GUI/AI/Orca/OrcaTrialSliceExecutor.cpp",
+      "needle": "TrialSliceResult OrcaTrialSliceExecutor::execute_recommendation_slice("
+    },
+    {
+      "id": "workbench_selected_goal_estimate",
+      "path": "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingFeatureHost.cpp",
+      "needle": "void start_exact_estimate("
+    },
+    {
+      "id": "workbench_tower_position_validation",
+      "path": "src/slic3r/GUI/PlaterNativeWorkspace.ipp",
+      "needle": "static bool resolve_automatic_wipe_tower("
+    },
+    {
+      "id": "workbench_plate_slice_config",
+      "path": "src/slic3r/GUI/PartPlate.cpp",
+      "needle": "DynamicPrintConfig PartPlate::effective_slice_config("
+    },
+    {
       "id": "image_history",
       "path": "src/slic3r/GUI/Redesign/ImageHistorySidebar.cpp",
       "needle": "struct ImageHistorySidebar::Impl"
@@ -1129,7 +1149,7 @@
       "module": "slicing",
       "state_source": "slicing_states",
       "extractor": "cpp_workflow_enum",
-      "description": "读取工作区并检查风险，比较候选试切，用户应用后执行正式切片。",
+      "description": "读取当前盘的有效输入与风险，以原生试切比较候选，用户应用后按同一塔位及参数执行正式切片。",
       "phases": [
         {
           "id": "inspect",
@@ -1166,7 +1186,7 @@
         {
           "id": "trial",
           "label": "试切与比较",
-          "detail": "基线及候选方案",
+          "detail": "选中档试切与自动塔位补试",
           "type": "active",
           "states": [
             "TrialSlicingBaseline",
@@ -1545,7 +1565,11 @@
       "evidence": [
         "slicing_apply",
         "slicing_poll",
-        "workbench_slice"
+        "workbench_slice",
+        "workbench_native_trial",
+        "workbench_selected_goal_estimate",
+        "workbench_tower_position_validation",
+        "workbench_plate_slice_config"
       ],
       "modules": [
         "slicing"
@@ -1603,8 +1627,8 @@
     {
       "id": "workbench_beauty",
       "label": "美颜与版本",
-      "detail": "选区、保护、改色、候选对比、接受、放弃、保存及撤销重做",
-      "boundary": "候选或未保存编辑锁定资产更换与正式导入",
+      "detail": "美颜编辑暂时冻结，已保存版本继续走普通资产查看和导入",
+      "boundary": "保留编辑实现、草稿和历史；普通工作台的问题定位仅显示高亮",
       "group": "资产与工作区",
       "evidence": [
         "workbench_beauty"
@@ -2257,8 +2281,8 @@
           "tests/slic3rutils/test_smart*",
           "tests/slic3rutils/test_orca_slicing*"
         ],
-        "state_owner": "Coordinator / WorkflowState + WorkspaceRevision",
-        "contract": "试切在隔离候选上；正式应用与撤销走 Orca",
+        "state_owner": "Coordinator / WorkflowState 与 WorkspaceRevision 管候选；PartPlateList 管智能基线，PartPlate 管已应用工艺、曲线及塔位来源",
+        "contract": "智能按独立基线试切；自定义用原生预设；两者共用 Orca 正式切片与撤销",
         "note": "按 ADR-002 保留唯一原生画布与工程真值。",
         "build_boundary": "决策核心 OrcaSlicer::SmartSlicing/SmartSlicingCore STATIC；GUI host 在 libslic3r_gui，云建议在 Python sidecar。"
       },
@@ -2485,7 +2509,7 @@
           "tests/libslic3r/test_config*"
         ],
         "state_owner": "原生工程文件与 preset/config",
-        "contract": "保存重开、作用域与兼容迁移保持可回归",
+        "contract": "原生工程保存自定义工艺及人工覆盖，3MF 工作台扩展恢复智能工艺和擦料塔来源",
         "note": "账号会话和 AI 任务诊断不混入 3MF。",
         "build_boundary": "OrcaSlicer::Core（orca_slicer_core STATIC）；3MF、配置和预设不是独立进程。"
       },

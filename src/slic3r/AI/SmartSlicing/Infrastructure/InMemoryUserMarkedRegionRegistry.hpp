@@ -16,6 +16,10 @@ public:
     ProtectedRegionBindingResult replace(const ProtectedRegionBindingTarget& target,
                                          std::vector<AI::ProtectedFacetRange> ranges);
     ProtectedRegionSourceResult regions_for(const ProtectedRegionSourceQuery& query) override;
+    bool contains(uint64_t object_id, uint64_t volume_id) const
+    {
+        return m_entries.find({object_id, volume_id}) != m_entries.end();
+    }
     bool clear(uint64_t object_id, uint64_t volume_id);
     size_t invalidate_for_revision(const WorkspaceRevision& current_revision);
     void clear_all();

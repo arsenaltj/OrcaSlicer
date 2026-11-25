@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RedesignTheme.hpp"
+#include "../OG_CustomCtrl.hpp"
 #include "../Widgets/ComboBox.hpp"
 #include "../Widgets/SpinInput.hpp"
 #include "../Widgets/Button.hpp"
@@ -66,6 +67,7 @@ public:
         // A sidebar refresh must not overwrite the active dialog's controls.
         for (wxWindow* child : window->GetChildren())
             if (!child->IsTopLevel()) apply(child, swatches, surface);
+        if (auto* options = dynamic_cast<OG_CustomCtrl*>(window)) options->fixup_items_positions(true);
         window->Refresh(false);
     }
 
@@ -76,6 +78,7 @@ public:
             saved.window->SetBackgroundColour(saved.background);
             saved.window->SetForegroundColour(saved.foreground);
             for (auto& restore_color : saved.colors) restore_color();
+            if (auto* options = dynamic_cast<OG_CustomCtrl*>(saved.window.get())) options->fixup_items_positions(true);
             saved.window->Refresh(false);
         }
         m_saved.clear();

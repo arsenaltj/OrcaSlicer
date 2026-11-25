@@ -84,6 +84,242 @@ Next: finish sparse physical-tool G-code/file-readback and support regressions, 
 Plan change: original project remains unchanged; device/process/material configuration applies only to the derivative. Trial colors are preview/draft-only and require a new confirmed native match before manufacturing.
 
 ## Earlier records retained
+
+# MAINLINE-BUGFIX-001｜同步团队切片工作台（2026-11-23）
+
+**主线** `task/mainline-bugfix` 合入 `origin/codex/team/integration` 的 `918c137399`。
+
+**本轮** 先提交本地 `d3ef60b5a8`。两份进度文档的冲突已合并双方记录。
+
+**未结** Windows Release 与功能验证进行中。
+
+**下一步** 复核原生工艺编辑、智能试切、工作台历史恢复和切片视角。
+
+**计划变更** 承接团队切片工作台的新实现。 [主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-integration-20261123)
+
+---
+
+# MAINLINE-BUGFIX-001｜工作台首帧导航（2026-11-23）
+
+**主线** `task/mainline-bugfix`，HEAD `cdc9290079`，沿用固定 Release 目录。
+
+**本轮** 修复底栏重绘遮挡导航。Windows 实窗覆盖两个历史版本的首次打开、来回切换、导航点击和「正面视图」。12 项定向回归通过。
+
+**未结** 等待用户复验。
+
+**下一步** 已更新并用「Honor Forge 正式修复验证」入口打开新版，沿用原配置。
+
+**计划变更** 底栏右侧以布局留白。视口过窄时，导航移入视口右下角。 [验证记录](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-navigator-first-frame-20261123/validation.json)
+
+---
+
+# MAINLINE-BUGFIX-001｜历史色卡、缩略图和工作台加载（2026-11-23）
+
+**主线** `task/mainline-bugfix`，HEAD `cdc9290079`，本轮改动保留在工作树。
+
+**本轮** 版本色卡、原位保留、缩略图补建和历史场景复用已实现。固定 Release 构建通过，原生 268 项通过、1 项环境跳过。原历史栏 22 个可见版本完成首帧与配色计时。最终构建复测贴图样本，验证独立阶段耗时和重开跳过解码与上传。
+
+**未结** 两个已删除任务的下载副本仅有离屏基线。独立 GPU 计时已记录代表模型。新生成路径使用原生回归，实窗使用已有历史和本地样本。
+
+**下一步** 目前桌面「Honor Forge 正式修复验证」入口指向本轮构建，原配置可直接启动。
+
+**计划变更** 合并用户提出的历史色卡、缩略图和逐版本耗时要求。原模型文件核验一致，安全修复过程中生成的派生版本由工作台保留。 [验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/history-palette-preview-20261123/validation.json)
+
+---
+
+# MAINLINE-BUGFIX-001｜切片盘正面（2026-11-23）
+
+`task/mainline-bugfix` 以拉手所在的 −Y 边定义切片前方。工作台新模型放置时朝向拉手，已保存工程沿用原摆放。固定验证入口使用原配置。 [构建与实窗证据](D:/TEST/artifacts/mainline-bugfix/evidence/slice-front-palette-20261123/validation.json)
+
+AI 配色详情的初始颜色和「保留」开关留待下一轮按原贴图减色与映射流程讨论。
+
+---
+
+# MAINLINE-BUGFIX-001｜工作台入口与默认正视（2026-11-23）
+
+`task/mainline-bugfix` 本轮完成工作台入口收拢、3D 美颜编辑冻结和默认正视调整。普通工作台页头保留当前工作台操作，旧的返回创作和美颜入口已移除。左侧「AI创作」负责返回创作页，历史美颜成果按普通资产查看并可继续进入切片准备。
+
+工作台模型首次显示按 `+X` 为前、`+Y` 为右、`+Z` 为上的约定对齐正视相机。底部「正面视图」与导航立方体共用展示基准，手动旋转后切页返回保留视角，切换资产清除前一模型的问题高亮。检查详情中的「定位问题区域」只读显示橙色问题面，不进入美颜编辑。
+
+- 固定 `.tmp/dev/build` 的 Windows Release 增量构建完成，原生回归 198 项通过、1 项环境跳过。构建收据为 [result.json](D:/TEST/worktrees/OrcaSlicer-upstream-v2.5.0-alpha/mainline-bugfix/.tmp/dev/logs/20261123-111213-973/result.json)，原生回归为 [cpp-tests.log](D:/TEST/worktrees/OrcaSlicer-upstream-v2.5.0-alpha/mainline-bugfix/.tmp/dev/logs/20261123-101705-646/cpp-tests.log)。
+- 使用「Honor Forge 正式修复验证」入口和本轮隔离数据，非对称 OBJ 的首帧、正面按钮、右视图、导航立方体、手动旋转后切页返回、历史版本去切片和问题面只读高亮均已实窗核对。截图与样本保存在 [workbench-front-20261123](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-front-20261123)。
+- `front-wide-wedge.obj` 和 `open-diagnostic.obj` 的输入哈希已登记，导入切片只验证姿态和现有原生流程。跨屏 DPI 和真实加载失败回滚尚未在本轮实窗覆盖，相关代码路径保留原恢复逻辑。
+
+本轮改动作为第二笔本地提交收录。未推送、未打包、未操作实体设备和用户模型。
+
+---
+
+# MAINLINE-BUGFIX-001｜虚拟打印机「上传并打印」回归（2026-11-22）
+
+`task/mainline-bugfix` 的默认 Windows Release 已通过实窗「上传并打印」回归。虚拟打印机 0.2.2 收到切片 G-code 后启动一条新任务并报 100% 完成，客户端收到完成状态。 [设备回执](D:/TEST/artifacts/mainline-bugfix/evidence/nightly-validation-20261122/default-virtual-print-result.json)
+
+本轮虚拟打印回归已收口。固定版 ONNX Runtime 空缓存下载通过，U2NetP 空缓存续传留待复验。
+
+---
+
+# MAINLINE-BUGFIX-001｜官方 Nightly 定向回补（2026-11-20）
+
+本地 task/mainline-bugfix 从 f9d52e76ba 按官方 0c62aa085e 回补已批准的 19 项。 Windows Release 定向构建、766 项原生回归、8 项 CLI、21 项模型库网页测试与 AI 集成检查均通过。 [验证记录](D:/TEST/artifacts/mainline-bugfix/evidence/nightly-backport-20261120/validation.json)
+
+固定版 ONNX Runtime 下载超时。自动审批以 blocked by policy 拒绝隔离 GUI 启动，实窗对照待验。 此前桌面审查和账号验收状态见下文。
+
+---
+
+# MAINLINE-BUGFIX-001｜桌面版本远端审查（2026-11-20）
+
+`task/mainline-bugfix` 已推送至 `f9d52e76ba`，相对集成基线 `c50da0ef6e` 变更 69 个文件。原生 261 项、18 项两组及网页 21 项通过，远端 ShellCheck 复跑通过。[PR #83](https://github.com/arsenaltj/OrcaSlicer/pull/83)
+
+后续核对当前 PR 的集成检查和非作者评审。实窗重登和真实换号待补验。
+
+# MAINLINE-BUGFIX-001｜桌面账号头像（2026-11-20）
+
+Windows 原入口和原配置实测头像保存、各处同步、重启忽略旧头像及退出恢复访客头像。后端回读确认已恢复原头像。网页 21 项及原生 66 项通过。
+
+内嵌荣耀登录页已验证加载，未收到扫码登录回执。补验需重新打开授权页，有第二个测试账号时核对实际换号。
+
+# MAINLINE-BUGFIX-001｜同步团队主线（2026-11-20）
+
+`task/mainline-bugfix` 快进至 `c50da0ef6e`，原桌面账号、打印和模型库改动已恢复。网页回归与架构检查通过，关闭原生前景分割后 Windows Release 编译和原生回归通过。
+
+默认 Windows 构建等待固定版本的 ONNX Runtime 下载恢复。桌面账号验收仍需测试账号完成正式授权。
+
+---
+
+# 2026-11-21 此前 · 切片工作台同步远端与 Windows 合并候选
+
+**焦点**　`MAINLINE-BUGFIX-001` 从 `0fc72966b6` 同步远端 `516f19bc9e`，在 `codex/task/workbench-slicing-20261121` 准备 Windows 运行版和集成 PR。 [同步记录](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#workbench-slicing-integration-20261121)
+
+**返回点**　SS-01 原现场 3MF，SS-36 实物验收。REQ-08 多盘缓存隔离按单列计划。
+
+**未结**　同档换推荐来源的打印匹配、同工艺原生重复开切和缓存依赖待定向验收。TC-07、TC-22 待匹配工程或设备配置。
+
+**下一步**　合并候选首轮 Windows Release 已构建。增量复核图注修正后的版本及切片、打印交接，向集成分支提交 PR。
+
+---
+
+# 2026-11-20 此前 · 智能切片后续修复清单评审
+
+**焦点**　`MAINLINE-BUGFIX-001` 采用新版智能切片，按现行门槛校验所选档的有效试切证据。[修复与优化清单](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smartslice-next-fixes-review-20261120)
+
+**返回点**　SS-01 原故障 3MF、SS-36 实物验收。
+
+**未结**　连续换档、自动塔位和双盘隔离的修复范围待评审。
+
+**下一步**　评审首批修复及 Windows 工作台验收场景。
+
+---
+
+# 2026-11-20 此前 · 切片工作台三项 UX 用户验证通过，已本地提交
+
+**主线**　MAINLINE-BUGFIX-001，`codex/team/integration`。
+
+**本轮**　用户确认进度浮层对齐、移除检查区和「返回模型编辑」三项修改验证通过。本地提交 `63a1e34401`。[修改与验证](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smartslice-progress-and-check-review-20261120)
+
+**未结**　旧现场 3MF 与实物验收按 SS-01、SS-36 追踪。[现场复验结果](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smartslice-field-qa-feedback-20261120)
+
+**下一步**　取得原现场 3MF 或实物反馈后，回到对应验收项。
+
+**计划变更**　结项本次三项 UX 改动，登记用户验收与提交记录。
+
+---
+
+# 2026-11-20 此前 · 智能切片整改需求复核
+
+**主线**　MAINLINE-BUGFIX-001，`smartslice-implementation-acceptance-20261119`。当前分支 `codex/team/integration`，基线 `8f1b7bbf98df`。
+
+**本轮**　确认优先修复首次摆塔错误，本地按选中档计算。拖塔复用工艺并更新位置校验的分析见[需求复核](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smartslice-selected-goal-and-tower-20261120)。
+
+**未结**　整改待实施。现场复核后 2 项实测未通过，2 项部分覆盖，另有原工程和实物验收各 1 项待补。[42 项记录](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smartslice-case-results-20261120)
+
+**下一步**　实施阶段优先处理首次摆塔和原生错误提示，再按选中档落实调度与拖塔行为。
+
+**计划变更**　记录本轮的优先级与选择触发规则，将拖塔行为列为分析建议。
+
+---
+
+# 2026-11-20 此前 · 智能切片直接导入反馈复核
+
+**主线**　MAINLINE-BUGFIX-001，`smartslice-implementation-acceptance-20261119`。当前分支 `codex/team/integration`，基线 `8f1b7bbf98df`。
+
+**本轮**　对照现场截图、正式配置日志、自动备份和运行身份，确认初始塔位越界后原生预校验报错。基线和质量各补试一次，用尽四次额度，三档共用质量结果。[现场复核](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smartslice-field-import-20261120)
+
+**未结**　42 项中 36 项通过、2 项实测未通过、2 项部分覆盖、1 项待原工程、1 项待实物。[当前验收](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smartslice-case-results-20261120)
+
+**下一步**　直接导入场景的复验覆盖首次摆塔、原生错误提示及三档试切完整性。原故障工程和实物验收沿原编号记录。
+
+**计划变更**　SS-28、SS-37 复开，SS-34 改为部分覆盖。保留此前构建、相关回归及重建工程的原实测证据。
+
+---
+
+# 2026-11-20 此前 · 智能切片实施与 Windows 验收
+
+**主线**　MAINLINE-BUGFIX-001，`smartslice-implementation-acceptance-20261119`，`codex/team/integration`／`8f1b7bbf98df`，单代理。
+
+**本轮**　最终运行版 `20261120-022129-383` 通过 349 项定向回归。六类样本 24 次原生对照全部完成。重建肖像的旧版越界已复现，补修版切片成功。双喷嘴共同层高、原生涂色、写入失败回滚及空腔支撑已实窗复验。[逐项验收](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smartslice-case-results-20261120)。
+
+**未结**　42 项中通过 39 项。SS-07 的失败卡同屏用例部分覆盖，SS-01 待原工程，SS-36 待实物。此前 Windows 交付、模型信息面板评审及 62/64 记录保留为返回点。
+
+**下一步**　取得原 3MF 和打印样件后补对应项。SS-07 若需保留失败卡并列交互，按现有本地共享候选与云端独立推荐的差异核对验收边界。
+
+**计划变更**　更新试切截止时间、保护面及双喷嘴验收和证据。新增模型生成调用 0 次。
+
+---
+
+# 2026-11-19 此前 · V1.0.4 智能切片实施及验收
+
+**主线**　MAINLINE-BUGFIX-001，`smartslice-implementation-acceptance-20261119`，`codex/team/integration`／`8f1b7bbf98df`。
+
+**本轮**　已批准并实现四阶段改动。合法塔位的六色肖像试切与正式切片均显示 32 小时 52 分钟、252.17 g。初轮定向 342/345，实窗定位到旧塔状态门槛，补修等待复验。六类样本与 SS-37～SS-42 已备齐。
+
+**未结**　补修版增量构建、完整自动和实窗复验、同原 3MF 及实物确认。
+
+**下一步**　用现场影像所对应的模型副本及可控塔位夹具复核，运行六类原生对照矩阵，逐项记录 [验收状态](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smartslice-implementation-acceptance-20261119)。
+
+**计划变更**　保留 36 项原用例，新增六类实测场景和本轮证据。
+
+---
+
+# 2026-11-19 此前 · V1.0.4 智能切片实施方案和 36 项用例待审批
+
+**主线**　MAINLINE-BUGFIX-001／`wipe-tower-bounds-20261119` 补充，`codex/team/integration`／`8f1b7bbf98df`，本会话单代理。
+
+**本轮**　明确统一输入、塔位与失败事务、指标修正、按模型选层高与支撑、姿态备选的分阶段实现和 36 项验收。[评审稿](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smartslice-implementation-acceptance-20261119)。
+
+**未结**　审批、实施及验收。同工程复验待原 3MF，先前交付与模型信息面板评审返回点保留。
+
+**下一步**　审批后先落实试切和正式切片一致性，按阶段执行自动及 Windows 实窗验收。
+
+**计划变更**　沿原主线补齐实施规格、验收口径和用例。状态为待审批。
+
+---
+
+# 2026-11-19 此前 · V1.0.4 智能切片三档复查与方案完成
+
+**主线**　MAINLINE-BUGFIX-001／`wipe-tower-bounds-20261119` 补充，`codex/team/integration`／`8f1b7bbf98`，本会话单代理。
+
+**本轮**　三张卡试切成功，正式质量档 0.12 mm 越界。复核发现试切与正式输入、悬垂方向、喷嘴层高读取、变层高落地、失败状态与多材料克重差异。[复查与方案](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smartslice-followup-20261119)。
+
+**未结**　修复和算法优化待实施。原故障工作台 3MF 待取，原交付记录、62/64 与模型信息面板评审返回点保留。
+
+**下一步**　按已分析的方案先统一试切和正式输入，再用原生能力优化层高、支撑与朝向。建议保留当前摆放和人工设置，角度预览后应用。当前暂无需用户确认的产品取舍。
+
+**计划变更**　沿原问题追加分析与优化建议。本轮交付为源码和既有日志分析。
+
+---
+
+# 2026-11-19 此前：V1.0.4 擦料塔越界提示原因分析完成
+
+主线：MAINLINE-BUGFIX-001／`wipe-tower-bounds-20261119`；当前 `codex/team/integration`／`8f1b7bbf98`，本会话单代理。用户本轮仅授权分析安装后测试问题。
+
+本轮：日志确认两次实际塔底 Y=285.5 mm 超过可打印 Y=270 mm，越界 15.5 mm；源码确认智能方案写入盘级 0.12 mm，而塔预览／自动摆放未叠加盘级配置。切片失败时仍可能显示估计塔。[证据、归因边界与修复建议](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#wipe-tower-bounds-20261119)。
+
+未结：修复未实施；缺少原故障 3MF，尚未做同工程实窗复现，不把全部越界量定量归因于单个参数。此前交付记录、原62/64与模型信息面板待评审状态保留。
+
+下一步：交付本次原因分析；后续在明确修复范围内统一有效配置及完整占地处理，再做对应复现和回归。
+
+计划变更：挂原Bug主线追加分析记录；仅更新两份进度文档，无产品修改、构建、产品测试、GUI、生成、提交或推送。
+---
+
 # MODEL-SDK-DEFAULT-CMAKE-D1 (2026-11-20)
 
 Mainline: task-20261120-model-sdk-default-cmake from d60d3a9; PR82 is now formally open by explicit user request. D1 repair round 1 fixes an absent LINK_LIBRARIES property without disabling default tests.
@@ -180,7 +416,7 @@ Plan change: none to paused Desktop work, device/production/paid/PR/push prohibi
 ---
 
 # 最新桌面323c记录（完整保留；不据历史记录恢复暂停工作）
-# 2026-11-19 当前：V1.0.4修订已提交，Draft PR #79已创建
+# 2026-11-19 此前：V1.0.4修订已提交，Draft PR #79已创建
 
 主线：DELIVERY/WINDOWS-INSTALLER-20261119追加交付，codex/task/ai-creation-v1.0.4-20261119，本会话单writer；用户授权的本地提交／专用分支推送／集成PR创建已完成。
 
@@ -310,6 +546,56 @@ Plan change: none to paused Desktop work, device/production/paid/PR/push prohibi
 
 ---
 
+# MAINLINE-BUGFIX-001｜桌面账号接入（2026-11-20）
+
+主线沿用 `task/mainline-bugfix` 和基线 `685449a3d2`。
+
+本轮接入桌面 PKCE 登录、账号头像、鉴权标识和原生积分与云文件服务。
+
+待用测试账号核对会话签发、头像换号、在线积分与云文件操作及后端审计。目标部署的云文件详情探针返回 `404`，需核对已部署的提交。
+
+使用「Honor Forge 正式修复验证」和原 `.tmp/dev/data` 试用。[验证记录](D:/TEST/artifacts/mainline-bugfix/evidence/desktop-account-20261120/validation.md)
+
+登录界面已恢复为软件内嵌 WebView，Windows 实窗通过打开和取消登录验证。积分与云空间的界面留待 UX 设计稿。
+
+---
+
+# MAINLINE-BUGFIX-001｜模型卡片菜单（2026-11-19）
+
+主线沿用 `task/mainline-bugfix` 和基线 `685449a3d2`。PR #78 保留审查状态。
+
+本轮精简「我的模型」与「模型库」的卡片菜单。Windows 实窗核对了 OBJ 打开工作台、普通 3MF 导入切片准备及两类公共卡片打开对应版本详情。网页 20 项与原生 29 项回归通过。纯设计图由网页用例覆盖。
+
+桌面「Honor Forge 正式修复验证」已启动新版并沿用 `.tmp/dev/data`。[验证记录](D:/TEST/artifacts/mainline-bugfix/evidence/model-card-menu-20261119/validation.md)
+
+---
+
+# MAINLINE-BUGFIX-001｜打印准备、侧栏与实时视频（2026-11-19）
+
+主线沿用 `task/mainline-bugfix`／`685449a3d2`，PR #78 继续审查。
+
+本轮完成打印准备精简、侧栏局部更新和实时视频。原版 0.2.2 回环实窗已验连续 MJPEG、截图、仅上传和异色耗材直接打印。24 fps HLS、RTSP/TCP 播放及 RTSP 断流恢复已核验。侧栏的空闲、打印变化和 RTSP 重连录像未观察到整栏白闪。Windows x64 `dep_FFMPEG` 和最终 Release Build 均通过。
+
+桌面「Honor Forge 正式修复验证」已启动最终 Release，复用 `.tmp/dev/data`。实窗复验「去打印」、深色相机地址弹窗，以及清除临时 RTSP 地址后原版 MJPEG 的播放和截图。[联调证据](D:/TEST/artifacts/mainline-bugfix/evidence/live-camera-20261119)
+
+待验包括快照模式实窗、设备级断线恢复、两台在线设备间的切换、慢传、传输中取消及耗材读取失败后提交。本机自动审批拒绝启动回环故障转发。TM-T1 的只读初始状态查询失败。实体机型与固件、Windows ARM64 和依赖 CI 保留验证项。
+
+计划沿用原配置，耗材差异只提示，录像和 AI 检测按设备能力显示。
+
+---
+# MAINLINE-BUGFIX-001｜桌面上传与「去打印」（2026-11-19）
+
+主线沿用 `task/mainline-bugfix`／`685449a3d2`，PR #78 继续审查。
+
+本轮对齐「去打印」与预览就绪判断。Release 和 30 项定向回归通过。桌面入口「Honor Forge 正式修复验证」使用原 `.tmp/dev/data`。0.2.2 回环实窗已验同色无提醒、异色直接打印并使用原料槽、仅上传及两窗同窗结果。
+
+未结项是耗材读取失败后提交和慢传至各终态的连续录屏。自动审批以 `blocked by policy` 拒绝限速／故障转发及录屏命令。实测已覆盖两窗提交前关闭，传输中取消与白闪待验。
+
+下一步在可用的故障与录屏条件下补验。构建身份与各场景 [证据](D:/TEST/artifacts/mainline-bugfix/evidence/go-to-print-20261119) 已登记。
+
+计划改为只读耗材对比，差异仅提醒换料。沿用原配置和虚拟打印机，修改范围限桌面端。
+
+---
 # MAINLINE-BUGFIX-001：全部现有成果提交与主线PR（2026-11-18）
 
 主线：task/mainline-bugfix → codex/team/integration，最新19400ff9ad14eddf0110ec019eccc819cfb62af0已包含PR77；本轮不重复计入已合功能。

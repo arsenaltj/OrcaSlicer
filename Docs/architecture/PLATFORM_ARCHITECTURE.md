@@ -14,6 +14,12 @@
 
 智能与高级只读页的底部操作区复用GenerationCompletionActions：横向等宽的“返回AI创作”次按钮和“返回工作台”渐变主按钮，下方显示只读原因。高级2D／3D阶段均按现有创作锁显示该操作区，不以预览是否重新就绪隐藏返回入口；恢复按钮的启用和点击仍消费Shell的现有资格及显式恢复动作，忙碌结束只更新资格，不自动解锁。未交接的普通完成态保留“重新生成／进入工作台”，只读提示不重复占用中央状态区。
 
+普通工作台通过侧栏返回 AI 创作。3D 美颜编辑和草稿自动恢复暂停，已有美颜版本沿普通资产路径打开和导入。检查详情以当前模型摘要核对问题面，并在预览中只读高亮。工作台首次加载某个资产时按 +X 为前、+Y 为右、+Z 为上显示正面。正面按钮和导航立方体共用工作台展示基准，同一模型恢复与普通切页沿用原视角。模型文件和工程姿态照常由资产与原生导入路径管理。
+
+工作台圆底座的预览和原生导入共用布局。主体保持尺寸及配色，沿 Z 轴抬升并与 3 mm 底座搭接。预览取景和模型信息读取组合外廓，原生放置使用包含底座的模型校验盘面与打印高度。准备页显式设置目标高度的工具沿用自身的调整流程。
+
+智能切片、Orca 原生切片和切片预览的正面是打印盘拉手所在方向（−Y）。工作台交接、模型库直导和打开新工程时，`RedesignShell` 以当前盘的模型、打印盘和擦拭塔的联合边界从斜前方取景。工作台新导入由原生放置事务在排盘前绕 Z 轴旋转实例 −90°，将工作台模型的 +X 正面朝向拉手。源网格与分色数据随原生导入交付，载入已有工程时沿用保存的模型摆放。普通切页使用 Plater 持有的相机朝向，切片预览按切片结果调整取景范围。
+
 加载／首帧过渡在用户导航时释放展示租约和侧栏输入，已有请求／原生导入继续以自己的身份排空；迟到结果更新业务但不跳页。输入过滤只覆盖冲突内容区。历史worker完成先按当前请求身份结算loading／busy，再调用可能启动恢复的drained回调，旧请求不能清除新占用。工作台检查的有效结果按资产／修订／取消身份接收，隐藏页面只隐藏反馈，不取消后台检查或丢弃其结果。原生Plater继续唯一拥有工程、G-code及撤销链。
 
 ## 原生修复接收与大模型成果（2026-11-17）
@@ -132,7 +138,7 @@ DFX 按用户确认定义为**诊断、日志、故障定位、性能与可靠�
 | 高级多视角创作 | `AdvancedCreationSession*` 持有桌面草稿、模型ID、选择及已验证可见版本；Application拥有当前模型的混合编辑／补图计划与依赖预算，workflow校验发布，repository持有组／current和不可变版本；Host拥有任务级回执、缓存和epoch适配 | 独立认证路由 `/v1/orcaslicer/advanced-multiview`；GPT全部参数保持原规格，YOYOClaw实时白名单、精确Qwen默认及最多三张有序参考不变。失败保留旧图／空位，由主按钮以当前模型新生成；旧未知结果保留事实，不锁新2D意图、不自动重发，3D四图／未决状态保护不变。新建立即重置，停止未提交旧视角；按操作回执兼容旧单文件，stop先于execute仍有效。执行器保持串行并投影queued；逐图缓存失败不吞终态，可见基图与服务端current分别冻结并比较。独立Job-v2及智能业务保持；两模式生成等待／结果／编辑进入Shell唯一工作台；编译／离线结果不代替真实供应商或GUI验收 |
 | 3D 后处理/人像/配色 | `GUI/AI/ModelGeneration/BeautyWorkbenchSession*`、`BeautyWorkbenchTransactionController*`、`PostGenerationWorkbench*`、`GUI/AI/ColorMatching` | 候选、当前作品、预览和历史需区分；颜色、几何与实物打印质量分别验证 |
 | 原生导入/应用 | `AI/Contracts/IModelArtifactConsumer.hpp`、`GUI/AI/Orca`、`PlaterWorkbenchImport*.ipp`、`PlaterAITransaction.ipp` | Plater/Model/Config 保有工程真值；明确应用和撤销；侧车不直接修改原生工程 |
-| 智能切片 | `AI/SmartSlicing/{Domain,Application,Ports}`、`GUI/AI/SmartSlicing` | revision 约束候选；分析、试切、正式应用与撤销分开；AI 离线保留普通 Orca |
+| 智能切片 | `AI/SmartSlicing/{Domain,Application,Ports}`、`GUI/AI/SmartSlicing` | 按工程 revision 绑定几何分析、原生试切证据和正式应用。应用及恢复由 Plater 的快照事务维护 |
 | 账号 | `Redesign/PlatformAccountService*`、AccountWorkspace、`Utils/HonorAccount/{HonorSession,HonorClient,HonorStore,HonorServices}*` | 共享会话为账号页、模型库和原生账户接口提供同一身份。凭据保留在原生安全存储，异步结果遵循账号范围与取消状态 |
 | 模型库/资产 | `resources/web/model_library`、AssetsWorkspace、LibraryWorkspaceService、`Utils/PlatformLibrary`、ModelLibraryApplication、Repository/Loader | HTML只展示；C++管理查询、个人记录与下载，登记资产仍由本地库消费；用户目录保留原件与独立编辑成果 |
 | 打印/设备 | 原生 Print/GCode、PrinterWorkspace/OrcaPrinterAdapter、DeviceManager、SendJob/PrintJob、Honor Forge/Moonraker agent、`orca_mobile_device_sdk` | Honor Forge 使用独立 agent ID，mDNS/受控子网候选通过 Moonraker 探测后进入既有 DeviceManager；UI 只选择导出、仅上传或上传并打印，传输继续由既有 Job 和 agent 执行，raw G-code 与 3MF 能力按 agent 显式声明 |
@@ -422,6 +428,16 @@ Windows x64默认启用`ORCA_GENERATION_FOREGROUND_NATIVE`；CMake模块`OrcaGen
 
 高级Host、创作页面与模型监控的异步回调只跨线程传递标准弱生命周期令牌，主线程调度后检查令牌及原任务／草稿代次再访问对象。关闭先失效令牌并清理监听器、计时器及请求，避免网络线程复制／销毁wxWeakRef时并发修改窗口追踪链；本地预览使用TaskScope取消并过滤旧结果，退出沿TaskRunner排空。
 高级受理先登记Session，再以组／任务／请求／导航代次通知Shell；图片缓存与manifest强校验使用有界后台队列，不阻塞进度页。多收据核对、YOYOClaw模型目录和失败恢复保留。高级页内第二套完整宿主、独立导入进度框和导入跳打印分支已移除。耗材匹配完成先发布解除忙碌状态，再继续导入；Shell和异步宿主受理时重读唯一资产快照，继续校验模型及检查摘要，避免旧UI忙碌投影静默拒绝。两个来源的检查／修复、美颜、保存、撤销及导入都消费当前编辑模型，导入继续通过Shell原确认／进度／工程提交／切片／预览，Plater仍持原生工程真值。实现验证及未覆盖项见[本轮测试报告](../plans/ui-redesign/2026-11-08-advanced-multiview-test-report.md)，不由源码说明推断实窗通过。
+
+### 工作台本地智能切片
+
+`PartPlate` 在真实热床轮廓和喷嘴可达区就绪后初始化自动塔位。原生 `Print` 使用导入后的有效耗材配置校验候选落点。工程保存和撤销管理塔坐标及自动或手工来源，3MF 中无可靠来源的旧坐标按固定位置恢复。选中智能档已验证的坐标用于当前正式任务，保留工程的自动来源。自定义切片可在实际塔底冲突时从正式任务补位一次。试切和正式切片都用原生塔底检查扩边、旋转、禁打区与首层占地。
+
+切片工作台内的「Orca原生切片」挂载原生全局工艺编辑。挂载的参数列表按当前分类展开，由工作台左侧栏统一滚动并定位搜索和键盘焦点。`PresetBundle` 保持自定义工艺。`PartPlateList` 持有独立智能基线，`PartPlate` 持有对应盘的智能工艺覆盖、生成层高曲线和正式采用的模式。人工对象与层设置仍由 Orca 模型管理。正式切片将对应工艺合并到任务配置，生成曲线仅投影到切片输入。原生 3MF 继续写入自定义工艺和人工设置，带版本的工作台记录恢复智能基线、应用工艺、塔位来源及曲线。 归档曲线随盘和对象关联读取，工程装载复制对象并重新分配 ID 后，盘工艺将曲线绑定到工作台实际对象。
+
+`SmartSlicingEngine` 用共享的几何特征从独立基线生成三档建议参数，卡片展示建议层高。已验证产物提供当前档的正式统计。`SmartSlicingFeatureHost` 只对选中档请求完整试切，默认综合最优。自动塔位可在试切快照内按估算底面校正一次并复做预检。生成实际塔底后若仍有位置冲突，最多用实际底面求得的固定落点补试一次。会话以档位、盘、输入和代次接受结果。相同原生工艺输入可跨档复用已验证统计。导入含多个实例的对象时，`ObjectList` 逐个通过 `PartPlateList` 登记；试切快照按当前盘成员保留实例，包含缩放和位移。试切时保留用户曲线及支撑覆盖，自动支撑推荐需要兼容现有可变层高。用户主动发起朝向比较后验证备选，确认后进入原生应用事务。云端与移动 SDK 使用三目标接口。
+
+仅修改当前盘塔的 X/Y 时，工艺凭证仍可复用，旧预估和 G-code 失效。Orca 适配层用已验证的塔底和首层占地校验新坐标。即便试切未返回，侧栏也显示当前盘的最新塔坐标。正式切片采用当前塔位和工艺，原生产物决定打印资格。失败以应用前的快照恢复工艺和塔位。预览耗材克重按原生用料统计及各耗材密度计算。 换盘时，用当前盘的有效输入、已切片档位和原生 G-code 结果 ID 恢复正式统计及已应用参数。跨档试切复用只传递试切证据。
 
 ## 开发时怎样用
 

@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -193,6 +194,33 @@ inline size_t nearest_lab_index(Color lab, const std::vector<Color>& centers)
         if (d < best) { best = d; nearest = i; }
     }
     return nearest;
+}
+
+using RetainedRows = std::array<bool, max_preview_colors>;
+
+inline void place_retained_colors(std::vector<Color>& recommended, const std::vector<Color>& previous,
+                                  RetainedRows& retained)
+{
+    std::vector<std::optional<Color>> rows(recommended.size());
+    std::vector<Color> overflow;
+    std::vector<Color> unlocked = std::move(recommended);
+    for (size_t row = 0; row < std::min(previous.size(), retained.size()); ++row) {
+        if (!retained[row]) continue;
+        auto color = std::find(unlocked.begin(), unlocked.end(), previous[row]);
+        if (color == unlocked.end()) continue;
+        unlocked.erase(color);
+        if (row < rows.size()) rows[row] = previous[row];
+        else overflow.push_back(previous[row]);
+    }
+    retained.fill(false);
+    auto next_retained = overflow.begin();
+    auto next_unlocked = unlocked.begin();
+    recommended.clear();
+    for (size_t row = 0; row < rows.size(); ++row) {
+        if (!rows[row] && next_retained != overflow.end()) rows[row] = *next_retained++;
+        retained[row] = rows[row].has_value();
+        recommended.push_back(rows[row] ? *rows[row] : *next_unlocked++);
+    }
 }
 
 // Preview only. Area weights avoid dependence on tessellation density. A bounded

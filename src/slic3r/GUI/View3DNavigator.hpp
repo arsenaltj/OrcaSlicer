@@ -8,8 +8,6 @@
 #include <functional>
 #include <wx/gdicmn.h>
 #include <optional>
-#include <algorithm>
-#include <vector>
 
 class wxMouseEvent;
 class wxWindow;
@@ -18,27 +16,19 @@ namespace Slic3r::GUI {
 
 inline constexpr float view_navigator_size = 128.f;
 
-// All rectangles use the surface parent's client coordinates. Keep the right
-// edge on the actual model canvas, even when the footer spans a beauty panel.
+// Rectangles use the surface parent's client coordinates. The footer is only
+// the area occupied by its native window. Align to its baseline in the free space.
 inline std::optional<wxRect> workbench_navigator_bounds(const wxRect& viewport,
-    const wxRect& footer, const wxRect& host, int side, const std::vector<wxRect>& tools = {})
+    const wxRect& footer, const wxRect& host, int side)
 {
     if (side <= 0 || viewport.IsEmpty() || host.IsEmpty()) return {};
     const auto usable = viewport.Intersect(host);
     if (usable.width < side || usable.height < side) return {};
-    const int right = usable.x + usable.width;
-    const int baseline = footer.IsEmpty() ? usable.y + usable.height : footer.y + footer.height;
-    wxRect candidate(right - side, baseline - side, side, side);
-    // The part below the canvas may use only the footer area on its model
-    // side. If the toolbar cannot accommodate it, keep the entire control GL-local.
-    const wxRect strip(usable.x, usable.y, usable.width,
-        std::max(usable.height, baseline - usable.y));
-    if (!host.Contains(candidate) || !strip.Contains(candidate) ||
-        (!footer.IsEmpty() && candidate.y + side > usable.y + usable.height &&
-         (footer.x > candidate.x || footer.x + footer.width < right)) ||
-        std::any_of(tools.begin(), tools.end(), [&](const auto& tool) { return tool.Intersects(candidate); }))
-        candidate = wxRect(right - side, usable.y + usable.height - side, side, side);
-    return host.Contains(candidate) ? std::optional<wxRect>(candidate) : std::nullopt;
+    const wxRect canvas_corner(usable.x + usable.width - side, usable.y + usable.height - side, side, side);
+    if (footer.IsEmpty()) return canvas_corner;
+    const wxRect aligned(canvas_corner.x, footer.y + footer.height - side, side, side);
+    if (aligned.y >= usable.y && host.Contains(aligned) && !footer.Intersects(aligned)) return aligned;
+    return canvas_corner;
 }
 
 // ImGui 1.83 polls button state once per frame. Preserve transitions when wx

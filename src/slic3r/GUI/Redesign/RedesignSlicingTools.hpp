@@ -3,7 +3,6 @@
 #include "../AI/Orca/SlicingModelPalette.hpp"
 #include "../AI/Orca/OrcaWorkspaceAdapter.hpp"
 #include "../AI/Orca/FilamentColorPack.hpp"
-#include "../AI/ModelGeneration/WorkbenchModelInspection.hpp"
 #include "../Plater.hpp"
 #include "../PartPlate.hpp"
 #include "../GUI_App.hpp"
@@ -27,7 +26,6 @@ public:
     }
     bool busy() const { return m_busy; }
     const std::vector<std::string>& palette() const { return m_palette; }
-    const WorkbenchCheckResult& check() const { return m_check; }
     const std::string& message() const { return m_message; }
     const std::vector<FilamentColorPack>& packs() const { return m_packs; }
     std::string editability_reason() {
@@ -39,9 +37,6 @@ public:
     bool editable() { return editability_reason().empty(); }
 
     void refresh() {
-        if (m_check_guard && !m_check_guard() && m_check.status != WorkbenchCheckStatus::Running) {
-            m_check = {}; m_check_guard = {};
-        }
         m_palette.clear();
         const auto physical = OrcaWorkspaceAdapter(&m_plater, {}).printable_palette();
         auto* volume = target();
@@ -58,51 +53,6 @@ public:
                 [slot](const auto& channel) { return channel.slot == size_t(slot); });
             if (found != physical.physical_channels.end()) m_palette.push_back(found->display_color);
         }
-    }
-
-    bool request_check() {
-        if (busy() || m_plater.is_background_process_slicing()) return false;
-        auto* plate = m_plater.get_partplate_list().get_curr_plate();
-        if (!plate) return false;
-        std::vector<std::shared_ptr<const TriangleMesh>> meshes;
-        const auto& objects = m_plater.model().objects;
-        for (size_t i = 0; i < objects.size(); ++i) {
-            const auto* object = objects[i]; if (!object) continue;
-            bool on_plate = false;
-            for (size_t j = 0; j < object->instances.size(); ++j)
-                on_plate |= plate->contain_instance(int(i), int(j));
-            if (on_plate) for (const auto* volume : object->volumes)
-                if (volume && volume->is_model_part()) meshes.push_back(volume->mesh_ptr());
-        }
-        if (meshes.empty()) return false;
-        m_guard = OrcaWorkspaceAdapter(&m_plater, {}).capture_topology_guard();
-        m_check_guard = m_guard;
-        m_check.status = WorkbenchCheckStatus::Running;
-        const bool accepted = submit("slicing-check", [meshes = std::move(meshes)](const Presentation::TaskContext& task) {
-            Result result; result.is_check = true; result.check.status = WorkbenchCheckStatus::Normal;
-            for (const auto& mesh : meshes) {
-                if (task.canceled()) break;
-                const auto checked = inspect_workbench_mesh(*mesh, [&task] { return task.canceled(); });
-                if (checked.status == WorkbenchCheckStatus::Failed) { result.check = checked; break; }
-                result.check.boundary_edges += checked.boundary_edges;
-                result.check.nonmanifold_edges += checked.nonmanifold_edges;
-                result.check.degenerate_faces += checked.degenerate_faces;
-                result.check.duplicate_faces += checked.duplicate_faces;
-                result.check.inconsistent_edges += checked.inconsistent_edges;
-                if (checked.status == WorkbenchCheckStatus::Invalid) result.check.status = checked.status;
-                else if (checked.status == WorkbenchCheckStatus::Attention && result.check.status == WorkbenchCheckStatus::Normal)
-                    result.check.status = checked.status;
-            }
-            const auto& c = result.check;
-            if (c.status != WorkbenchCheckStatus::Failed)
-                result.check.summary = "开放边 " + std::to_string(c.boundary_edges) + "；非流形边 " +
-                    std::to_string(c.nonmanifold_edges) + "；退化面 " + std::to_string(c.degenerate_faces) +
-                    "；重复面 " + std::to_string(c.duplicate_faces) + "；方向不一致 " +
-                    std::to_string(c.inconsistent_edges) + "。壁厚、悬垂和自交未检查。";
-            return result;
-        });
-        if (!accepted) { m_check = {}; m_check_guard = {}; }
-        return accepted;
     }
 
     bool request_colors(bool portrait, int source, size_t count,
@@ -165,8 +115,7 @@ public:
     }
 private:
     struct Result {
-        bool is_check{false}, success{false};
-        WorkbenchCheckResult check;
+        bool success{false};
         LocalPrintColorApplication::PreparedPainting painting;
         std::vector<size_t> used;
         std::string error;
@@ -214,13 +163,8 @@ private:
     }
     void finish(Result result) {
         Presentation::assert_gui_thread();
-        if (!result.is_check && m_check.status == WorkbenchCheckStatus::Running) {
-            m_check.status = WorkbenchCheckStatus::Failed; m_check.summary = result.error;
-        }
         if (!m_guard || !m_guard()) {
-            m_check = {}; m_message = "工程已变化，本次操作未应用，请重新操作。";
-        } else if (result.is_check) {
-            m_check = std::move(result.check); m_check_guard = m_guard;
+            m_message = "工程已变化，本次操作未应用，请重新操作。";
         } else if (!result.success) m_message = result.error;
         else {
             auto* volume = target();
@@ -252,7 +196,7 @@ private:
     }
     Plater& m_plater;
     std::function<void()> m_changed;
-    std::function<bool()> m_guard, m_check_guard;
+    std::function<bool()> m_guard;
     Presentation::TaskScope m_tasks;
     std::shared_ptr<const char> m_alive{std::make_shared<const char>(0)};
     bool m_busy{false}, m_stopping{false};
@@ -263,6 +207,5 @@ private:
     std::vector<std::pair<TriangleSelector::TriangleSplittingData, int>> m_history;
     std::vector<std::string> m_palette;
     std::vector<FilamentColorPack> m_packs{load_filament_color_packs()};
-    WorkbenchCheckResult m_check;
 };
 } // namespace Slic3r::GUI

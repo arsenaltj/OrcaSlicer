@@ -86,7 +86,11 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
     refresh_controls();
     const uint64_t sequence = m_sequence;
     wxWeakRef<ModelGenerationPanel> weak(this);
-    if (history_open) history_open->worker_pending = true;
+    if (history_open) {
+        history_open->worker_pending = true;
+        if (history_open->cached_scenes.empty() && !history_open->reuse_failed)
+            history_open->cached_scenes = m_model_preview->reusable_history_scenes();
+    }
     auto launch = [weak, path, palette, sequence, loaded, failed, metadata_path, local_cancel, canceled,
                    history_metadata, share_exact_vertices, may_install, history_open] {
         if (!weak || weak->m_shutdown) return;
@@ -114,8 +118,8 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
                     };
                     return prepare_model_preview_load(path, metadata_path, history_metadata, history_open,
                         stopped, share_exact_vertices);
-                }, [weak, palette, sequence, start, loaded, failed, local_cancel, canceled,
-                    may_install, history_open, task](Presentation::TaskResult<ModelPreviewLoadResult> outcome) mutable {
+                }, [weak, path, palette, sequence, start, loaded, failed, local_cancel, canceled,
+                    metadata_path, history_metadata, may_install, history_open, task](Presentation::TaskResult<ModelPreviewLoadResult> outcome) mutable {
                     if (!weak || weak->m_shutdown) return;
                     if (history_open && !history_open->worker_pending) return;
                     auto* self = weak.get();
@@ -193,15 +197,29 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
                         history_open->installed = true; // GL/appearance failure also needs rollback.
                         self->m_model_preview->retain_history_rollback(true);
                     }
-                    if (!self->m_model_preview->load_prepared_model(
-                        std::move(*prepared), actual_palette, triangles, dimensions, colors, error)) {
+                    const bool reused = prepared->reuse_history_scene;
+                    if (reused && !self->m_model_preview->reuse_verified_history_scene(
+                            prepared->history_scene, actual_palette, triangles, dimensions, colors)) {
+                        history_open->installed = false;
+                        history_open->reuse_failed = true;
+                        history_open->cached_scenes.clear();
+                        history_open->verified_files.reset();
+                        history_open->check.reset();
+                        history_open->entry = history_open->selection;
+                        self->load_model_preview_async(path, palette, loaded, failed, metadata_path,
+                            history_metadata, may_install, history_open);
+                        return;
+                    }
+                    if (!reused && !self->m_model_preview->load_prepared_model(
+                            std::move(*prepared), actual_palette, triangles, dimensions, colors, error)) {
                         BOOST_LOG_TRIVIAL(error) << "[ModelPreviewLoad] failed stage=gui_install"
                             << " request=" << (history_open ? history_open->generation : sequence)
                             << " reason=" << error;
                         failed(error); return;
                     }
                     BOOST_LOG_TRIVIAL(info) << "[ModelPreviewLoad] installed request="
-                        << (history_open ? history_open->generation : sequence) << " triangles=" << triangles;
+                        << (history_open ? history_open->generation : sequence) << " triangles=" << triangles
+                        << " scene_cache=" << (reused ? "hit" : "miss");
                     if (history_open) history_open->verified_files.reset();
                     loaded(triangles, dimensions, colors,
                         std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());

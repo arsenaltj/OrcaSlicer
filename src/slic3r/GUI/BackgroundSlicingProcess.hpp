@@ -111,6 +111,7 @@ public:
 	bool can_switch_print();
 	void set_current_plate(GUI::PartPlate* plate) { m_current_plate = plate; }
 	GUI::PartPlate* get_current_plate() { return m_current_plate; }
+    void set_workbench_placement_check(bool enabled) { m_workbench_placement_check = enabled; }
 	GCodeProcessorResult* get_current_gcode_result() { return m_gcode_result;}
 
 	// The following wxCommandEvent will be sent to the UI thread / Plater window, when the slicing is finished
@@ -294,6 +295,7 @@ private:
 
 	//BBS: partplate related
 	GUI::PartPlate* m_current_plate;
+    bool m_workbench_placement_check{false};
 	PrinterTechnology m_printer_tech = ptUnknown;
 	bool m_internal_cancelled = false;
 
