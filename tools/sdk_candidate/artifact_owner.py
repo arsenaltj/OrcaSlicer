@@ -12,6 +12,7 @@ SUPPORT = {
     'build_resources.py': 'db0b53eb89facac3f6551dfb0b2a8e141f13089ed00b2c040a76aac8ad637575',
     'qa_owner_safety.py': '7d79b97dd704949aa4b9869072b7408c9f9b3d9ac0c44536cdf3aa93cfe0fca6',
 }
+TRACE_CONTEXT = None
 
 
 def admit_cancel(path):
@@ -25,13 +26,19 @@ def runtime():
     import ctypes as C
 
     class ImageAPI(Win64API):
+        def __init__(self):
+            super().__init__()
+            from api_context import instrument
+            assert TRACE_CONTEXT is not None, 'missing artifact API context'
+            instrument(self, TRACE_CONTEXT)
         def image(self, handle):
             fn = self.k.QueryFullProcessImageNameW
             fn.argtypes = [H, U32, C.c_wchar_p, C.POINTER(U32)]
             fn.restype = C.c_int
             size = U32(32768)
             buf = C.create_unicode_buffer(size.value)
-            self.ok(fn(handle, 0, buf, C.byref(size)))
+            value = TRACE_CONTEXT.call('QueryFullProcessImageNameW',lambda:fn(handle, 0, buf, C.byref(size)))
+            self.ok(value)
             return buf.value
 
     class ArtifactDomain(KernelDomain):
@@ -64,6 +71,7 @@ def runtime():
 
 def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=7200,
               mode='artifact', *, permitted_commands, permitted_images):
+    global TRACE_CONTEXT
     assert mode == 'artifact', 'artifact protocol only'
     assert argv in permitted_commands, 'command outside exact artifact contract'
     admit_cancel(cancel_file)
@@ -71,6 +79,10 @@ def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=720
     assert os.path.normcase(str(Path(argv[0]).resolve())) in images, 'unbound root image'
     Domain, sample, heavy, identity, now, attempt, remember, wait = runtime()
     errors = record.setdefault('monitorErrors', [])
+    import ctypes
+    from api_context import Context
+    TRACE_CONTEXT = Context(record, save, errors, argv, lambda:getattr(ctypes,'get_last_error',lambda:None)(),
+                            lambda value:getattr(ctypes,'set_last_error',lambda v:None)(value) if value is not None else None)
     domain = child = None
     code = None
     failure = None
@@ -84,6 +96,8 @@ def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=720
             raw = sample()
             record['rawSamples'].append(raw)
             persist()  # preserve raw nullable metadata before any classification
+            TRACE_CONTEXT.rows(raw['processes'],len(record['rawSamples'])-1)
+            TRACE_CONTEXT.phase = 'observe'
             names = {Path(x).name.lower() for x in images}
             owned = domain.observe(raw['processes'], lambda p: heavy(p) or p['Name'].lower() in names)
             bad = [p for p in raw['processes'] if
@@ -98,6 +112,7 @@ def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=720
             failure = failure or 'monitor_error'
         ready = False
         try:
+            TRACE_CONTEXT.phase = 'drain'
             ready = domain.settled()
         except BaseException as exc:
             remember(errors, 'kernel_drain', exc)
@@ -108,7 +123,10 @@ def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=720
         try:
             admit_cancel(cancel_file)
             domain = Domain()
+            TRACE_CONTEXT.phase = 'launch'
             child = domain.launch(argv, os.getcwd(), dict(os.environ), log, log)
+            TRACE_CONTEXT.call('domain.launch_receipt',lambda:dict(pid=child.pid,handle=str(child.h) if hasattr(child,'h') else None),
+                               targetPID=child.pid,handle=str(child.h) if hasattr(child,'h') else None,handleRole='root')
             domain.prove_root()
             record['pid'] = child.pid
             while child.poll() is None:
@@ -122,7 +140,11 @@ def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=720
                 if child is None:
                     while True:
                         try:
-                            child = domain.recover_root()
+                            TRACE_CONTEXT.phase = 'recover'
+                            child = TRACE_CONTEXT.call('domain.recover_root',domain.recover_root)
+                            if child is not None:
+                                TRACE_CONTEXT.call('domain.recovered_receipt',lambda:dict(pid=child.pid),targetPID=child.pid,
+                                    handle=str(child.h) if hasattr(child,'h') else None,handleRole='root')
                             break
                         except BaseException as exc:
                             remember(errors, 'recover_root', exc)
@@ -133,6 +155,7 @@ def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=720
                     record['kernelEvidence'] = domain.snapshot()
                     record['ownClosure'] = 'retained_handles_signaled_and_job_double_zero'
                     persist()
+                    TRACE_CONTEXT.phase = 'close'
                     attempt(errors, 'close_owned_handles', domain.close)
                 else:
                     attempt(errors, 'unused_job_close', lambda: domain.api.close(domain.job))
@@ -141,6 +164,7 @@ def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=720
     if errors:
         record.update(state='failed', cancelReason=failure or 'monitor_error')
         persist()
+    TRACE_CONTEXT = None
     assert code == 0 and failure is None and not errors, 'artifact first failure; no next command'
 
 

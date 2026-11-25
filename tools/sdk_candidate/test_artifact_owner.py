@@ -89,6 +89,7 @@ class ArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'missing local'):
                 contracts.owner_protocol(plan,adapter)
             plan['toolFiles']=[adapter.identity(o.__file__)]
+            plan['toolFiles'].append(adapter.identity(Path(o.__file__).with_name('api_context.py')))
             with self.assertRaisesRegex(ValueError,'API-v8 transitive'):
                 contracts.owner_protocol(plan,adapter)
 

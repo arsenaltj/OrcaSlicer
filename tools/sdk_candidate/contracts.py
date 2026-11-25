@@ -209,6 +209,9 @@ def owner_protocol(plan, api):
     local = tools.get(str(Path(artifact_owner.__file__).resolve()))
     need(local is not None, 'missing local artifact owner pin')
     api.verify(local)
+    context_pin=tools.get(str(Path(artifact_owner.__file__).with_name('api_context.py').resolve()))
+    need(context_pin is not None, 'artifact API context import pin missing')
+    api.verify(context_pin)
     for name, digest in artifact_owner.SUPPORT.items():
         ref = tools.get(str((Path(plan['ownerDirectory']) / name).resolve()))
         need(ref is not None and ref['sha256'] == digest, 'API-v8 transitive owner identity differs: ' + name)
