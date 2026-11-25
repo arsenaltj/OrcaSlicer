@@ -14,10 +14,13 @@ E=Path('D:/Codex/artifacts/task-20261125-b5f-sdk-package-tooling/evidence')
 
 class RealMetadataFix3(unittest.TestCase):
     def metadata(self):
-        seal=a.small_json(E/'se-real-metadata-reachability-v1/seal.json')
+        sealpath=E/'se-real-metadata-reachability-v1/seal.json'
+        self.assertEqual(a.identity(sealpath)['sha256'],'3c65857f77a80b12e69c2d46cd6ba822316eb3683fd381657fd79293cd6e607d')
+        seal=a.small_json(sealpath)
         refs=seal['files']
         lookup={str(Path(r['path']).resolve()):r for r in refs}
-        field=a.small_json(E/'se-real-binding-fieldmap.json')
+        fieldpath=E/'se-real-binding-fieldmap.json'
+        a.verify(lookup[str(fieldpath.resolve())]);field=a.small_json(fieldpath)
         plan=next(r for r in refs if Path(r['path']).name=='clean-producer-plan.json')
         return refs,lookup,field,plan
 
@@ -27,6 +30,7 @@ class RealMetadataFix3(unittest.TestCase):
             with self.subTest(stage=stage):
                 producer=dict(rawSource=field['stages'][stage]['rawSource'],fullIndex={'files':[]},originalRecords={})
                 cache=Path(field['stages'][stage]['cacheCandidatePath'])
+                a.verify(lookup[str(cache.resolve())])
                 entry=dict(role='cache',stage=stage,producerBuildRoot=str(cache.parent),
                            current=a.identity(cache),basis=dict(normalPlan=plan))
                 c.basis(entry,producer,stage,[],[plan])
