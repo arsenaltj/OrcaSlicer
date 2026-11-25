@@ -1,8 +1,11 @@
 #pragma once
 
+#include "slic3r/GUI/AI/Model/ModelFilePath.hpp"
+
 #include "slic3r/GUI/AI/Model/BeautyMetadata.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/Model/SurfaceSelectionState.hpp"
+#include "WorkbenchRepairStaging.hpp"
 #include "libslic3r/AABBTreeIndirect.hpp"
 #include "libslic3r/Utils.hpp"
 
@@ -82,14 +85,14 @@ inline bool safe_library_file(const boost::filesystem::path& root,
         std::any_of(normalized.begin(), normalized.end(), [](const auto& part) { return part == ".."; }))
         return false;
     boost::system::error_code error;
-    const auto canonical_root = boost::filesystem::canonical(root, error);
+    const auto canonical_root = AI::canonical_model_path(root, error);
     if (error) return false;
     auto candidate = canonical_root;
     for (const auto& part : normalized) {
         candidate /= part;
-        if (boost::filesystem::is_symlink(candidate, error) || error) return false;
+        if (boost::filesystem::is_symlink(AI::model_io_path(candidate), error) || error) return false;
     }
-    resolved = boost::filesystem::canonical(candidate, error);
+    resolved = AI::canonical_model_path(candidate, error);
     if (error) return false;
     const auto within = resolved.lexically_relative(canonical_root);
     return !within.empty() && !within.is_absolute() && *within.begin() != "..";
@@ -98,10 +101,10 @@ inline bool safe_library_file(const boost::filesystem::path& root,
 inline nlohmann::json read_record(const boost::filesystem::path& path)
 {
     boost::system::error_code error;
-    const auto bytes = boost::filesystem::file_size(path, error);
-    if (error || bytes == 0 || bytes > 128ULL * 1024 * 1024 || boost::filesystem::is_symlink(path, error))
+    const auto bytes = boost::filesystem::file_size(AI::model_io_path(path), error);
+    if (error || bytes == 0 || bytes > 128ULL * 1024 * 1024 || boost::filesystem::is_symlink(AI::model_io_path(path), error))
         return {};
-    boost::filesystem::ifstream input(path, std::ios::binary);
+    boost::filesystem::ifstream input(AI::model_io_path(path), std::ios::binary);
     return input ? nlohmann::json::parse(input, nullptr, false) : nlohmann::json();
 }
 
@@ -363,7 +366,7 @@ inline bool missing_appearance_companion(const nlohmann::json& value,
             !safe_library_file(root, boost::filesystem::path(value.at("origin_model").get<std::string>()), origin) ||
             AI::model_artifact_sha256(origin) != value.at("origin_sha256")) return false;
         const auto carrier = parent / relative.filename();
-        return !boost::filesystem::exists(carrier) && !boost::filesystem::is_symlink(carrier);
+        return !boost::filesystem::exists(AI::model_io_path(carrier)) && !boost::filesystem::is_symlink(AI::model_io_path(carrier));
     } catch (const std::exception&) { return false; }
 }
 
@@ -407,7 +410,8 @@ inline bool prepare_original_appearance_for_candidate(
     OriginalAppearanceReference& result,
     std::string& error,
     const std::function<bool()>& canceled = {},
-    bool force_candidate_geometry = false)
+    bool force_candidate_geometry = false,
+    WorkbenchRepairStaging* repair_staging = nullptr)
 {
     using namespace original_appearance_detail;
     result = {};
@@ -416,8 +420,8 @@ inline bool prepare_original_appearance_for_candidate(
     bool carrier_published = false;
     const auto cleanup = [&] {
         boost::system::error_code ignored;
-        if (!temporary.empty()) boost::filesystem::remove(temporary, ignored);
-        if (carrier_published) boost::filesystem::remove(carrier_destination, ignored);
+        if (!temporary.empty()) boost::filesystem::remove(AI::model_io_path(temporary), ignored);
+        if (carrier_published) boost::filesystem::remove(AI::model_io_path(carrier_destination), ignored);
     };
     try {
         if (stopped(canceled)) throw std::runtime_error("Original appearance mapping canceled.");
@@ -460,38 +464,41 @@ inline bool prepare_original_appearance_for_candidate(
             return false;
         if (AI::model_artifact_sha256(current_model) != expected_current_sha256)
             throw std::runtime_error("当前模型在原始配色映射期间发生变化。");
-        if (boost::filesystem::is_symlink(carrier_destination))
+        if (boost::filesystem::is_symlink(AI::model_io_path(carrier_destination)))
             throw std::runtime_error("原始配色伴随文件路径无效。");
         boost::system::error_code path_error;
-        const auto canonical_root = boost::filesystem::canonical(root, path_error);
-        const auto canonical_parent = boost::filesystem::canonical(carrier_destination.parent_path(), path_error);
+        const auto canonical_root = AI::canonical_model_path(root, path_error);
+        if (path_error) throw std::runtime_error("模型目录不可用。");
+        const auto canonical_parent = AI::canonical_model_path(carrier_destination.parent_path(), path_error);
         if (path_error) throw std::runtime_error("原始配色伴随文件目录不可用。");
         const auto relative_parent = canonical_parent.lexically_relative(canonical_root);
         if (relative_parent.empty() || relative_parent.is_absolute() || *relative_parent.begin() == "..")
             throw std::runtime_error("原始配色伴随文件必须位于模型目录中。");
-        temporary = carrier_destination.parent_path() /
-            boost::filesystem::unique_path(".source-appearance-%%%%-%%%%.obj");
+        temporary = repair_staging ? repair_staging->appearance() :
+            carrier_destination.parent_path() / boost::filesystem::unique_path(".source-appearance-%%%%-%%%%.obj");
         if (!AI::write_model_artifact(temporary, candidate_mesh.its, colors, error)) {
             cleanup();
             return false;
         }
         if (stopped(canceled)) throw std::runtime_error("Original appearance mapping canceled.");
-        // Legacy restoration can encounter the same companion on a later open.
-        // Reuse only identical bytes; never replace an existing asset.
-        if (boost::filesystem::exists(carrier_destination)) {
+        if (repair_staging) {
+            repair_staging->publish(temporary, carrier_destination, AI::model_artifact_sha256(temporary), canceled);
+            temporary.clear();
+        } else if (boost::filesystem::exists(AI::model_io_path(carrier_destination))) {
+            // Legacy restoration reuses only an identical companion.
             if (AI::model_artifact_sha256(temporary) != AI::model_artifact_sha256(carrier_destination))
                 throw std::runtime_error("原始配色伴随文件已存在且内容不同，未覆盖现有资产。");
-            boost::filesystem::remove(temporary);
+            boost::filesystem::remove(AI::model_io_path(temporary));
             temporary.clear();
         } else {
-            boost::filesystem::rename(temporary, carrier_destination);
+            boost::filesystem::rename(AI::model_io_path(temporary), AI::model_io_path(carrier_destination));
             temporary.clear();
             carrier_published = true;
         }
         const auto carrier_hash = AI::model_artifact_sha256(carrier_destination);
         if (!AI::SurfaceSelectionPersistence::detail::valid_fingerprint(carrier_hash))
             throw std::runtime_error("原始配色伴随文件校验失败。");
-        result = {boost::filesystem::canonical(carrier_destination), carrier_hash, topology,
+        result = {AI::canonical_model_path(carrier_destination), carrier_hash, topology,
                   resolved.reference.origin_model, resolved.reference.origin_sha256};
         carrier_published = false;
         return true;
@@ -544,7 +551,7 @@ inline bool resolve_original_appearance(const boost::filesystem::path& current_m
     nlohmann::json metadata = current_metadata;
     std::set<std::string> visited;
     boost::system::error_code current_error;
-    const auto canonical_current = boost::filesystem::canonical(current_model, current_error);
+    const auto canonical_current = AI::canonical_model_path(current_model, current_error);
     if (current_error) {
         error = "无法确认当前模型的历史身份。";
         return false;
@@ -646,8 +653,8 @@ inline boost::filesystem::path original_appearance_library_root(
         return metadata.parent_path().parent_path();
     const boost::filesystem::path configured = boost::filesystem::path(Slic3r::data_dir()) / "models";
     boost::system::error_code error;
-    const auto root = boost::filesystem::canonical(configured, error);
-    const auto file = boost::filesystem::canonical(model, error);
+    const auto root = AI::canonical_model_path(configured, error);
+    const auto file = AI::canonical_model_path(model, error);
     if (!error) {
         const auto relative = file.lexically_relative(root);
         if (!relative.empty() && !relative.is_absolute() && *relative.begin() != "..") return root;

@@ -3,7 +3,8 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 let generation = 0,
-  cleanup = () => {};
+  cleanup = () => {},
+  setView = () => {};
 function dispose(root) {
   root?.traverse((o) => {
     o.geometry?.dispose();
@@ -55,7 +56,9 @@ window.libraryViewer = {
     ++generation;
     cleanup();
     cleanup = () => {};
+    setView = () => {};
   },
+  view(mode) { setView(mode); },
   async open(host, bytes) {
     this.close();
     const token = generation;
@@ -67,10 +70,12 @@ window.libraryViewer = {
         dispose(root);
         return;
       }
+      const materials = new Map();
       let vertices = 0,
         triangles = 0;
       root.traverse((o) => {
         if (o.isMesh) {
+          materials.set(o, o.material);
           vertices += o.geometry.attributes.position?.count || 0;
           triangles +=
             (o.geometry.index?.count ||
@@ -88,10 +93,10 @@ window.libraryViewer = {
       root.position.sub(box.getCenter(new THREE.Vector3()));
       const renderer = new THREE.WebGLRenderer({
         antialias: true,
-        alpha: false,
+        alpha: true,
       });
       renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-      renderer.setClearColor("#28292d");
+      renderer.setClearColor("#28292d", 0);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.domElement.setAttribute("aria-label", "交互式3D模型");
       renderer.domElement.tabIndex = 0;
@@ -101,11 +106,31 @@ window.libraryViewer = {
       const light = new THREE.DirectionalLight(0xffffff, 3);
       light.position.set(size, size, size);
       scene.add(light);
+      const grid = new THREE.GridHelper(size * 2, 16, 0x9999a2, 0x626269);
+      grid.position.y = -box.getSize(new THREE.Vector3()).y / 2;
+      grid.visible = false;
+      scene.add(grid);
+      const clay = new THREE.MeshStandardMaterial({ color: 0xd4d4d9, roughness: .8 });
+      const wire = new THREE.MeshBasicMaterial({ color: 0xd4d4d9, wireframe: true });
       const camera = new THREE.PerspectiveCamera(40, 1, size / 100, size * 100);
       camera.position.set(size, size * 0.65, size);
       const controls = new OrbitControls(camera, renderer.domElement);
       controls.enableDamping = true;
       controls.target.set(0, 0, 0);
+      controls.saveState();
+      setView = (mode) => {
+        if (mode === "original" || mode === "clay" || mode === "wire") {
+          for (const [mesh, original] of materials)
+            mesh.material = mode === "original" ? original : mode === "clay" ? clay : wire;
+        } else if (mode === "grid") grid.visible = !grid.visible;
+        else if (mode === "light") light.intensity = light.intensity === 3 ? .5 : 3;
+        else if (mode === "reset") controls.reset();
+        else if (mode === "front") {
+          const distance = camera.position.distanceTo(controls.target);
+          camera.position.copy(controls.target).add(new THREE.Vector3(0, 0, distance));
+          controls.update();
+        }
+      };
       const resize = () => {
         const w = host.clientWidth,
           h = host.clientHeight;
@@ -126,11 +151,16 @@ window.libraryViewer = {
         observer.disconnect();
         controls.dispose();
         renderer.setAnimationLoop(null);
+        for (const [mesh, original] of materials) mesh.material = original;
         dispose(root);
+        dispose(grid);
+        clay.dispose();
+        wire.dispose();
         renderer.dispose();
         renderer.forceContextLoss();
         host.replaceChildren();
       };
+      return { vertices, triangles };
     } catch (error) {
       dispose(root);
       throw error;

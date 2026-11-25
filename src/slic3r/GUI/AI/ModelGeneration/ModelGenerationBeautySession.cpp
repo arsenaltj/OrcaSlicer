@@ -259,7 +259,7 @@ void ModelGenerationPanel::refresh_model_finishing()
         // local preview, never the selected file or its history record.
         boost::system::error_code ignored;
         if (m_displayed_model_path != m_finishing_candidate)
-            boost::filesystem::remove(m_finishing_candidate, ignored);
+            boost::filesystem::remove(AI::model_io_path(m_finishing_candidate), ignored);
         clear_unaccepted_beauty_candidates();
         m_beauty_session->clear_draft();
         m_beauty_reoptimization_before.reset();
@@ -378,7 +378,8 @@ void ModelGenerationPanel::refresh_model_finishing()
         const bool generation_result = m_ui_model_generation_context && !m_finishing_workbench;
         m_status->SetLabel(generation_result && !m_workbench_check_running && !m_finishing_running
             ? _L("3D 模型已生成，可打开工作台查看与检查。")
-            : m_workbench_check_running ? _L("正在检查与安全修复，可旋转、缩放或取消。")
+            : m_native_workbench_partition_running ? wxString::FromUTF8(m_workbench_operation_notice)
+            : m_workbench_check_running ? wxString::FromUTF8(workbench_check_status_line(m_workbench_check_result))
             : m_finishing_running ? _L("正在本地处理，可切换页面或取消。")
             : transaction_busy ? _L("正在处理人像区域，可旋转、缩放、查看日志或取消。")
             : _L("美颜预览就绪，接受新版本后可导入。"));
@@ -544,6 +545,7 @@ BeautyCandidateSnapshot ModelGenerationPanel::capture_beauty_candidate() const
     snapshot.options = m_finishing_options;
     snapshot.selection = m_model_preview->selection_state();
     snapshot.color_trial = m_model_preview->color_trial_state();
+    snapshot.initial_color_trial = m_model_preview->initial_color_trial_snapshot();
     snapshot.manual_color_dirty = m_beauty_manual_color_dirty;
     snapshot.dirty = m_beauty_controls && m_beauty_controls->has_changes();
     snapshot.face_overrides = m_model_preview->face_color_overrides();
@@ -754,6 +756,7 @@ bool ModelGenerationPanel::restore_beauty_candidate_prepared(const BeautyCandida
     if (!m_model_preview->restore_native_portrait_partition(snapshot.native_portrait_partition) ||
         !m_model_preview->restore_portrait_color_blocks(snapshot.color_blocks))
         return false;
+    m_model_preview->restore_initial_color_trial_snapshot(snapshot.initial_color_trial);
     m_model_preview->restore_printer_restore_snapshot(snapshot.printer_restore);
     m_beauty_matched_colors = snapshot.matched_colors;
     m_beauty_color_gate_configuration_signature = snapshot.matched_configuration_signature;
@@ -808,7 +811,10 @@ BeautyWorkbenchSession<BeautyCandidateSnapshot>::Ports ModelGenerationPanel::bea
 {
     return {
         {}, {}, // GUI consumers restore only through the strict asynchronous port.
-        [](const boost::filesystem::path& path) { boost::system::error_code ignored; boost::filesystem::remove(path, ignored); },
+        [](const boost::filesystem::path& path) {
+            boost::system::error_code ignored;
+            boost::filesystem::remove(AI::model_io_path(path), ignored);
+        },
         [this](const BeautyCandidateSnapshot& snapshot, std::function<void(bool)> complete) {
             restore_beauty_candidate_async(snapshot, std::move(complete));
         }};

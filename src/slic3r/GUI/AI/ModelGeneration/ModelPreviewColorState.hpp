@@ -13,4 +13,12 @@ struct ModelPreviewColorState : AI::ColorTrialPersistence::State {
     // importer. It is intentionally separate from the serialized trial state.
     std::vector<GUI::PreviewPalette::Color> manual_colors;
 };
+
+struct ModelPreviewInitialColorState {
+    std::string geometry_id;
+    ModelPreviewColorState trial;
+    PreviewPalette::AutomaticColorBasis basis;
+    std::vector<PreviewPalette::Color> suggestions;
+    bool default_ai_palette {false};
+};
 }

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "slic3r/GUI/AI/Model/ModelFilePath.hpp"
+
 #include <boost/filesystem/fstream.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/path.hpp>
@@ -46,7 +48,7 @@ public:
             return false;
         }, false);
         if (!record.is_object()) throw std::runtime_error("Unreadable history metadata");
-        const auto root = library_root.empty() ? library_root : boost::filesystem::canonical(library_root);
+        const auto root = library_root.empty() ? library_root : AI::canonical_model_path(library_root);
         const auto normalize = [&](const std::string& text) {
             if (text.find('\0') != std::string::npos) throw std::runtime_error("Invalid model dependency path");
             return dependency_text(dependency_path(boost::filesystem::path(std::filesystem::u8path(text).native()), root));
@@ -98,7 +100,7 @@ public:
         if (relative_model.empty() || relative_model.is_absolute() || relative_model.has_root_path() ||
             std::any_of(relative_model.begin(), relative_model.end(), [](const auto& part) { return part == ".."; }))
             throw std::runtime_error("Invalid deletion target path");
-        const auto root = library_root.empty() ? library_root : boost::filesystem::canonical(library_root);
+        const auto root = library_root.empty() ? library_root : AI::canonical_model_path(library_root);
         const auto target = dependency_path(relative_model, root);
         return dependency_matches(model_dependencies(input, owning_model, root), target, root);
     }
@@ -118,14 +120,14 @@ public:
     {
         DeletionPreflight result;
         try {
-            const auto root = boost::filesystem::canonical(library_root);
+            const auto root = AI::canonical_model_path(library_root);
             const auto record = root / dependency_path(metadata_path, root);
             const auto target = model.empty() ? model : dependency_path(model, root);
             const auto carrier = appearance_carrier.empty() ? appearance_carrier : dependency_path(appearance_carrier, root);
             auto draft = record;
             draft += ".draft";
             bool referenced = false;
-            for (boost::filesystem::directory_iterator it(record.parent_path()), end; it != end; ++it) {
+            for (boost::filesystem::directory_iterator it(AI::model_io_path(record.parent_path())), end; it != end; ++it) {
                 if (canceled && canceled()) return result;
                 const auto& path = it->path();
                 if ((path.extension() != ".json" && path.extension() != ".draft") ||
@@ -139,13 +141,13 @@ public:
                     auto owner_record = path;
                     owner_record.replace_extension();
                     dependency_path(owner_record, root);
-                    boost::filesystem::ifstream owner_input(owner_record);
+                    boost::filesystem::ifstream owner_input(AI::model_io_path(owner_record));
                     const auto owner_metadata = parse(owner_input);
                     if (!owner_metadata.contains("model_path") || !owner_metadata["model_path"].is_string())
                         throw std::runtime_error("Unable to identify beauty draft owner");
                     owner = boost::filesystem::path(std::filesystem::u8path(owner_metadata["model_path"].get<std::string>()).native());
                 }
-                boost::filesystem::ifstream input(path);
+                boost::filesystem::ifstream input(AI::model_io_path(path));
                 if (!input) throw std::runtime_error("Unable to inspect model dependency");
                 const auto dependencies = model_dependencies(input, owner, root);
                 result.protected_models.insert(dependencies.begin(), dependencies.end());
@@ -165,7 +167,7 @@ public:
     {
         if (check.status == DeletionStatus::Uncertain) return true;
         try {
-            const auto root = boost::filesystem::canonical(library_root);
+            const auto root = AI::canonical_model_path(library_root);
             const auto target = dependency_path(candidate, root);
             if (dependency_matches(check.protected_models, target, root)) return true;
             if (subtree) for (const auto& text : check.protected_models) {
@@ -197,14 +199,14 @@ public:
             std::any_of(relative.begin(), relative.end(), [](const auto& part) { return part == ".."; }))
             return std::nullopt;
         boost::system::error_code error;
-        const auto canonical_root = boost::filesystem::canonical(root, error);
+        const auto canonical_root = AI::canonical_model_path(root, error);
         if (error) return std::nullopt;
         auto candidate = canonical_root;
         for (const auto& part : relative.lexically_normal()) {
             candidate /= part;
-            if (boost::filesystem::is_symlink(candidate, error) || error) return std::nullopt;
+            if (boost::filesystem::is_symlink(AI::model_io_path(candidate), error) || error) return std::nullopt;
         }
-        const auto resolved = boost::filesystem::canonical(candidate, error);
+        const auto resolved = AI::canonical_model_path(candidate, error);
         if (error) return std::nullopt;
         const auto within = resolved.lexically_relative(canonical_root);
         if (within.empty() || within.is_absolute() || *within.begin() == "..") return std::nullopt;
@@ -261,7 +263,7 @@ public:
             m_entries[key] = cached->second;
             return cached->second.summary;
         }
-        boost::filesystem::ifstream input(path, std::ios::binary);
+        boost::filesystem::ifstream input(AI::model_io_path(path), std::ios::binary);
         auto summary = input ? parse(input) : nlohmann::json();
         Stamp after;
         // Do not cache an incomplete snapshot while another worker is saving.
@@ -322,7 +324,7 @@ private:
             } else ++depth;
             candidate /= part;
             boost::system::error_code error;
-            const auto status = boost::filesystem::symlink_status(candidate, error);
+            const auto status = boost::filesystem::symlink_status(AI::model_io_path(candidate), error);
             if ((error && error != boost::system::errc::no_such_file_or_directory) ||
                 boost::filesystem::is_symlink(status))
                 throw std::runtime_error("Unable to identify model dependency safely");
@@ -373,7 +375,7 @@ private:
         if (m_cache_loaded && cache_path==m_cache_path) return;
         if (m_cache_loaded && m_persistent_dirty) persist();
         m_cache_loaded=true;m_cache_path=cache_path;m_persistent.clear();m_persistent_dirty=false;
-        boost::filesystem::ifstream input(cache_path,std::ios::binary);
+        boost::filesystem::ifstream input(AI::model_io_path(cache_path),std::ios::binary);
         if(!input)return;
         try {
             const auto root=nlohmann::json::parse(input,nullptr,false);
@@ -397,18 +399,18 @@ private:
                     {"size",item.second.stamp.size},{"summary",item.second.summary}};
             }
             boost::system::error_code error;
-            boost::filesystem::create_directories(m_cache_path.parent_path(),error);
+            boost::filesystem::create_directories(AI::model_io_path(m_cache_path.parent_path()),error);
             const auto temporary=m_cache_path.parent_path()/boost::filesystem::unique_path("history-summary-%%%%-%%%%.tmp");
-            boost::filesystem::ofstream output(temporary,std::ios::binary);output<<root.dump();output.close();
-            if(!output) { boost::filesystem::remove(temporary,error); return; }
-            boost::filesystem::remove(m_cache_path,error);
-            boost::filesystem::rename(temporary,m_cache_path,error);
-            if(!error)m_persistent_dirty=false; else boost::filesystem::remove(temporary,error);
+            boost::filesystem::ofstream output(AI::model_io_path(temporary),std::ios::binary);output<<root.dump();output.close();
+            if(!output) { boost::filesystem::remove(AI::model_io_path(temporary),error); return; }
+            boost::filesystem::remove(AI::model_io_path(m_cache_path),error);
+            boost::filesystem::rename(AI::model_io_path(temporary),AI::model_io_path(m_cache_path),error);
+            if(!error)m_persistent_dirty=false; else boost::filesystem::remove(AI::model_io_path(temporary),error);
         } catch (...) {}
     }
     static bool stamp(const boost::filesystem::path& path, Stamp& result)
     {
-        const std::filesystem::path native(path.native());
+        const std::filesystem::path native(AI::model_io_path(path).native());
         std::error_code error;
         result.modified = std::filesystem::last_write_time(native, error);
         if (error) return false;

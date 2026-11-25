@@ -67,6 +67,8 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
     // Refreshing controls can destroy the history card that supplied these arguments.
     // Own the inputs before refreshing or dispatching the worker.
     if (m_shutdown || m_preview_loading) return;
+    if (path != m_displayed_model_path)
+        m_model_preview->close_workbench_palette_details();
     m_model_preview->set_library_thumbnail_root(generated_models_root());
     const auto* local=local_model_import_state(m_library_import);
     const auto local_cancel=local && local->parsing ? local->cancel : nullptr;

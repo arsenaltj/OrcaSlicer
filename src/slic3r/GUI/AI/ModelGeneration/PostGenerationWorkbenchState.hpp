@@ -6,8 +6,6 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
-#include <iomanip>
-#include <sstream>
 #include <string>
 #include <vector>
 #include <nlohmann/json.hpp>
@@ -16,6 +14,7 @@ namespace Slic3r::GUI {
 
 enum class WorkbenchCheckStatus { NotRun, Running, Normal, Attention, Invalid, Failed };
 enum class WorkbenchCheckPhase { Idle, Inspecting, Repairing, Rechecking };
+enum class WorkbenchCheckIssue { None, Canceled, SourceChanged, RepairFailed, RecheckFailed, SaveFailed, PreviewFailed, InsufficientResources };
 enum class RepairCandidateStatus { None, Generating, Ready, Accepted, Rejected, Failed };
 enum class WorkbenchFloatingCardMode { None, ModelCheck, HonorSuiteSemantic };
 enum class WorkbenchCheckPurpose { GeneralImport, PortraitSourceRisk, PortraitPostColorReadOnly, SavedModelReadOnly };
@@ -31,6 +30,7 @@ struct WorkbenchCheckResult {
     size_t boundary_edges {0};
     size_t nonmanifold_edges {0};
     WorkbenchCheckPhase phase {WorkbenchCheckPhase::Idle};
+    WorkbenchCheckIssue issue {WorkbenchCheckIssue::None};
     std::string repair_reason;
     size_t removed_faces {0};
     size_t reversed_faces {0};
@@ -143,30 +143,20 @@ inline bool workbench_check_card_should_show(bool workbench_open, bool workbench
                                              const WorkbenchCheckResult& result)
 {
     if (!workbench_open || !workbench_presented) return false;
-    // Portrait checks are internal gates. Their terminal result is represented
-    // in the sidebar and flow ledger, never as the generic import/repair modal.
-    if (!check_running && !automatic_repair_saving &&
-        result.purpose != WorkbenchCheckPurpose::GeneralImport)
-        return false;
-    // Failed/invalid general checks remain available in the inline status and
-    // details view. A terminal failure card looks like it stopped the strict
-    // native repair even when that separate operation is still progressing.
-    if (!check_running && !automatic_repair_saving &&
-        (result.status == WorkbenchCheckStatus::Invalid ||
-         result.status == WorkbenchCheckStatus::Failed))
-        return false;
-    const bool automatic = result.source == WorkbenchCheckSource::Automatic;
-    bool show = requested_visible;
     // Both entry checks and explicit checks need an immediate, cancellable
     // progress card, including the initial inspection phase.
-    if (check_running) show = true;
-    if (automatic_repair_saving) show = true;
-    if (!check_running && !automatic_repair_saving && !automatic &&
-        result.candidate_status == RepairCandidateStatus::Ready) show = false;
-    if (!check_running && !automatic_repair_saving && automatic &&
-        (result.status == WorkbenchCheckStatus::Normal || result.status == WorkbenchCheckStatus::NotRun) &&
-        result.candidate_status != RepairCandidateStatus::Ready) show = false;
-    return show;
+    if (check_running || automatic_repair_saving) return true;
+    if (!requested_visible || result.purpose == WorkbenchCheckPurpose::PortraitSourceRisk) return false;
+    if (result.source == WorkbenchCheckSource::Manual) {
+        return result.status != WorkbenchCheckStatus::NotRun && result.status != WorkbenchCheckStatus::Running &&
+            result.issue != WorkbenchCheckIssue::Canceled && result.candidate_status != RepairCandidateStatus::Ready;
+    }
+    // Automatic checks defer failed/invalid results to the sidebar so they
+    // do not interrupt the separate native repair or the history reopen.
+    return result.purpose == WorkbenchCheckPurpose::GeneralImport &&
+        result.status != WorkbenchCheckStatus::Invalid && result.status != WorkbenchCheckStatus::Failed &&
+        (result.candidate_status == RepairCandidateStatus::Ready ||
+         (result.status != WorkbenchCheckStatus::Normal && result.status != WorkbenchCheckStatus::NotRun));
 }
 
 inline WorkbenchFloatingCardMode workbench_floating_card_mode(bool workbench_open,
@@ -200,19 +190,34 @@ inline bool workbench_navigation_allowed(bool modal_blocking, bool leaves_workbe
     return !modal_blocking || !leaves_workbench;
 }
 
+inline constexpr char workbench_repair_progress[] = "高级修复进行中";
+
 inline std::string workbench_check_status_line(const WorkbenchCheckResult& check)
 {
     if (check.candidate_status == RepairCandidateStatus::Ready)
-        return "修复复检通过，正在保存……";
+        return "正在保存修复结果……";
+    switch (check.issue) {
+    case WorkbenchCheckIssue::None: break;
+    case WorkbenchCheckIssue::Canceled: return "已取消";
+    case WorkbenchCheckIssue::SourceChanged: return "检查失败";
+    case WorkbenchCheckIssue::RepairFailed:
+    case WorkbenchCheckIssue::RecheckFailed:
+    case WorkbenchCheckIssue::InsufficientResources: return "修复失败";
+    case WorkbenchCheckIssue::SaveFailed: return "保存失败";
+    case WorkbenchCheckIssue::PreviewFailed: return "预览失败";
+    }
+    if (check.candidate_status == RepairCandidateStatus::Failed)
+        return "修复失败";
     switch (check.status) {
     case WorkbenchCheckStatus::NotRun: return "模型尚未检查";
     case WorkbenchCheckStatus::Running:
         switch (check.phase) {
-        case WorkbenchCheckPhase::Repairing: return "正在修复模型……";
+        case WorkbenchCheckPhase::Repairing: return workbench_repair_progress;
         case WorkbenchCheckPhase::Rechecking: return "正在复检模型……";
         default: return "正在检查模型……";
         }
-    case WorkbenchCheckStatus::Normal: return "检查通过";
+    case WorkbenchCheckStatus::Normal:
+        return check.candidate_status == RepairCandidateStatus::Accepted ? "已修复并保存" : "检查通过";
     case WorkbenchCheckStatus::Attention:
     case WorkbenchCheckStatus::Invalid:
     case WorkbenchCheckStatus::Failed: return "检查失败";
@@ -220,51 +225,50 @@ inline std::string workbench_check_status_line(const WorkbenchCheckResult& check
     return "模型尚未检查";
 }
 
-inline std::string workbench_check_detail_text(const WorkbenchCheckResult& check)
+inline std::string workbench_check_next_step(const WorkbenchCheckResult& check)
 {
-    std::ostringstream text;
-    text << workbench_check_status_line(check);
-    if (!check.summary.empty()) text << "\n\n检查说明\n" << check.summary;
-    if (!check.repair_reason.empty()) text << "\n\n修复说明\n" << check.repair_reason;
-    if (check.after_faces || check.after_vertices) {
-        text << "\n\n修复统计\n修复前：" << check.before_faces << " 面 / " << check.before_vertices
-             << " 点\n修复后：" << check.after_faces << " 面 / " << check.after_vertices << " 点"
-             << "\n清理面：" << check.removed_faces << "\n校正面：" << check.reversed_faces;
-    } else if (check.before_faces || check.before_vertices) {
-        text << "\n\n模型统计\n当前模型：" << check.before_faces << " 面 / " << check.before_vertices << " 点";
+    switch (check.issue) {
+    case WorkbenchCheckIssue::None: break;
+    case WorkbenchCheckIssue::Canceled: return "可点击「重新检查」再试。";
+    case WorkbenchCheckIssue::SourceChanged: return "模型文件已变化，请重新打开模型。";
+    case WorkbenchCheckIssue::RepairFailed: return "未能生成可用的修复结果，请重新检查。";
+    case WorkbenchCheckIssue::RecheckFailed: return "修复结果未通过复检，请重新检查。";
+    case WorkbenchCheckIssue::SaveFailed: return "无法保存修复版本，请重新检查后再试。";
+    case WorkbenchCheckIssue::PreviewFailed: return "无法显示修复结果，请重新打开模型。";
+    case WorkbenchCheckIssue::InsufficientResources: return "设备资源不足，请关闭其他程序后再试。";
     }
-    text << "\n\n拓扑指标"
-         << "\n开放边：" << check.boundary_edges
-         << "\n边界环：" << check.boundary_loops
-         << "\n非流形边：" << check.nonmanifold_edges
-         << "\n非流形顶点：" << check.nonmanifold_vertices
-         << "\n退化面：" << check.degenerate_faces
-         << "\n重复面：" << check.duplicate_faces
-         << "\n方向不一致：" << check.inconsistent_edges
-         << "\n孤立组件：" << check.isolated_components
-         << "\n微小但非退化面：" << check.small_faces
-         << "\n自交检测：" << (check.self_intersections_checked
-             ? (check.self_intersections ? "发现自交" : "未发现自交") : "尚未完成，需先修复拓扑");
-    if (!check.boundary_loop_sizes.empty()) {
-        text << "\n边界环规模：";
-        for (size_t index = 0; index < check.boundary_loop_sizes.size(); ++index) {
-            if (index) text << "、";
-            text << check.boundary_loop_sizes[index];
-        }
-    }
-    if (!check.issue_faces.empty()) {
-        text << "\n问题面序号（从1开始，最多定位4096面）：";
-        for (size_t i = 0; i < std::min(size_t(32), check.issue_faces.size()); ++i)
-            text << (i ? "、" : "") << check.issue_faces[i] + 1;
-        if (check.issue_faces.size() > 32) text << "…";
-    }
-    if (check.appearance_mapped || !check.appearance_reason.empty() || check.appearance_confidence > 0.0) {
-        text << "\n\n外观映射\n状态：" << (check.appearance_mapped ? "已验证" : "未验证")
-             << "\n置信度：" << std::fixed << std::setprecision(0)
-             << std::clamp(check.appearance_confidence, 0.0, 1.0) * 100.0 << "%";
-        if (!check.appearance_reason.empty()) text << "\n说明：" << check.appearance_reason;
-    }
-    return text.str();
+    if (check.candidate_status == RepairCandidateStatus::Failed)
+        return "未能生成可用的修复结果，请重新检查。";
+    if (workbench_check_outcome(check) != WorkbenchCheckOutcome::Failed) return {};
+    if (check.self_intersections) return "模型表面有相交区域，请重新检查。";
+    if (check.boundary_edges) return "模型表面有未闭合区域，请重新检查。";
+    if (!check.issue_faces.empty()) return "模型表面有异常区域，请重新检查。";
+    return "无法完成模型检查，请重新打开模型后再试。";
+}
+
+struct WorkbenchCheckFaceCounts {
+    size_t current {0};
+    size_t before_repair {0};
+};
+
+inline WorkbenchCheckFaceCounts workbench_check_face_counts(const WorkbenchCheckResult& check)
+{
+    if (check.status == WorkbenchCheckStatus::Normal && check.candidate_status == RepairCandidateStatus::Accepted)
+        return {check.after_faces, check.after_faces ? check.before_faces : 0};
+    return {check.before_faces, 0};
+}
+
+inline bool workbench_check_matches_preview(const WorkbenchCheckResult& check, const std::string& preview_sha256)
+{
+    return !preview_sha256.empty() && check.model_sha256 == preview_sha256 &&
+        check.status != WorkbenchCheckStatus::NotRun && check.status != WorkbenchCheckStatus::Running &&
+        check.issue != WorkbenchCheckIssue::SourceChanged && check.issue != WorkbenchCheckIssue::Canceled &&
+        check.candidate_status != RepairCandidateStatus::Ready;
+}
+
+inline bool workbench_check_can_locate(const WorkbenchCheckResult& check, const std::string& preview_sha256)
+{
+    return workbench_check_matches_preview(check, preview_sha256) && !check.issue_faces.empty();
 }
 
 enum class WorkbenchOriginalAppearanceState { Empty, Loading, Available, Uncolored, Invalid, ModelError };

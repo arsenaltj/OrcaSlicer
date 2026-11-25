@@ -1,4 +1,6 @@
 #pragma once
+
+#include "slic3r/GUI/AI/Model/ModelFilePath.hpp"
 #include "ModelHistoryOpen.hpp"
 #include "ModelHistoryRepairIndex.hpp"
 #include "ModelLibraryRepository.hpp"
@@ -88,7 +90,7 @@ inline bool prepare_history_preview(std::shared_ptr<ModelPreview3D::PreparedMode
         ? request->repairs->candidates(original.model_path) : std::vector<ModelHistoryRepairIndex::Node>{};
     bool might_be_certified = false;
     if (!candidates.empty()) {
-        boost::filesystem::ifstream input(record_path(original), std::ios::binary);
+        boost::filesystem::ifstream input(AI::model_io_path(record_path(original)), std::ios::binary);
         const auto summary = nlohmann::json::parse(input, [](int depth, nlohmann::json::parse_event_t event,
                                                             nlohmann::json& value) {
             return event != nlohmann::json::parse_event_t::key || depth != 1 ||
@@ -127,7 +129,7 @@ inline bool prepare_history_preview(std::shared_ptr<ModelPreview3D::PreparedMode
                 const auto path = root / relative;
                 boost::system::error_code ec;
                 return !relative.empty() && ModelGenerationPresentation::path_is_inside(root, path) &&
-                    boost::filesystem::is_regular_file(path, ec) && !ec ? path : boost::filesystem::path{};
+                    boost::filesystem::is_regular_file(AI::model_io_path(path), ec) && !ec ? path : boost::filesystem::path{};
             };
             entry.reference_image_path = path_field("reference_image_path");
             entry.ai_image_path = path_field("ai_image_path");

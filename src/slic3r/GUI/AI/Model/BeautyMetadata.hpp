@@ -1,5 +1,7 @@
 #pragma once
 
+#include "slic3r/GUI/AI/Model/ModelFilePath.hpp"
+
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
 #include <nlohmann/json.hpp>
@@ -17,14 +19,14 @@ inline boost::filesystem::path beauty_metadata_path(const boost::filesystem::pat
     auto adjacent=model;adjacent.replace_extension(".json");
     if(model.filename().string().find("orcaslicer-ai-finish-")!=0)return adjacent;
     boost::system::error_code ec;
-    const auto canonical_root=boost::filesystem::canonical(library_root,ec);
+    const auto canonical_root=canonical_model_path(library_root,ec);
     if(ec)return adjacent;
-    const auto canonical_model=boost::filesystem::canonical(model,ec);
+    const auto canonical_model=canonical_model_path(model,ec);
     if(ec)return adjacent;
     const auto relative=canonical_model.lexically_relative(canonical_root);
     if(relative.empty() || relative.is_absolute() || *relative.begin()=="..")return adjacent;
     const auto history=library_root/"downloads"/adjacent.filename();
-    return boost::filesystem::is_regular_file(history,ec)?history:adjacent;
+    return boost::filesystem::is_regular_file(model_io_path(history),ec)?history:adjacent;
 }
 
 // Accept only a complete new version record. A failed publication leaves the
@@ -41,8 +43,8 @@ inline void publish_beauty_version_record(const boost::filesystem::path& history
     };
     const auto verify=[&] {
         checkpoint();
-        if(model_hash.empty() || source_hash.empty() || boost::filesystem::is_symlink(model) ||
-            boost::filesystem::is_symlink(source))
+        if(model_hash.empty() || source_hash.empty() || boost::filesystem::is_symlink(model_io_path(model)) ||
+            boost::filesystem::is_symlink(model_io_path(source)))
             throw std::runtime_error("预览或来源模型已变化，尚未保存。请返回编辑重新预览；原件和草稿保留。");
         const auto current_model_hash=model_artifact_sha256(model);
         const auto current_source_hash=model_artifact_sha256(source);
@@ -52,10 +54,10 @@ inline void publish_beauty_version_record(const boost::filesystem::path& history
             throw std::runtime_error("预览或来源模型已变化，尚未保存。请返回编辑重新预览；原件和草稿保留。");
     };
     verify();
-    if(boost::filesystem::exists(history) || boost::filesystem::is_symlink(history))
+    if(boost::filesystem::exists(model_io_path(history)) || boost::filesystem::is_symlink(model_io_path(history)))
         throw std::runtime_error("版本记录已存在，未覆盖已有资产。请返回编辑重新预览。");
     auto index_path=history;index_path.replace_extension(".history.json");
-    if(history_index && (boost::filesystem::exists(index_path) || boost::filesystem::is_symlink(index_path)))
+    if(history_index && (boost::filesystem::exists(model_io_path(index_path)) || boost::filesystem::is_symlink(model_io_path(index_path))))
         throw std::runtime_error("历史索引已存在，未覆盖已有资产。");
     std::string bytes;
     if(preencoded_workbench) {
@@ -77,15 +79,15 @@ inline void publish_beauty_version_record(const boost::filesystem::path& history
     const auto publish=[&](const boost::filesystem::path& path,const std::string& content) {
         const auto temporary=path.parent_path()/boost::filesystem::unique_path("beauty-version-%%%%-%%%%.tmp");
         try {
-            boost::filesystem::ofstream output(temporary,std::ios::binary);
+            boost::filesystem::ofstream output(model_io_path(temporary),std::ios::binary);
             output.write(content.data(),std::streamsize(content.size()));output.close();
             if(!output)throw std::runtime_error("版本记录写入失败，请检查磁盘空间或保存目录权限后重试。");
             verify();
-            boost::filesystem::create_hard_link(temporary,path);
+            boost::filesystem::create_hard_link(model_io_path(temporary),model_io_path(path));
         } catch(...) {
-            boost::system::error_code ignored;boost::filesystem::remove(temporary,ignored);throw;
+            boost::system::error_code ignored;boost::filesystem::remove(model_io_path(temporary),ignored);throw;
         }
-        boost::system::error_code ignored;boost::filesystem::remove(temporary,ignored);
+        boost::system::error_code ignored;boost::filesystem::remove(model_io_path(temporary),ignored);
     };
     bool published=false,indexed=false;
     try {
@@ -94,8 +96,8 @@ inline void publish_beauty_version_record(const boost::filesystem::path& history
         checkpoint();
     } catch(...) {
         boost::system::error_code ignored;
-        if(indexed)boost::filesystem::remove(index_path,ignored);
-        if(published)boost::filesystem::remove(history,ignored);
+        if(indexed)boost::filesystem::remove(model_io_path(index_path),ignored);
+        if(published)boost::filesystem::remove(model_io_path(history),ignored);
         throw;
     }
 }

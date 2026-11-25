@@ -1,3 +1,4 @@
+#include "slic3r/GUI/AI/Model/ModelFilePath.hpp"
 #include "libslic3r/MeshResourceBudget.hpp"
 #include "ModelFinishing.hpp"
 #include <tbb/task_arena.h>
@@ -41,7 +42,7 @@ using EdgeMap = std::unordered_map<uint64_t, Edge>;
 
 std::string file_hash(const boost::filesystem::path& path, const std::function<bool()>& canceled) {
     std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> digest(EVP_MD_CTX_new(), EVP_MD_CTX_free);
-    boost::filesystem::ifstream file(path, std::ios::binary);
+    boost::filesystem::ifstream file(model_io_path(path), std::ios::binary);
     if (!file || !digest || EVP_DigestInit_ex(digest.get(), EVP_sha256(), nullptr) != 1)
         throw std::runtime_error("Unable to verify the model file.");
     std::array<char, 65536> buffer;
@@ -648,7 +649,7 @@ ModelFinishingResult finish_model_artifact(const boost::filesystem::path& source
         ModelFinishingResult result;
         bool owns_output = false;
         try {
-            if (boost::filesystem::exists(destination)) throw std::runtime_error("The output already exists; choose a new model version.");
+            if (boost::filesystem::exists(model_io_path(destination))) throw std::runtime_error("The output already exists; choose a new model version.");
             auto check_cancel = [&] { if (canceled && canceled()) throw Canceled {}; };
             check_cancel();
             result.source_sha256 = file_hash(source, canceled);
@@ -805,7 +806,7 @@ ModelFinishingResult finish_model_artifact(const boost::filesystem::path& source
         } catch (const Canceled&) { result.canceled = true; }
           catch (const std::exception& error) { result.error = error.what(); }
         if (owns_output) {
-            boost::system::error_code ignored; boost::filesystem::remove(destination, ignored);
+            boost::system::error_code ignored; boost::filesystem::remove(model_io_path(destination), ignored);
         }
         return result;
     }

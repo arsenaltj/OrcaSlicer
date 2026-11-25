@@ -472,7 +472,6 @@ public:
 
     bool preview_zip_archive(const boost::filesystem::path& archive_path);
 
-    // BBS: restore
     std::vector<size_t> load_files(const std::vector<boost::filesystem::path>& input_files,
                                    LoadStrategy strategy = LoadStrategy::LoadModel | LoadStrategy::LoadConfig,
                                    bool ask_multi = false,
@@ -492,6 +491,7 @@ public:
                                    ObjImportColorFn obj_color_fn = nullptr);
     // to be called on drag and drop
     bool load_files(const wxArrayString& filenames);
+    bool import_library_model(const boost::filesystem::path& path, const std::function<bool(int)>& progress);
 
     const wxString& get_last_loaded_gcode() const { return m_last_loaded_gcode; }
 

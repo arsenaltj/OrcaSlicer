@@ -1,12 +1,152 @@
+# MAINLINE-BUGFIX-001｜手动试色保留与启动首帧（2026-11-25）
+
+**主线** `task/mainline-bugfix` 固定 Windows Release 已同步到原运行目录。
+
+**本轮** 小模型与狮子手办均通过手动保留和减色验证。200% 最大化与 125% 窄窗上，主窗从深色加载页开始显示。237 项定向回归通过。[验收记录](/D:/TEST/artifacts/mainline-bugfix/evidence/workbench-manual-retain-startup-20261125/validation.json)
+
+**未结** 实窗覆盖本机 DWM 路径。同次拖动内回拉由自动回归覆盖。
+
+**下一步** 按 PR #85 合入后的集成基线提交模型库、工作台和启动修复。正式修复验证入口使用本轮产物。
+
+**计划变更** 冷启动沿用恢复窗口的绘制交接，手动试色沿用 AI 配色的保留行落位规则。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-workbench-manual-retain-startup-20261125)
+
+---
+
+# MAINLINE-BUGFIX-001｜色卡换色、六色重置与加载弹框（2026-11-25）
+
+**主线** `task/mainline-bugfix` 通过固定 Windows Release 构建和 53 项定向回归。
+
+**本轮** 手动试色可点色块或色值换色，重置恢复默认六色 AI 配色。工作台加载弹框跨阶段保留打开时的位置。小模型、狮子手办和 Windows 125% 的 894×700 窄窗已实测。[验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-palette-picker-20261125/validation.json)
+
+**未结** 原运行目录仍有旧进程占用，桌面验证入口使用固定 Release 产物和原配置。
+
+**下一步** 通过「Honor Forge 正式修复验证」使用本轮构建。
+
+**计划变更** 重置目标改为当前模型的默认六色。增补模型加载弹框定位修复。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-workbench-palette-picker-20261125)
+
+---
+
+# MAINLINE-BUGFIX-001｜色卡重置与 Windows 任务栏（2026-11-25）
+
+**主线** `task/mainline-bugfix` 已用固定 Windows Release 编译和实窗验证。
+
+**本轮** 保留即时反馈、尾部保留色顺序、完整初始试色恢复已验证。任务栏品牌图标、色卡最小化恢复重绘和窄窗历史栏收起后的左侧归位已修复。[验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-palette-reset-20261125/validation.json)
+
+**未结** 旧进程 PID 23744 仍占用原运行文件。运行中切换系统缩放时曾显示通用图标，原 200% 下重新启动已恢复品牌图标。
+
+**下一步** 桌面「Honor Forge 正式修复验证」已启动新版，使用原配置，实窗停留在工作台色卡详情。
+
+**计划变更** 补测 Windows 主窗口与浮窗的最小化、恢复和任务栏表现。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-workbench-palette-reset-20261125)
+
+---
+
+# MAINLINE-BUGFIX-001｜色卡详情与实时调色（2026-11-25）
+
+**主线** `task/mainline-bugfix` 使用固定 Windows Release 构建和原配置。
+
+**本轮** 色卡详情可从标题拖动，滑杆同时可用。固定 Release 与 622 项回归通过。小模型和「狮子手办」均记录到松手前更新。125% 的 891×699 窄窗核对了长列表、颜色保留和关闭重开。[验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-palette-live-20261125/validation.json)
+
+**未结** 原运行目录仍有旧进程占用。实窗已改用同一 checkout 的固定 Release 产物，并沿用原运行目录和配置。
+
+**下一步** Windows 缩放已恢复为 200%，新版停留在「狮子手办」色卡详情。
+
+**计划变更** 在历史切换截取过渡画面前关闭色卡，并让色数限制提示在窄窗内完整显示。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-workbench-palette-20261125)
+
+---
+
+# MAINLINE-BUGFIX-001｜工作台拓扑明细（2026-11-24）
+
+**主线** `task/mainline-bugfix` 复用固定 Windows Release 构建和原运行配置。
+
+**本轮** 「检查修复详情」显示异常计数、连通组件和自交状态。手动检查浮层显示一句拓扑结论。Windows Release 和 82 项定向回归通过。125% 缩放的 901×700 实窗已验证明细分行、定位高亮和关闭。重复面立方体修复后从历史重开，最终 Release 复验了「狮子手办」历史重开和手动检查。[验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-topology-details-20261124/validation.json)
+
+**未结** Windows 的运行目录检查仍列出旧进程 PID 23744。线上网关实际限速配置仍待核对。
+
+**下一步** 新版使用固定 Release 产物及原工作目录和配置，窗口留在「狮子手办」检查修复详情。系统缩放已回读为原 200%。
+
+**计划变更** 补回拓扑明细，统一详情展示与问题面定位的模型摘要校验。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-model-library-20261124)
+
+---
+
+# MAINLINE-BUGFIX-001｜工作台修复详情与模型库响应（2026-11-24）
+
+**主线** `task/mainline-bugfix` 已在固定目录增量编译 Windows Release。
+
+**本轮** 检查修复详情使用工作台浮层，显示简短结果、面数和下一步。实窗覆盖「狮子手办」修复保存、历史重开、取消、失败及问题面高亮。125% 的约 896×698 窄窗中可点击定位和关闭，验收后已恢复 200%。原生 274 项和网页 28 项通过。[验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-repair-details-20261124/validation.json)
+
+**未结** 线上网关的实际限速配置待核对。旧进程仍占用原运行入口，`dev.ps1` 的同步检查报出 PID 23744。
+
+**下一步** 新版从固定 Release 产物使用原工作目录与原配置启动，窗口留在「狮子手办」工作台。
+
+**计划变更** 顶部、侧栏和详情共用检查结果。公开列表复测 0.68–1.99 秒，单张 2.38 MB PNG 封面 15.54 秒。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-model-library-20261124)
+
+---
+
+# MAINLINE-BUGFIX-001｜工作台修复提示与独立暂存（2026-11-24）
+
+**主线** `task/mainline-bugfix` 的已验收 Release 产物已同步到原运行目录。
+
+**本轮** 原目录和原配置启动新版，「狮子手办」的修复版从历史重开显示「检查通过」。EXE 与 DLL 的 SHA-256 匹配受测构建，345 项定向回归通过。[验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-repair-short-staging-20261124/validation.json)
+
+**未结** Windows 仍列出退出挂起的旧试用进程，原 DLL 已移出并保留为备份。
+
+**下一步** 新版窗口保留在已重开修复版的工作台。
+
+**计划变更** 工作台修复使用用户临时目录和短文件名，校验后登记至现有模型库。实窗验收到工作台历史重开为止。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-model-library-20261124)
+
+---
+
+# MAINLINE-BUGFIX-001｜模型库四页与下载交接（2026-11-24）
+
+**主线** `task/mainline-bugfix` 已使用原 Windows 运行目录与数据启动右栏进度版。
+
+**本轮** 50.6 MB OBJ 续期前持续写入约 95 秒，后台续期后同页自动重传并完成登记。复验了版本与三维视角、125% 缩放、工作台打开和两份 3MF 直达切片。网页 28 项和原生 183 项通过，另有 1 项环境跳过。[验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/model-library-download-feedback-20261124/validation.json)
+
+**未结** 3MF 实窗未捕捉到读取中的取消时机。真实换号与平台上传、评论和关注写入仍待已确认的测试账号。
+
+**下一步** 用更长读取样本补验原生导入取消，有测试账号后核对平台操作。
+
+**计划变更** 进度与操作并入右侧详情卡片，超时以连续 20 秒未收到文件数据判定。
+
+---
+
+# MAINLINE-BUGFIX-001｜模型库四页（2026-11-24）
+
+**主线** `task/mainline-bugfix` 基线为 `e098a95028`。固定运行目录已使用原配置启动新版。
+
+**本轮** 四页改版、下载后打开或导入、缺失原件重试已实现。实窗确认已下载按钮禁用，3MF 采用页内进度直达切片准备。网页 27 项和原生 148 项通过，原生 1 项环境跳过。[验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/model-library-20261124/validation.json)
+
+**未结** 读取中的实窗取消及测试账号的换号和线上写入待验。
+
+**下一步** 用测试账号补验线上操作，并补齐原生导入取消的实窗用例。
+
+**计划变更** 按用户反馈加入重复下载拦截、缺失重试和页内导入进度。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-model-library-20261124)
+
+---
+
+# MAINLINE-BUGFIX-001｜工作台底座和模型信息（2026-11-24）
+
+**主线** `task/mainline-bugfix` 已推送 `e098a95028`。PR #85 指向集成分支 `918c137399`。 [PR #85](https://github.com/arsenaltj/OrcaSlicer/pull/85)
+
+**本轮** 底座保留主体尺寸，模型信息显示组合尺寸，耗材提示收拢。固定 Windows Release、304 项工作台回归、602 项切片核心回归及 3MF 对照通过。
+
+**未结** GitHub 显示可合并，已运行的检查均通过。团队候选构建处于停用状态，PR 等待非作者复核。 [验证记录](D:/TEST/artifacts/mainline-bugfix/evidence/remote-pr-20261124/validation.json)
+
+**下一步** 维护者在复核后处理合入。桌面「Honor Forge 正式修复验证」可用原配置启动本版。
+
+**计划变更** 按用户反馈将「模型信息」按钮改为「关闭」。 [主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-workbench-round-base-20261124)
+
+---
+
 # MAINLINE-BUGFIX-001｜同步团队切片工作台（2026-11-23）
 
-**主线** `task/mainline-bugfix` 合入 `origin/codex/team/integration` 的 `918c137399`。
+**主线** `task/mainline-bugfix` 在 `16b3108ad5` 合入 `origin/codex/team/integration` 的 `918c137399`。
 
-**本轮** 先提交本地 `d3ef60b5a8`。两份进度文档的冲突已合并双方记录。
+**本轮** 先提交本地 `d3ef60b5a8`。两份进度文档冲突已解决。Windows Release、431 项定向回归、智能切片实窗和 3MF 往返通过。
 
-**未结** Windows Release 与功能验证进行中。
+**未结** 原配置实窗复验待做。此前用验收配置完成智能切片和重开重切。 [验证记录](D:/TEST/artifacts/mainline-bugfix/evidence/integration-918c137399-20261123/validation.json)
 
-**下一步** 复核原生工艺编辑、智能试切、工作台历史恢复和切片视角。
+**下一步** 桌面「Honor Forge 正式修复验证」已指向合并版 `16b3108ad5`。退出旧窗口后可通过同一入口使用原配置启动。
 
 **计划变更** 承接团队切片工作台的新实现。 [主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-integration-20261123)
 

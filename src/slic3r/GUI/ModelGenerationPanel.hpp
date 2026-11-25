@@ -351,7 +351,7 @@ private:
     void ensure_workbench_check();
     bool can_start_workbench_check() const;
     void queue_workbench_check();
-    void fail_workbench_check(const std::string& message);
+    void fail_workbench_check(const std::string& message, WorkbenchCheckIssue issue = WorkbenchCheckIssue::None);
     bool apply_pending_workbench_ai_palette(const boost::filesystem::path& source, std::uint64_t revision);
     void clear_pending_workbench_ai_palette();
     std::function<void(size_t)> m_project_color_edit;

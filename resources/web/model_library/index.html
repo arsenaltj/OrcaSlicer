@@ -3,10 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <meta
-      http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data: blob:; connect-src blob:; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
-    />
+    <meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data: blob:; connect-src blob:; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'" />
     <title>模型库</title>
     <link rel="stylesheet" href="library.css" />
     <script defer src="viewer.bundle.js"></script>
@@ -15,83 +13,142 @@
   </head>
   <body>
     <main id="app">
-      <header>
-        <nav class="tabs" aria-label="资产分类">
-          <button data-scope="mine">我的模型</button
-          ><button data-scope="library" class="selected">模型库</button>
-        </nav>
-      </header>
-      <section id="listing">
+      <section id="listing" aria-label="模型列表">
+        <header>
+          <nav class="tabs" aria-label="资产分类">
+            <button data-scope="mine" aria-pressed="false">我的模型</button>
+            <button data-scope="library" class="selected" aria-pressed="true">模型库</button>
+          </nav>
+        </header>
         <div class="toolbar">
           <nav id="filters" aria-label="模型筛选"></nav>
           <div class="tools">
+            <select id="format" aria-label="模型文件类型">
+              <option value="">全部类型</option>
+              <option value="3mf">3MF</option>
+              <option value="glb">GLB</option>
+              <option value="obj">OBJ</option>
+              <option value="stl">STL</option>
+              <option value="step">STEP</option>
+              <option value="stp">STP</option>
+            </select>
             <select id="sort" aria-label="排序">
               <option value="newest">最新上传</option>
               <option value="views">最多浏览</option>
               <option value="downloads">最多下载</option>
               <option value="likes">最多点赞</option>
               <option value="favorites">最多收藏</option>
-              <option value="title">名称排序</option></select
-            ><label class="search"
-              ><span id="searchIcon"></span
-              ><input
-                id="search"
-                maxlength="120"
-                placeholder="搜索模型"
-                aria-label="搜索模型"
-            /></label>
+              <option value="title">名称排序</option>
+            </select>
+            <label class="search">
+              <span id="searchIcon"></span>
+              <input id="search" maxlength="120" placeholder="搜索模型" aria-label="搜索模型" />
+            </label>
+            <button id="upload" class="primary" data-command="upload"><span id="uploadIcon"></span>上传模型</button>
           </div>
         </div>
         <div id="notice" role="status" hidden></div>
         <div id="grid" class="grid"></div>
         <div id="empty" class="empty" hidden>
           <p id="emptyText">暂无模型</p>
-          <button data-command="chooseLocal">导入本地模型</button
-          ><button data-command="login" id="emptyLogin" hidden>登录账号</button>
+          <button data-command="chooseLocal">导入本地模型</button>
+          <button data-command="login" id="emptyLogin" hidden>登录账号</button>
           <button data-command="storage">打开模型文件夹</button>
-          <button data-command="saveProject" id="emptySaveProject" hidden>
-            保存当前工程（3MF）
-          </button>
+          <button data-command="saveProject" id="emptySaveProject" hidden>保存当前工程（3MF）</button>
         </div>
         <button id="more" hidden>加载更多</button>
       </section>
+
       <section id="detail" hidden>
-        <button id="back" class="back">‹ 返回</button>
-        <div class="detail-grid">
-          <div>
-            <div id="media" class="media">
-              <img id="hero" alt="模型预览" />
-              <div id="viewer" hidden></div>
-              <button id="geometry">3D 预览</button
-              ><button id="closeGeometry" hidden>关闭3D预览</button>
+        <div id="detailContent" class="detail-grid">
+          <section id="media" class="media" aria-label="模型预览">
+            <img id="hero" alt="" />
+            <div id="viewer" hidden></div>
+            <div class="preview-toolbar">
+              <button id="back" class="back">‹ 模型详情</button>
+              <button id="geometry">3D 预览</button>
+              <button id="closeGeometry" hidden>图片预览</button>
+              <div id="viewTools" class="view-tools" hidden>
+                <button data-view-mode="original" aria-label="原始材质" title="原始材质"><span class="view-material original"></span></button>
+                <button data-view-mode="clay" aria-label="白模" title="白模"><span class="view-material clay"></span></button>
+                <button data-view-mode="wire" aria-label="线框" title="线框"><span class="view-material wire"></span></button>
+                <button data-view-mode="reset" aria-label="复位视角" title="复位视角"><span class="view-material reset"></span></button>
+                <button data-view-mode="grid" aria-label="网格" title="网格">▦</button>
+                <button data-view-mode="front" aria-label="正面视图" title="正面视图">◇</button>
+                <button data-view-mode="light" aria-label="灯光" title="灯光">☼</button>
+              </div>
             </div>
+            <dl id="meshStats" class="mesh-stats" hidden></dl>
             <div id="gallery" class="gallery"></div>
-          </div>
-          <article>
+            <div class="preview-actions" aria-label="模型操作">
+              <button id="openDownloaded" disabled>✦ 在工作台编辑</button>
+              <button id="importDownloaded" disabled>◇ 3D打印</button>
+              <button id="sharePreview">分享</button>
+              <button id="downloadPreview" class="primary" disabled>下载</button>
+            </div>
+          </section>
+          <article id="detailSidebar" aria-label="模型信息">
+            <div class="detail-author">
+              <span id="detailAvatar" class="avatar"></span>
+              <span id="author"></span>
+              <button id="follow" class="follow" hidden>＋ 关注</button>
+              <button id="closeDetail" aria-label="关闭详情" title="关闭详情">×</button>
+            </div>
             <h1 id="title"></h1>
-            <p id="author"></p>
-            <label
-              >版本
-              <select id="versions" aria-label="模型版本"></select
-            ></label>
-            <p id="license"></p>
-            <p id="licenseDescription"></p>
+            <div id="detailTags" class="detail-tags"></div>
+            <div class="detail-metrics">
+              <span id="detailCounts"></span>
+              <button id="favorite" aria-label="收藏"></button>
+            </div>
             <p id="description"></p>
             <div class="engagement">
-              <button id="like"></button><button id="favorite"></button>
+              <button id="like"></button>
+              <button id="share">分享</button>
+              <button id="downloadDetail" class="primary" disabled>下载模型文件</button>
             </div>
             <p id="eligibility"></p>
-            <h2>模型文件</h2>
-            <div id="files"></div>
-            <div id="downloadComplete" hidden>
-              <p>下载完成</p>
-              <button id="openDownloaded">打开工作台</button
-              ><button id="importDownloaded">导入切片</button>
+            <div id="downloadFeedback" hidden>
+              <div class="download-progress">
+                <div class="download-progress-label">
+                  <span id="downloadPhase" role="status"></span>
+                  <span id="downloadBytes"></span>
+                </div>
+                <progress id="downloadProgress" aria-label="模型下载进度" max="1"></progress>
+              </div>
+              <button id="cancelDownload" hidden>取消下载</button>
+              <button id="retryDownload" hidden>重试</button>
+              <button id="downloadLogin" hidden>重新登录</button>
             </div>
+            <p id="downloadComplete" role="status" hidden>下载完成</p>
+            <p id="downloadIssue" role="status" hidden></p>
+            <button id="filePanelToggle" aria-controls="filePanel" aria-expanded="false" hidden>版本与文件</button>
+            <section id="filePanel" class="file-panel" hidden>
+              <label for="versions">模型版本</label>
+              <select id="versions" aria-label="模型版本"></select>
+              <p id="license"></p>
+              <p id="licenseDescription"></p>
+              <div id="files"></div>
+            </section>
+            <div id="detailTabs" class="detail-tabs" aria-label="模型互动">
+              <button id="commentsTab" aria-controls="commentsPanel" aria-pressed="true">评论</button>
+              <button id="recommendationsTab" aria-controls="recommendationsPanel" aria-pressed="false">相似推荐</button>
+            </div>
+            <section id="commentsPanel" aria-label="评论">
+              <div class="comment-compose">
+                <textarea id="commentInput" rows="1" maxlength="2000" placeholder="聊聊你的想法" aria-label="评论内容"></textarea>
+                <button id="postComment" class="primary" disabled>发表</button>
+              </div>
+              <div id="comments"></div>
+              <button id="moreComments" hidden>查看更多评论</button>
+            </section>
+            <section id="recommendationsPanel" aria-label="相似推荐" hidden>
+              <div id="recommendations"></div>
+            </section>
           </article>
         </div>
       </section>
     </main>
+
     <div id="menu" role="menu" hidden></div>
     <div id="loading" class="loading" role="status" hidden>
       <div class="spinner"></div>

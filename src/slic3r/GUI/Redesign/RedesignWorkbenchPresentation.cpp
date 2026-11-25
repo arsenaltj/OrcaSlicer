@@ -175,6 +175,13 @@ bool RedesignShell::begin_workbench_presentation(bool history_loading)
         m_workbench_transition.reset();
         return false;
     }
+    if (history_loading) {
+        const auto* owner = wxGetTopLevelParent(this);
+        const wxRect owner_bounds(owner->ClientToScreen(wxPoint()), owner->GetClientSize());
+        auto* viewport = source == m_workbench_page ? m_model_generation_host->workbench_import_viewport() : nullptr;
+        const auto viewport_bounds = viewport && viewport->IsShownOnScreen() ? viewport->GetScreenRect() : wxRect{};
+        m_history_loading_anchor = WorkbenchLoadingCardAnchor(viewport_bounds, source_bounds, owner_bounds);
+    }
     // Present the completed source pixels before native reparenting can expose
     // an empty backing surface. The real page remains retained for rollback.
     m_workbench_transition_cover->SetSize(source_bounds);
@@ -325,10 +332,7 @@ void RedesignShell::layout_history_loading()
         std::chrono::duration<double>(std::chrono::steady_clock::now() - m_history_started).count());
     if (m_history_elapsed->GetLabel() != elapsed) m_history_elapsed->SetLabel(elapsed);
     const wxRect owner_bounds(owner->ClientToScreen(wxPoint()), owner->GetClientSize());
-    auto* viewport = m_model_generation_host->workbench_import_viewport();
-    const auto viewport_bounds = viewport && viewport->IsShownOnScreen()
-        ? wxRect(viewport->ClientToScreen(wxPoint()), viewport->GetClientSize()) : workbench_transition_bounds();
-    const auto bounds = workbench_import_card_bounds(viewport_bounds, owner_bounds, m_history_loading->GetBestSize());
+    const auto bounds = m_history_loading_anchor.bounds(owner_bounds, m_history_loading->GetBestSize());
     if (bounds.IsEmpty()) { m_history_loading->Hide(); return; }
     if (m_history_loading->GetRect() != bounds) {
         m_history_loading->SetSize(bounds);
