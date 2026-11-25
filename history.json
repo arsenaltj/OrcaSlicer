@@ -1,5 +1,15 @@
 [
   {
+    "pr": 86,
+    "run": 45561153239,
+    "head": "f172df228582ed7d554642e5df4ebc24db16c8f5",
+    "base": "d8c2bfa7f4cf09fbbb15db9c562478e3bcc9e9cb",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "修复模型库下载与导入，完善工作台试色和启动呈现",
+    "path": "pr/86/f172df228582ed7d554642e5df4ebc24db16c8f5/45561153239",
+    "created": "2026-11-25T06:34:45+00:00"
+  },
+  {
     "pr": 85,
     "run": 45329791420,
     "head": "e098a950288a6b9fbed655a1436056773a17e762",
