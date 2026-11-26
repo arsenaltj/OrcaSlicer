@@ -3845,7 +3845,7 @@ void RedesignShell::show_printer_media()
 
 bool RedesignShell::settings_printer_switch_blocked() const
 {
-    return m_import_in_progress || m_import_awaiting_frame || m_slicing_state.orientation_running ||
+    return m_import_in_progress || m_slicing_state.orientation_running ||
         workbench_slice_running(false, m_slicing_state.official.phase) ||
         (m_model_generation_host && m_model_generation_host->settings_printer_switch_blocked());
 }
