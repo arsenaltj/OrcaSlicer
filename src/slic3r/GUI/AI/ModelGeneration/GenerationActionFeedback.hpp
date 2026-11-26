@@ -43,6 +43,7 @@ inline const char* generation_rejection_message(const std::string& reason)
     if (reason == "missing_current_view") return "请先生成可用的主视角及所选设计图。";
     if (reason == "design_regeneration_required") return "图片或风格已修改，请先重新生成对应设计图。";
     if (reason == "draft_changed") return "输入已修改，请先生成对应设计图。";
+    if (reason == "stale_confirmation") return "所选图片或确认计划已变化，请重新确认。";
     if (reason == "image_unsupported") return "当前2D模型不支持本次生成方式，请更换模型。";
     if (reason == "geometry_unsupported") return "当前3D模型不支持所选设计图建模，请更换模型。";
     if (reason == "gpt_required") return "智能模式需要GPT 2D模型，请检查配置。";

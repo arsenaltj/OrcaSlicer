@@ -5,6 +5,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/AdvancedMultiviewClient.hpp"
 #include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
+#include "slic3r/GUI/Redesign/GenerationParticleImage.hpp"
 #include "slic3r/GUI/Redesign/AdvancedPreviewGesture.hpp"
 #include "slic3r/GUI/Redesign/AdvancedPreviewLayout.hpp"
 #include "../test_utils.hpp"
@@ -14,8 +15,17 @@
 #include <wx/image.h>
 #include <wx/socket.h>
 #include <openssl/evp.h>
+#include <boost/filesystem/fstream.hpp>
 #include <algorithm>
 #include <array>
+#include <wx/mstream.h>
+#include <wx/imagpng.h>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 #include <chrono>
 
 using Slic3r::GUI::AdvancedMultiviewClient;
@@ -136,7 +146,7 @@ public:
     {
         const auto& input = requests.at(request).payload;
         Json snapshot {{"schema", "approved-multiview-input-v2"}, {"group_id", group},
-            {"snapshot_id", input.at("command_id")}, {"input_epoch", input.at("expected_input_epoch")},
+            {"snapshot_id", input.at("command_id")}, {"input_epoch", group},
             {"selected_views", input.at("selected_views")}, {"views", input.at("visible_versions")},
             {"input_mode", input.at("selected_views").size() == 1 ? "image" : "multiview"}};
         for (const auto& view : input.at("selected_views"))
@@ -146,9 +156,8 @@ public:
             options[key] = input.at(key);
         if (options.at("geometry_model").get<std::string>().empty()) options["geometry_model"] = "v3.0";
         const double now = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
-        return {{"schema", "advanced-multiview-model-plan-v2"}, {"id", input.at("command_id")},
+        return {{"schema", Slic3r::GUI::AdvancedMultiviewClient::selected_plan_schema}, {"id", input.at("command_id")},
             {"job_id", input.at("command_id")}, {"group_id", group},
-            {"expected_group_revision", input.at("expected_group_revision")}, {"draft", input.at("draft")},
             {"options", options}, {"approved_multiview_snapshot", snapshot}, {"max_new_image_calls", 0},
             {"max_new_model_tasks", 1}, {"max_new_conversion_tasks", 0}, {"expires_at", now + 300},
             {"confirmation_fingerprint", std::string(64, 'e')}};
@@ -493,17 +502,17 @@ TEST_CASE("Model candidates allow removing unavailable old auxiliaries while ret
     CHECK(session.model_selection()[index(ViewId::Right)]);
 }
 
-TEST_CASE("Changing inputs versions model preferences or creation invalidates candidate confirmation",
+TEST_CASE("Model candidates keep their selection across unrelated design edits and revisions",
           "[AdvancedCreation][AdvancedModelSelection]")
 {
-    const std::string change = GENERATE("draft","version","model-selection","creation");
+    const std::string change = GENERATE("draft","group-revision","model-selection","creation");
     auto session = ready_session(); const auto id = session.begin_model_selection();
     REQUIRE(session.toggle_candidate_view(ViewId::Right));
     if (change == "draft") { auto draft = session.draft().design; draft.prompt += " changed"; session.set_design_draft(draft); }
-    if (change == "version") { auto group = *session.group(); ++group.revision; session.apply_snapshot(group,session.context()); }
+    if (change == "group-revision") { auto group = *session.group(); ++group.revision; session.apply_snapshot(group,session.context()); }
     if (change == "model-selection") { session.click(ViewId::Back,100,1,SelectionContext::Model); session.flush_click(101); }
     if (change == "creation") session.new_creation();
-    CHECK_FALSE(session.commit_model_selection(id,1));
+    CHECK(session.commit_model_selection(id,1) == (change == "draft" || change == "group-revision"));
 }
 
 TEST_CASE("Advanced local plan parsing rejects ignored scope expanded targets and mismatched frozen identity",
@@ -554,15 +563,15 @@ TEST_CASE("Model candidate plans must echo exact frozen versions options and cre
 {
     using Json = nlohmann::json;
     const std::string variant = GENERATE("valid","epoch","version","sha","path","extra-view","selection",
-        "mode","revision","job","group","draft","provider","model","faces","quality","output","calls");
-    const Json request {{"command_id","operation-a"},{"expected_group_revision",4},{"expected_input_epoch","epoch-a"},
+        "mode","job","group","provider","model","faces","quality","output","calls");
+    const Json request {{"schema", Slic3r::GUI::AdvancedMultiviewClient::selected_plan_schema},{"command_id","operation-a"},
         {"selected_views",Json::array({"front","right"})},
         {"visible_versions",{{"front",{{"version_id","front-a"},{"sha256",std::string(64,'a')}}},
                              {"right",{{"version_id","right-a"},{"sha256",std::string(64,'b')}}}}},
-        {"draft",{{"prompt","original"}}},{"provider","tripo"},{"geometry_model","model-a"},{"face_limit",300000},
+        {"provider","tripo"},{"geometry_model","model-a"},{"face_limit",300000},
         {"geometry_quality","standard"},{"texture_quality","standard"},{"output_format","glb"}};
     Json snapshot {{"schema","approved-multiview-input-v2"},{"group_id","group-a"},{"snapshot_id","operation-a"},
-        {"input_epoch","epoch-a"},{"selected_views",request.at("selected_views")},{"input_mode","multiview"},{"views",Json::object()}};
+        {"input_epoch","00000000-0000-4000-8000-000000000001"},{"selected_views",request.at("selected_views")},{"input_mode","multiview"},{"views",Json::object()}};
     for (const auto& view : request.at("selected_views")) {
         const auto name=view.get<std::string>();
         snapshot["views"][name]=request.at("visible_versions").at(name);
@@ -571,8 +580,8 @@ TEST_CASE("Model candidate plans must echo exact frozen versions options and cre
     Json options;
     for (const auto* key : {"provider","geometry_model","face_limit","geometry_quality","texture_quality","output_format"})
         options[key]=request.at(key);
-    Json plan {{"schema","advanced-multiview-model-plan-v2"},{"id","operation-a"},{"job_id","operation-a"},
-        {"group_id","group-a"},{"expected_group_revision",4},{"draft",request.at("draft")},{"options",options},
+    Json plan {{"schema",Slic3r::GUI::AdvancedMultiviewClient::selected_plan_schema},{"id","operation-a"},{"job_id","operation-a"},
+        {"group_id","group-a"},{"draft",{{"prompt","Original design metadata"}}},{"options",options},
         {"approved_multiview_snapshot",snapshot},{"max_new_image_calls",0},{"max_new_model_tasks",1},
         {"max_new_conversion_tasks",0},{"confirmation_fingerprint",std::string(64,'c')}};
     auto& approved=plan["approved_multiview_snapshot"];
@@ -583,10 +592,8 @@ TEST_CASE("Model candidate plans must echo exact frozen versions options and cre
     if (variant=="extra-view") approved["views"]["left"]=approved["views"]["right"];
     if (variant=="selection") approved["selected_views"]=Json::array({"front"});
     if (variant=="mode") approved["input_mode"]="image";
-    if (variant=="revision") plan["expected_group_revision"]=5;
     if (variant=="job") plan["job_id"]="job-b";
     if (variant=="group") approved["group_id"]="group-b";
-    if (variant=="draft") plan["draft"]["prompt"]="different";
     if (variant=="provider") plan["options"]["provider"]="yoyoclaw";
     if (variant=="model") plan["options"]["geometry_model"]="model-b";
     if (variant=="faces") plan["options"]["face_limit"]=1000000;
@@ -937,6 +944,7 @@ TEST_CASE("Selected auxiliary failures can be removed in both model selection co
     auto& image=failed.views[slot];
     if (failure=="failed" || failure=="stopped") {
         image.attempt_state=failure; failed.pending_views[slot]=true;
+        image.display_error = true; // The previous version itself is unavailable.
     } else if (failure=="display") image.display_error=true;
     else { image.asset_pending=true; image.canonical_version_id="unverified-new-version"; }
     REQUIRE(session.apply_snapshot(failed,session.context()));
@@ -1009,7 +1017,8 @@ TEST_CASE("Removing an unavailable auxiliary does not bypass model generation gu
         auto draft=session.draft().design; draft.prompt="changed";
         REQUIRE(session.set_design_draft(draft));
     }
-    CHECK_FALSE(session.eligibility({true,true,true,true,true,{true,true,true,true},true},guards).generate_model);
+    const bool unrelated = blocker == "draft" || blocker == "result_pending" || blocker == "result_saved";
+    CHECK(session.eligibility({true,true,true,true,true,{true,true,true,true},true},guards).generate_model == unrelated);
     session.click(ViewId::Front,200,10,SelectionContext::Model);
     CHECK_FALSE(session.flush_click(210));
     CHECK(session.model_selection()[0]);
@@ -1043,7 +1052,7 @@ TEST_CASE("Hidden auxiliary slots and ordinary repaint clicks retain their exist
     CHECK(ordinary.model_selection()[1]);
 }
 
-TEST_CASE("Unselected auxiliary failures without a recoverable result do not block modeling",
+TEST_CASE("Unselected auxiliary failures and saved results allow modeling with the remaining views",
           "[AdvancedCreation][AdvancedFlexibleViews]")
 {
     const std::string state = GENERATE("failed","stopped","blocked","ambiguous","result_pending","result_saved");
@@ -1052,7 +1061,8 @@ TEST_CASE("Unselected auxiliary failures without a recoverable result do not blo
     Session session; REQUIRE(session.apply_snapshot(group,session.begin_open(group.id),true));
     Capabilities capabilities {true,true,true,true,true,{true,true,true,true},true};
     const auto allowed = session.eligibility(capabilities,{true,true,true});
-    CHECK(allowed.generate_model == (state != "result_pending" && state != "result_saved"));
+    CHECK(allowed.generate_model);
+    CHECK(allowed.recover == (state == "result_pending" || state == "result_saved"));
     CHECK_FALSE(session.model_selection()[2]);
 }
 
@@ -1074,7 +1084,7 @@ TEST_CASE("Advanced interaction guards survive missing views and distinguish unr
     const auto eligible = session.eligibility({true,true,true,true,true},guards);
     const bool unresolved = blocker == "ambiguous" || blocker == "result_pending" || blocker == "result_saved";
     CHECK(eligible.click_generate_design == unresolved);
-    CHECK(eligible.click_generate_model == (blocker == "ambiguous"));
+    CHECK(eligible.click_generate_model == unresolved);
     CHECK_FALSE(eligible.generate_model);
     if (blocker == "workbench") CHECK(eligible.model_reason == "missing_current_view");
     if (unresolved) {
@@ -1105,7 +1115,7 @@ TEST_CASE("Advanced byte boundaries and selection flushing keep their original c
     CHECK(session.eligibility({true,true,true,true,true},{true,true,true}).generate_model);
 }
 
-TEST_CASE("Advanced incomplete or stale results accept feedback clicks but never authorize model generation",
+TEST_CASE("Advanced feedback clicks accept valid published results through draft changes",
           "[AdvancedCreation][GenerationClickFeedback]")
 {
     const std::string invalid = GENERATE("missing", "display", "asset", "version", "pending", "draft", "capability");
@@ -1125,8 +1135,9 @@ TEST_CASE("Advanced incomplete or stale results accept feedback clicks but never
     Capabilities capabilities {true,true,true,true,invalid != "capability"};
     const auto eligible = session.eligibility(capabilities,{true,true,true});
     CHECK(eligible.click_generate_model);
-    CHECK_FALSE(eligible.generate_model);
-    CHECK_FALSE(eligible.model_reason.empty());
+    const bool usable = invalid == "draft" || invalid == "pending";
+    CHECK(eligible.generate_model == usable);
+    CHECK(eligible.model_reason.empty() == usable);
     CHECK(session.group()->id == group.id);
 }
 
@@ -1362,7 +1373,7 @@ TEST_CASE("Returning to the submitted image provider restores its model and four
     REQUIRE(session.set_design_provider(provider == "gpt" ? "yoyoclaw" : "gpt"));
     CHECK(session.draft().design.model.empty());
     CHECK_FALSE(session.inputs_match_results());
-    CHECK_FALSE(session.eligibility(capabilities, guards).generate_model);
+    CHECK(session.eligibility(capabilities, guards).generate_model);
     REQUIRE(session.set_design_provider(provider));
     CHECK(session.draft().design == group.saved_draft);
     CHECK(session.inputs_match_results());
@@ -1401,9 +1412,9 @@ TEST_CASE("Restoring the submitted provider model preserves independent input ch
     CHECK_FALSE(session.inputs_match_results());
     const Capabilities capabilities {true, true, true, true, true};
     const HostGuards guards {true, true, true};
-    CHECK_FALSE(session.eligibility(capabilities, guards).generate_model);
+    CHECK(session.eligibility(capabilities, guards).generate_model == (changed != "upload"));
     CHECK(session.eligibility(capabilities, guards).model_reason ==
-          (changed == "upload" ? "missing_current_view" : "draft_changed"));
+          (changed == "upload" ? "missing_current_view" : ""));
 }
 
 TEST_CASE("Image provider model restoration uses only the current group's submitted design",
@@ -1687,6 +1698,7 @@ TEST_CASE("A model candidate can be confirmed after an unsent checkpoint failure
         auto group = complete_group();
         group.id = receipt_failure ? "33333333-3333-4333-8333-333333333333" :
                                      "44444444-4444-4444-8444-444444444444";
+        group.input_epoch = group.id;
         for (std::size_t i = 0; i < group.views.size(); ++i)
             group.views[i].sha256 = std::string(64, static_cast<char>('a' + i));
         REQUIRE(host.session().apply_snapshot(group, host.session().begin_open(group.id), true));
@@ -1730,7 +1742,7 @@ TEST_CASE("A model candidate can be confirmed after an unsent checkpoint failure
             if (path.find("/model-plans") != std::string::npos) {
                 const auto request = Json::parse(payload);
                 Json snapshot {{"schema", "approved-multiview-input-v2"}, {"group_id", group.id},
-                    {"snapshot_id", request.at("command_id")}, {"input_epoch", request.at("expected_input_epoch")},
+                    {"snapshot_id", request.at("command_id")}, {"input_epoch", group.input_epoch},
                     {"selected_views", request.at("selected_views")}, {"input_mode", "multiview"},
                     {"views", request.at("visible_versions")}};
                 for (const auto& view : request.at("selected_views"))
@@ -1740,9 +1752,8 @@ TEST_CASE("A model candidate can be confirmed after an unsent checkpoint failure
                     options[key] = request.at(key);
                 if (options.at("geometry_model").get<std::string>().empty()) options["geometry_model"] = "v3.0";
                 const double now = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
-                body = {{"plan", {{"schema", "advanced-multiview-model-plan-v2"}, {"id", request.at("command_id")},
+                body = {{"plan", {{"schema", Slic3r::GUI::AdvancedMultiviewClient::selected_plan_schema}, {"id", request.at("command_id")},
                     {"job_id", request.at("command_id")}, {"group_id", group.id},
-                    {"expected_group_revision", request.at("expected_group_revision")}, {"draft", request.at("draft")},
                     {"options", options}, {"approved_multiview_snapshot", snapshot}, {"max_new_image_calls", 0},
                     {"max_new_model_tasks", 1}, {"max_new_conversion_tasks", 0}, {"expires_at", now + 300},
                     {"confirmation_fingerprint", std::string(64, 'e')}}}};
@@ -1897,6 +1908,126 @@ TEST_CASE("Model candidate responses preserve only the newest selection through 
     host.shutdown();
 }
 
+TEST_CASE("Accepted advanced plans provide waiting images independently of job state writes",
+          "[AdvancedCreation][AdvancedModelSelection][GenerationParticles][Regression]")
+{
+    using Json = nlohmann::json;
+    namespace GP = Slic3r::GUI::GenerationParticles;
+    const bool multiview = GENERATE(false, true);
+    const bool reconcile = GENERATE(false, true);
+    wxInitializer init; REQUIRE(init.IsOk());
+    // The application resolves its model root once per process, so all generated cases share this directory.
+    static ScopedTemporaryDir directory("orca-advanced-visual-receipt");
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", directory.string());
+    AdvancedHttpProbe probe;
+    Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr, probe.endpoint());
+    auto group = host_test_group(244);
+    group.views[index(ViewId::Back)] = {};
+    group.views[index(ViewId::Right)] = {};
+    if (!multiview) group.views[index(ViewId::Left)] = {};
+    group.views[0].version_id = group.views[0].canonical_version_id = host_test_group(245).id;
+
+    wxImage image(96, 96);
+    image.SetRGB(wxRect(0, 0, 96, 96), 240, 240, 240);
+    for (int y = 0; y < 96; ++y)
+        for (int x = 0; x < 96; ++x)
+            if ((x - 48) * (x - 48) + (y - 48) * (y - 48) < 24 * 24)
+                image.SetRGB(x, y, 18, 54, 111);
+    wxMemoryOutputStream png_bytes;
+    wxPNGHandler png;
+    REQUIRE(png.SaveFile(&image, png_bytes));
+    std::vector<unsigned char> bytes(png_bytes.GetSize());
+    REQUIRE(png_bytes.CopyTo(bytes.data(), bytes.size()) == bytes.size());
+    unsigned char hash[EVP_MAX_MD_SIZE] {};
+    unsigned int hash_size = 0;
+    REQUIRE(EVP_Digest(bytes.data(), bytes.size(), hash, &hash_size, EVP_sha256(), nullptr) == 1);
+    REQUIRE(hash_size == 32);
+    constexpr char hex[] = "0123456789abcdef";
+    std::string digest;
+    for (unsigned i = 0; i < hash_size; ++i) {
+        digest.push_back(hex[hash[i] >> 4]);
+        digest.push_back(hex[hash[i] & 15]);
+    }
+    group.views[0].sha256 = digest;
+    REQUIRE(host.session().apply_snapshot(group, host.session().begin_open(group.id), true));
+    host.set_service_available(true);
+    REQUIRE(probe.until([&] { return host.eligibility().generate_model; }));
+    unsigned confirmations = 0;
+    host.generate_model([&](const Json& value) {
+        ++confirmations;
+        CHECK(value.at("approved_multiview_snapshot").at("selected_views") ==
+              (multiview ? Json::array({"front", "left"}) : Json::array({"front"})));
+        return true;
+    });
+    REQUIRE(probe.until([&] { return probe.count("/model-plans") == 1; }));
+    const auto planning = probe.at("/model-plans");
+    const auto plan = probe.model_plan(planning, group.id);
+    probe.reply(planning, {{"plan", plan}});
+    REQUIRE(probe.until([&] { return probe.count("/model-jobs") == 1; }));
+    CHECK(confirmations == 1);
+    CHECK_FALSE(GP::usable_reference(host.model_state()));
+    const auto job = plan.at("job_id").get<std::string>();
+    const auto job_dir = directory.path() / job;
+    boost::filesystem::create_directories(job_dir / "inputs");
+    const auto frozen = job_dir / "inputs" / "front.png";
+    {
+        boost::filesystem::ofstream file(frozen, std::ios::binary);
+        file.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        REQUIRE(file.good());
+    }
+    const auto submitted = probe.at("/model-jobs");
+    const Json accepted = {{"id", job}, {"creation_kind", "advanced_multiview_v1"},
+        {"advanced_group_id", group.id}, {"workflow_mode", "advanced"},
+        {"state", "queued"}, {"phase", "queued"}, {"updated_at", 100.0}};
+    if (reconcile) {
+        probe.reply(submitted, Json::object(), true);
+        REQUIRE(probe.until([&] { return !host.command_pending(); }));
+        CHECK_FALSE(GP::usable_reference(host.model_state()));
+        host.reconcile_submission();
+        REQUIRE(probe.until([&] { return probe.count("/reconcile") == 1; }));
+        probe.reply(probe.at("/reconcile"), {{"accepted", true}, {"job", accepted}, {"group", Json::object()}});
+    } else {
+        probe.reply(submitted, {{"job", accepted}});
+    }
+    REQUIRE(probe.until([&] { return GP::usable_reference(host.model_state()); }));
+    const auto visual = host.model_state().visual_reference;
+    CHECK(visual.owner_id == job);
+    CHECK(visual.version == group.views[0].version_id);
+    CHECK(visual.sha256 == digest);
+    CHECK(visual.verification_manifest.empty());
+    CHECK(boost::filesystem::path(wxString::FromUTF8(visual.path).ToStdWstring()) == frozen);
+
+#ifdef _WIN32
+    const auto state_path = job_dir / "job.json";
+    const auto next = job_dir / "job.json.part";
+    { boost::filesystem::ofstream file(state_path); file << "{\"state\":\"queued\"}"; }
+    { boost::filesystem::ofstream file(next); file << "{\"state\":\"running\"}"; }
+    {
+        boost::filesystem::ifstream previous_reader(state_path, std::ios::binary);
+        REQUIRE(previous_reader.good());
+        const bool replaced_while_reading = ::MoveFileExW(next.c_str(), state_path.c_str(), MOVEFILE_REPLACE_EXISTING);
+        const auto error = ::GetLastError();
+        REQUIRE_FALSE(replaced_while_reading);
+        CHECK(error == ERROR_ACCESS_DENIED);
+    }
+    bool replaced = false;
+    const auto result = GP::load(visual, false, {}, [&](const GP::Image&, const auto&) {
+        replaced = ::MoveFileExW(next.c_str(), state_path.c_str(), MOVEFILE_REPLACE_EXISTING);
+        return GP::MaskResult {};
+    });
+    CHECK(replaced);
+    CHECK(result);
+#endif
+    auto wrong_image = visual;
+    wrong_image.sha256.assign(64, '0');
+    CHECK_FALSE(GP::load(wrong_image, false, {}));
+    CHECK(GP::load(visual, false, {}));
+    CHECK(probe.count("/model-jobs") == 1);
+    host.new_creation();
+    CHECK_FALSE(GP::usable_reference(host.model_state()));
+    host.shutdown();
+}
+
 TEST_CASE("Prepared model candidates recheck changed inputs capabilities expiry and editing guards before posting",
           "[AdvancedCreation][AdvancedModelSelection][Regression]")
 {
@@ -1960,6 +2091,13 @@ TEST_CASE("Prepared model candidates recheck changed inputs capabilities expiry 
         if (change == "read-only") host.set_editing_guard([] { return false; });
         if (change == "cancel") host.cancel_model_selection();
         std::string rejected;
+        if (change == "draft" || change == "epoch") {
+            REQUIRE(host.confirm_model_selection(ready, [&](std::string reason) { rejected = std::move(reason); }));
+            REQUIRE(probe.until([&] { return probe.count("/model-jobs") == 1; }));
+            CHECK(rejected.empty());
+            host.shutdown();
+            continue;
+        }
         CHECK_FALSE(host.confirm_model_selection(ready, [&](std::string reason) { rejected = std::move(reason); }));
         CHECK_FALSE(rejected.empty());
         probe.drain(); CHECK(probe.count("/model-jobs") == 0); CHECK_FALSE(host.has_pending_receipt());
@@ -1978,7 +2116,9 @@ TEST_CASE("Prepared model candidates recheck changed inputs capabilities expiry 
             const auto next = probe.at("/model-plans", 1);
             const auto& payload = probe.requests[next].payload;
             CHECK(probe.requests[next].path == "/v1/orcaslicer/advanced-multiview/groups/" + group.id + "/model-plans");
-            CHECK(payload.at("expected_input_epoch") == group.input_epoch);
+            CHECK_FALSE(payload.contains("expected_input_epoch"));
+            CHECK_FALSE(payload.contains("expected_group_revision"));
+            CHECK_FALSE(payload.contains("draft"));
             CHECK(payload.at("visible_versions").at("front").at("version_id") == group.views[0].version_id);
             CHECK(payload.at("visible_versions").at("front").at("sha256") == group.views[0].sha256);
             probe.reply(next, {{"plan", probe.model_plan(next, group.id)}});
@@ -1987,7 +2127,7 @@ TEST_CASE("Prepared model candidates recheck changed inputs capabilities expiry 
             CHECK(renewed.at("id") != ready.at("id"));
             const auto& frozen = renewed.at("approved_multiview_snapshot");
             CHECK(frozen.at("group_id") == group.id);
-            CHECK(frozen.at("input_epoch") == group.input_epoch);
+            CHECK(Slic3r::GUI::AdvancedMultiviewClient::valid_id(frozen.at("input_epoch").get<std::string>()));
             CHECK(frozen.at("views").at("front").at("version_id") == group.views[0].version_id);
             CHECK(frozen.at("views").at("front").at("sha256") == group.views[0].sha256);
             CHECK(probe.count("/model-jobs") == 0);
@@ -2729,11 +2869,11 @@ TEST_CASE("Advanced upload and style changes select in-place design targets", "[
     CHECK(session.set_upload(ViewId::Right, "replacement.png"));
     CHECK(session.selection()[index(ViewId::Right)]);
     CHECK(session.group()->id == "group-a");
-    Capabilities capabilities {true, true, true, true, true};
+    Capabilities capabilities {true, true, true, true, true, {true, true, true, true}, true};
     HostGuards guards {true, true, true};
     auto eligibility = session.eligibility(capabilities, guards);
-    CHECK_FALSE(eligibility.generate_model);
-    CHECK(eligibility.model_reason == "draft_changed");
+    CHECK(eligibility.generate_model);
+    CHECK(session.effective_model_views().size() == 3);
 
     auto draft = session.draft().design;
     draft.style = "sculpture";
@@ -2741,7 +2881,7 @@ TEST_CASE("Advanced upload and style changes select in-place design targets", "[
     for (ViewId view : AllViews) CHECK(session.selection()[index(view)]);
 }
 
-TEST_CASE("Advanced pending views survive restore and block model generation", "[AdvancedCreation]")
+TEST_CASE("Design pending views survive restore while verified versions remain available for modeling", "[AdvancedCreation]")
 {
     auto session = ready_session();
     auto group = complete_group();
@@ -2759,8 +2899,8 @@ TEST_CASE("Advanced pending views survive restore and block model generation", "
     HostGuards guards {true, true, true};
     const auto eligibility = session.eligibility(capabilities, guards);
     CHECK(eligibility.generate_design);
-    CHECK_FALSE(eligibility.generate_model);
-    CHECK(eligibility.model_reason == "design_regeneration_required");
+    CHECK(eligibility.generate_model);
+    CHECK(session.effective_model_views().size() == 4);
 }
 
 TEST_CASE("Advanced group names follow snapshots without changing an edited draft", "[AdvancedCreation]")
@@ -2854,7 +2994,7 @@ TEST_CASE("Advanced four image eligibility retains original guards and ignores 2
     auto draft = session.draft().design;
     draft.prompt = "Unsubmitted";
     session.set_design_draft(draft);
-    CHECK_FALSE(session.eligibility(capabilities, guards).generate_model);
+    CHECK(session.eligibility(capabilities, guards).generate_model);
     CHECK(session.eligibility(capabilities, guards).generate_design);
 }
 
@@ -2906,8 +3046,10 @@ TEST_CASE("Advanced model generation ignores only unselected terminal unknown de
         ++group.revision;
         group.views[index(problem)].attempt_state = state;
         REQUIRE(session.apply_snapshot(group, session.context()));
-        CHECK(session.eligibility(caps, guards).model_reason == "recovery_required");
-        CHECK_FALSE(session.eligibility(caps, guards).click_generate_model);
+        CHECK(session.eligibility(caps, guards).generate_model == (problem != ViewId::Front));
+        if (problem == ViewId::Front)
+            CHECK(session.eligibility(caps, guards).model_reason == "recovery_required");
+        CHECK(session.eligibility(caps, guards).click_generate_model);
     }
 }
 

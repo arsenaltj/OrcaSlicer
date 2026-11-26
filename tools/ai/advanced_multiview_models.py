@@ -16,6 +16,10 @@ from model_provider_gateway import PaidTaskAuthorization
 from model_request import _generation_options, _generation_provider, _geometry_model, _normalize_face_limit
 
 
+LEGACY_PLAN_SCHEMA = "advanced-multiview-model-plan-v2"
+SELECTED_PLAN_SCHEMA = "advanced-multiview-model-plan-v3"
+
+
 @dataclass(frozen=True)
 class AdvancedModelPorts:
     jobs: Any
@@ -56,16 +60,39 @@ class AdvancedMultiviewModels:
             self.repository.save(group)
 
     @staticmethod
-    def _require_design_results(group, selected) -> None:
+    def _require_design_results(group, selected, *, legacy: bool) -> None:
         states = {view: (group["views"][view].get("latest_attempt") or {}).get("state") for view in VIEWS}
-        if any(state in {"result_pending", "result_saved"} for state in states.values()):
+        if any(states[view] in {"result_pending", "result_saved"} for view in (VIEWS if legacy else selected)):
             raise RequestError("provider_task_ambiguous", "Recover the saved image result first.", 409)
         if any(states[view] == "ambiguous" for view in selected):
             raise RequestError("design_result_unknown", "A selected design still has an unknown generation result.", 409)
 
+    def _require_idle(self, group_id, group) -> None:
+        if group["active_operation_id"] or self.busy(group_id):
+            raise RequestError("group_busy", "Finish the active operation before modeling.", 409)
+        self._require_resolved(group_id)
+
+    def _front_design_draft(self, group_id, record):
+        # Old imported versions can lack their original operation. The selected
+        # image remains usable and its version still identifies its source.
+        try:
+            operation_id = identity(record.get("operation_id"), "operation_id")
+            operation = self.repository.read_record(group_id, f"operations/{operation_id}/operation.json")
+            metadata = draft_fields(operation.get("draft"))
+        except RequestError:
+            metadata = draft_fields({})
+        metadata["design_provider"] = record.get("provider") or metadata["design_provider"]
+        metadata["design_model"] = record.get("model") or metadata["design_model"]
+        return metadata
+
     def prepare(self, group_id: str, request: dict[str, Any]) -> dict[str, Any]:
         command = identity(request.get("command_id"), "command_id")
-        selected = targets(request.get("selected_views"), default_all=False) if "selected_views" in request else VIEWS
+        schema = request.get("schema", LEGACY_PLAN_SCHEMA)
+        if schema not in (SELECTED_PLAN_SCHEMA, LEGACY_PLAN_SCHEMA):
+            raise RequestError("invalid_request", "Unsupported advanced model plan version.", 400)
+        legacy = schema == LEGACY_PLAN_SCHEMA
+        selected = VIEWS if legacy and "selected_views" not in request else targets(
+            request.get("selected_views"), default_all=False)
         if not selected or "front" not in selected:
             raise RequestError("missing_front", "Select a usable front design before modeling.", 400)
         provider = _generation_provider(request)
@@ -80,43 +107,45 @@ class AdvancedMultiviewModels:
                    "texture_quality": texture, "output_format": output, "geometry_model": capability["model"]}
         with self.repository.transaction():
             group = self.repository.snapshot(group_id)
-            check_revision(group, request.get("expected_group_revision"))
-            if group["active_operation_id"] or self.busy(group_id):
-                raise RequestError("group_busy", "Finish the active operation before modeling.", 409)
-            self._require_resolved(group_id)
-            if any(view in group["pending_views"] for view in selected):
-                raise RequestError("design_regeneration_required",
-                                   "Regenerate design views whose source image or style changed before modeling.", 409)
-            if any(not group["views"][view]["current"] for view in selected):
+            self._require_idle(group_id, group)
+            if legacy:
+                check_revision(group, request.get("expected_group_revision"))
+                if any(view in group["pending_views"] for view in selected):
+                    raise RequestError("design_regeneration_required",
+                                       "Regenerate design views whose source image or style changed before modeling.", 409)
+            self._require_design_results(group, selected, legacy=legacy)
+            current = {view: group["views"][view]["current"] for view in selected}
+            if any(not record for record in current.values()):
                 raise RequestError("missing_current_view", "All selected design views must be usable.", 409)
-            if draft_fields(request.get("draft")) != group["latest_submitted_draft"]:
+            if legacy and draft_fields(request.get("draft")) != group["latest_submitted_draft"]:
                 raise RequestError("draft_changed", "Generate the changed description before modeling.", 409)
-            self._require_design_results(group, selected)
+            versions = {view: {"version_id": record["id"], "sha256": record["sha256"]}
+                        for view, record in current.items()}
             if "selected_views" in request:
-                visible = request.get("visible_versions")
-                if (request.get("expected_input_epoch") != group["input_epoch"]
-                        or not isinstance(visible, dict) or set(visible) != set(selected)):
+                if (request.get("visible_versions") != versions or
+                        (legacy and request.get("expected_input_epoch") != group["input_epoch"])):
                     raise RequestError("stale_confirmation", "The visible model inputs changed.", 409)
-                for view in selected:
-                    current = group["views"][view]["current"]
-                    if visible[view] != {"version_id": current["id"], "sha256": current["sha256"]}:
-                        raise RequestError("stale_confirmation", "A selected visible design changed.", 409)
             snapshot = {"schema": SNAPSHOT_SCHEMA, "group_id": group_id, "snapshot_id": command,
                         "selected_views": list(selected), "input_epoch": group["input_epoch"],
                         "input_mode": "image" if len(selected) == 1 else "multiview",
-                        "views": {v: {"version_id": group["views"][v]["current"]["id"],
-                                     "path": f"inputs/{v}.png", "sha256": group["views"][v]["current"]["sha256"]} for v in selected}}
+                        "views": {view: {**record, "path": f"inputs/{view}.png"}
+                                  for view, record in versions.items()}}
             snapshot["fingerprint"] = fingerprint(snapshot)
-            plan = {"schema": "advanced-multiview-model-plan-v2", "id": command, "job_id": command,
-                    "group_id": group_id, "expected_group_revision": group["revision"],
-                    "draft": deepcopy(group["latest_submitted_draft"]), "options": options,
-                    "approved_multiview_snapshot": snapshot, "max_new_model_tasks": 1,
+            plan = {"schema": schema, "id": command, "job_id": command, "group_id": group_id,
+                    "options": options, "approved_multiview_snapshot": snapshot, "max_new_model_tasks": 1,
                     "max_new_image_calls": 0, "max_new_conversion_tasks": int(output == "obj")}
+            if legacy:
+                plan.update(expected_group_revision=group["revision"], draft=deepcopy(group["latest_submitted_draft"]))
+            else:
+                plan["draft"] = self._front_design_draft(group_id, current["front"])
             digest = fingerprint(plan)
             path = self.repository.path(group_id, f"model-plans/{command}.json", must_exist=False)
             if path.exists():
                 old = self.repository.read_record(group_id, f"model-plans/{command}.json")
-                if old["confirmation_fingerprint"] != digest:
+                same_plan = (old["confirmation_fingerprint"] == digest if legacy else
+                             old["schema"] == schema and old["options"] == options and
+                             old["approved_multiview_snapshot"]["views"] == snapshot["views"])
+                if not same_plan:
                     raise RequestError("idempotency_conflict", "The command belongs to a different model plan.", 409)
                 return old
             plan.update(confirmation_fingerprint=digest, expires_at=time.time() + 600)
@@ -134,7 +163,10 @@ class AdvancedMultiviewModels:
         command = identity(request.get("command_id"), "command_id")
         with self.repository.transaction():
             plan = self.repository.read_record(group_id, f"model-plans/{command}.json")
-            if (request.get("plan_id") != command or
+            legacy = plan.get("schema") == LEGACY_PLAN_SCHEMA
+            if (plan.get("schema") not in (SELECTED_PLAN_SCHEMA, LEGACY_PLAN_SCHEMA) or
+                    plan.get("id") != command or plan.get("job_id") != command or plan.get("group_id") != group_id or
+                    request.get("plan_id") != command or
                     request.get("confirmation_fingerprint") != plan["confirmation_fingerprint"] or
                     fingerprint({key: value for key, value in plan.items()
                                  if key not in {"confirmation_fingerprint", "expires_at"}}) != plan["confirmation_fingerprint"]):
@@ -154,12 +186,21 @@ class AdvancedMultiviewModels:
                 if not job:
                     if time.time() > plan["expires_at"]:
                         raise RequestError("stale_confirmation", "The model plan expired.", 409)
-                    check_revision(group, plan["expected_group_revision"])
-                    if group["active_operation_id"] or self.busy(group_id):
-                        raise RequestError("group_busy", "The group has an active operation.", 409)
-                    self._require_resolved(group_id)
-                    selected = tuple(v for v in VIEWS if v in plan["approved_multiview_snapshot"]["views"])
-                    self._require_design_results(group, selected)
+                    if legacy:
+                        check_revision(group, plan["expected_group_revision"])
+                    self._require_idle(group_id, group)
+                    frozen_views = plan["approved_multiview_snapshot"]["views"]
+                    selected = tuple(view for view in VIEWS if view in frozen_views)
+                    self._require_design_results(group, selected, legacy=legacy)
+                    current = {}
+                    for view in selected:
+                        frozen = frozen_views[view]
+                        version = group["views"][view]["current_version_id"]
+                        if version != frozen["version_id"]:
+                            raise RequestError("stale_confirmation", "An approved design changed.", 409)
+                        current[view] = self.repository.version(group_id, view, version)
+                        if current[view]["sha256"] != frozen["sha256"]:
+                            raise RequestError("stale_confirmation", "An approved design changed.", 409)
                     options = plan["options"]
                     if options["provider"] == "yoyoclaw" and options["face_limit"] != 0:
                         raise RequestError("stale_confirmation", "Confirm a new YOYOClaw plan using its default face count.", 409)
@@ -167,13 +208,9 @@ class AdvancedMultiviewModels:
                         return options["provider"], options["geometry_model"]
                     if not supports_model_input(capability, len(selected)):
                         raise RequestError("unsupported_multiview", "The confirmed model is no longer available.", 503)
-                    for view in selected:
-                        if group["views"][view]["current_version_id"] != plan["approved_multiview_snapshot"]["views"][view]["version_id"]:
-                            raise RequestError("stale_confirmation", "An approved design changed.", 409)
                     directory.mkdir(exist_ok=True)
                     (directory / "inputs").mkdir(exist_ok=True)
-                    for view in selected:
-                        record = self.repository.version(group_id, view, group["views"][view]["current_version_id"])
+                    for view, record in current.items():
                         shutil.copyfile(self.repository.path(group_id, record["path"]), directory / f"inputs/{view}.png")
                     approved_paths(plan["approved_multiview_snapshot"], directory)
                     draft = plan["draft"]

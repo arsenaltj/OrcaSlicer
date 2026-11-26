@@ -58,7 +58,7 @@ AdvancedCreationFeatureHost::AdvancedCreationFeatureHost(wxWindow* owner, std::s
         for (const auto& id : abandoned) settle_receipt(id, false);
     }, m_poll_timer.GetId());
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
-        if (!command_pending() && !m_poll_pending) save_draft({});
+        if (!command_pending() && !m_poll_pending && !m_session.model_candidate()) save_draft({});
         else m_save_timer.StartOnce(600);
     }, m_save_timer.GetId());
     try {
@@ -103,6 +103,7 @@ void AdvancedCreationFeatureHost::shutdown()
     m_model_monitor.set_listener({}); m_model_monitor.reset(); m_catalog_client.cancel_current();
     m_cache_scope.cancel();
     m_model_job_listener = {};
+    m_confirmed_model_visual.reset();
     m_client.cancel();
 }
 
@@ -181,15 +182,9 @@ void AdvancedCreationFeatureHost::observe_model_job(const std::string& job, bool
     m_model_context = m_session.context();
     boost::filesystem::path reference;
     ModelGenerationVisualReference visual;
-    if (AdvancedMultiviewClient::valid_id(job)) {
-        // The service freezes these inputs before accepting the job. Current
-        // group images may have changed since an older job was generated.
-        const auto directory = ModelGenerationPresentation::generated_models_root() / job;
-        const auto front = directory / "inputs" / "front.png";
-        visual = {job, "confirmed-front:" + job,
-            wxString(front.wstring()).ToUTF8().data(), {}, true};
-        visual.verification_manifest = wxString((directory / "job.json").wstring()).ToUTF8().data();
-    }
+    if (live && m_model_request->phase == ModelJobEvent::Phase::Accepted && m_confirmed_model_visual &&
+        m_confirmed_model_visual->reference.owner_id == job && m_session.matches(m_confirmed_model_visual->context))
+        visual = m_confirmed_model_visual->reference;
     // Keep the existing artifact/library reference behavior independent of the
     // display-only frozen input.
     if (m_session.group()) reference = m_session.group()->views[0].image_path;
@@ -650,7 +645,7 @@ void AdvancedCreationFeatureHost::open_group(const std::string& id)
     save_draft([this, id] {
         // Stop suppression belongs to the observation being left. Its durable
         // receipt remains independent of this new presentation context.
-        m_stopping_model_job.clear(); m_model_request.reset();
+        m_stopping_model_job.clear(); m_model_request.reset(); m_confirmed_model_visual.reset();
         m_candidate_plan.reset(); ++m_candidate_plan_sequence; m_preparing_candidate = false;
         m_command_state = CommandState::Idle; m_model_monitor.reset(); m_session.begin_open(id);
         // The previous snapshot is still installed while this GET is pending.
@@ -710,7 +705,7 @@ void AdvancedCreationFeatureHost::new_creation()
     }
     m_save_timer.Stop();
     m_cache_scope.cancel();
-    m_stopping_model_job.clear(); m_model_request.reset();
+    m_stopping_model_job.clear(); m_model_request.reset(); m_confirmed_model_visual.reset();
     m_candidate_plan.reset(); ++m_candidate_plan_sequence; m_preparing_candidate = false;
     m_model_monitor.reset();
     m_session.new_creation();
@@ -824,49 +819,35 @@ void AdvancedCreationFeatureHost::generate_model(Confirm confirm, GenerationReje
     if (m_editing_guard && !m_editing_guard()) { if (rejected) rejected("creation_read_only"); return; }
     m_session.flush_click(std::numeric_limits<std::uint64_t>::max());
     if (!eligibility().generate_model || !m_session.group()) { if (rejected) rejected(generation_rejection(true)); return; }
-    m_command_state = CommandState::Exclusive; m_message.clear(); m_save_timer.Stop();
-    save_draft([this, confirm] {
-        const auto context = m_session.command_context();
-        auto options = m_session.draft().geometry;
-        if (options.provider == "yoyoclaw") {
-            options.face_limit = 0;
-            options.geometry_quality = "standard";
-            options.texture_quality = "standard";
-        }
-        const auto group = m_session.group()->id;
-        auto selected = Json::array(); auto visible = Json::object();
-        for (auto view : m_session.effective_model_views()) {
-            selected.push_back(view_name(view));
-            const auto& image = m_session.group()->views[index(view)];
-            visible[view_name(view)] = {{"version_id", image.version_id}, {"sha256", image.sha256}};
-        }
-        m_client.request("POST", "/groups/" + group + "/model-plans",
-            {{"command_id", new_identity()}, {"expected_group_revision", m_session.group()->revision},
-             {"expected_input_epoch", m_session.group()->input_epoch}, {"selected_views", selected}, {"visible_versions", visible},
-             {"draft", AdvancedMultiviewClient::design_json(m_session.draft().design)},
-             {"provider", options.provider}, {"geometry_model", options.model}, {"face_limit", options.face_limit},
-             {"geometry_quality", options.geometry_quality}, {"texture_quality", options.texture_quality}, {"output_format", options.output_format}},
-            complete([this, group, context, confirm](Json value) {
-                if (!m_session.matches_model_command(context)) { m_command_state = CommandState::Idle; publish(); return; }
-                const auto& plan = value.at("plan");
-                if ((m_editing_guard && !m_editing_guard()) || !confirm || !confirm(plan) ||
-                    (m_editing_guard && !m_editing_guard()) || !m_session.matches_model_command(context)) {
-                    if (m_session.matches(context.callback)) { m_command_state = CommandState::Idle; publish(); }
-                    return;
-                }
-                if (!save_pending_receipt({{"schema", "advanced-desktop-submission-v1"}, {"kind", "model"},
-                    {"group_id", group}, {"operation_id", plan.at("job_id")}, {"new_group", false}})) {
-                    m_command_state = CommandState::Idle; publish(); return;
-                }
-                submit_model_plan(group, plan);
-            }), error());
+    m_session.begin_model_selection();
+    prepare_model_selection([this, confirm, rejected](Json plan) {
+        if (!confirm || !confirm(plan) || !confirm_model_selection(plan, rejected))
+            cancel_model_selection();
+    }, [this, rejected](std::string reason) {
+        m_message = ModelGenerationStatusText::localized_advanced_service_error(reason).ToUTF8().data();
+        if (rejected) rejected(reason);
+        cancel_model_selection();
     });
-    publish();
 }
 
 void AdvancedCreationFeatureHost::submit_model_plan(const std::string& group, const Json& plan)
 {
     m_library_foreground_job = plan.at("job_id").get<std::string>();
+    m_confirmed_model_visual.reset();
+    // The confirmed plan already binds these bytes to this task. Waiting
+    // animation must not open job.json while the service is replacing it.
+    const auto& front = plan.at("approved_multiview_snapshot").at("views").at("front");
+    const auto version = front.value("version_id", std::string());
+    const auto digest = front.value("sha256", std::string());
+    const bool valid_digest = digest.size() == 64 && std::all_of(digest.begin(), digest.end(), [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+    });
+    if (AdvancedMultiviewClient::valid_id(m_library_foreground_job) && AdvancedMultiviewClient::valid_id(version) &&
+        valid_digest && front.value("path", std::string()) == "inputs/front.png") {
+        const auto path = ModelGenerationPresentation::generated_models_root() / m_library_foreground_job / "inputs" / "front.png";
+        m_confirmed_model_visual = ConfirmedModelVisual {m_session.context(), {m_library_foreground_job, version,
+            wxString(path.wstring()).ToUTF8().data(), digest, true}};
+    }
     const auto request = begin_model_request(m_library_foreground_job);
     m_client.request("POST", "/groups/" + group + "/model-jobs",
         {{"command_id", plan.at("id")}, {"plan_id", plan.at("id")},
@@ -896,7 +877,7 @@ bool AdvancedCreationFeatureHost::begin_model_selection(GenerationRejected rejec
     }
     m_session.begin_model_selection();
     m_candidate_plan.reset(); ++m_candidate_plan_sequence;
-    m_save_timer.Stop(); m_message.clear();
+    m_message.clear();
     return true;
 }
 
@@ -916,18 +897,8 @@ void AdvancedCreationFeatureHost::prepare_model_selection(Complete ready, Advanc
         if (failed) failed(eligible.model_reason);
         publish(); return;
     }
-    auto options = m_session.draft().geometry;
-    if (options.provider == "yoyoclaw") {
-        options.face_limit = 0; options.geometry_quality = options.texture_quality = "standard";
-    }
-    auto selected = Json::array(), visible = Json::object();
-    for (auto view : m_session.candidate_model_views()) {
-        selected.push_back(view_name(view));
-        const auto& image = m_session.group()->views[index(view)];
-        visible[view_name(view)] = {{"version_id", image.version_id}, {"sha256", image.sha256}};
-    }
     const auto group = m_session.group()->id;
-    const auto command = new_identity();
+    const auto request = model_plan_request(new_identity());
     m_preparing_candidate = true; m_command_state = CommandState::Exclusive;
     const auto alive = std::weak_ptr<int>(m_lifetime);
     const auto fail = [this, alive, sequence, candidate, failed](std::string message) {
@@ -939,28 +910,46 @@ void AdvancedCreationFeatureHost::prepare_model_selection(Complete ready, Advanc
             publish();
         });
     };
-    const Json request {{"command_id", command}, {"expected_group_revision", m_session.group()->revision},
-         {"expected_input_epoch", m_session.group()->input_epoch}, {"selected_views", selected}, {"visible_versions", visible},
-         {"draft", AdvancedMultiviewClient::design_json(m_session.draft().design)},
-         {"provider", options.provider}, {"geometry_model", options.model}, {"face_limit", options.face_limit},
-         {"geometry_quality", options.geometry_quality}, {"texture_quality", options.texture_quality}, {"output_format", options.output_format}};
     m_client.request("POST", "/groups/" + group + "/model-plans", request,
         complete([this, sequence, candidate, request, group, ready, failed](Json value) {
             if (sequence != m_candidate_plan_sequence || !m_session.model_candidate() ||
                 m_session.model_candidate()->id != candidate->id || m_session.model_candidate()->revision != candidate->revision) return;
             m_preparing_candidate = false; m_command_state = CommandState::Idle;
-            if (!m_session.matches_model_command(candidate->command) || !model_selection_eligibility().generate_model) {
-                if (failed) failed("draft_changed"); publish(); return;
+            if (const auto reason = model_selection_eligibility().model_reason; !reason.empty()) {
+                if (failed) failed(reason);
+                publish(); return;
             }
-            const auto& plan = value.at("plan");
-            if (!AdvancedMultiviewClient::model_plan_matches(plan, request, group)) {
+            const auto plan = value.find("plan");
+            if (plan == value.end() || request != model_plan_request(request.at("command_id").get<std::string>()) ||
+                !AdvancedMultiviewClient::model_plan_matches(*plan, request, group)) {
                 if (failed) failed("stale_confirmation"); publish(); return;
             }
-            m_candidate_plan = CandidatePlan {candidate->id, candidate->revision, sequence, plan};
-            if (ready) ready(plan);
+            m_candidate_plan = CandidatePlan {candidate->id, candidate->revision, sequence, *plan};
+            if (ready) ready(*plan);
             publish();
         }), fail);
     publish();
+}
+
+AdvancedCreationFeatureHost::Json AdvancedCreationFeatureHost::model_plan_request(const std::string& command) const
+{
+    auto options = m_session.draft().geometry;
+    if (options.provider == "yoyoclaw") {
+        options.face_limit = 0;
+        options.geometry_quality = "standard";
+        options.texture_quality = "standard";
+    }
+    auto selected = Json::array(), visible = Json::object();
+    for (auto view : m_session.candidate_model_views()) {
+        selected.push_back(view_name(view));
+        const auto& image = m_session.group()->views[index(view)];
+        visible[view_name(view)] = {{"version_id", image.version_id}, {"sha256", image.sha256}};
+    }
+    return {{"schema", AdvancedMultiviewClient::selected_plan_schema}, {"command_id", command},
+            {"selected_views", selected}, {"visible_versions", visible}, {"provider", options.provider},
+            {"geometry_model", options.model}, {"face_limit", options.face_limit},
+            {"geometry_quality", options.geometry_quality}, {"texture_quality", options.texture_quality},
+            {"output_format", options.output_format}};
 }
 
 bool AdvancedCreationFeatureHost::confirm_model_selection(const Json& plan, GenerationRejected rejected)
@@ -971,10 +960,12 @@ bool AdvancedCreationFeatureHost::confirm_model_selection(const Json& plan, Gene
     if (reason.empty() && (!candidate || !m_candidate_plan || m_preparing_candidate ||
         m_candidate_plan->id != candidate->id || m_candidate_plan->revision != candidate->revision ||
         m_candidate_plan->sequence != m_candidate_plan_sequence || m_candidate_plan->plan != plan ||
-        plan.value("expires_at", 0.0) <= now)) reason = "stale_confirmation";
+        plan.value("expires_at", 0.0) <= now ||
+        !AdvancedMultiviewClient::model_plan_matches(plan, model_plan_request(plan.at("id").get<std::string>()),
+                                                    m_session.context().group_id))) reason = "stale_confirmation";
     if (!reason.empty()) { if (rejected) rejected(reason); return false; }
     const auto local = m_session.candidate_local_draft();
-    if (!local) { if (rejected) rejected("draft_changed"); return false; }
+    if (!local) { if (rejected) rejected("stale_confirmation"); return false; }
     const auto group = m_session.group()->id;
     const auto job = plan.at("job_id").get<std::string>();
     if (!save_pending_receipt({{"schema", "advanced-desktop-submission-v1"}, {"kind", "model"},

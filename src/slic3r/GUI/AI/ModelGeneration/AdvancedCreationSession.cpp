@@ -372,15 +372,23 @@ bool Session::apply_model_job(const ModelJobProjection& job, const CallbackConte
     return true;
 }
 
+void Session::set_model_options(ModelOptions options)
+{
+    m_draft.geometry = std::move(options);
+    ++m_draft_revision;
+    ++m_model_options_revision;
+}
+
 CommandContext Session::command_context() const
 {
     return {context(), m_draft_revision, m_selection_revision, m_group ? m_group->revision : 0,
-            m_model_selection_revision};
+            m_model_selection_revision, m_model_options_revision};
 }
 
 bool Session::matches_model_command(const CommandContext& command) const
 {
-    return matches_command(command, false) && command.model_selection_revision == m_model_selection_revision;
+    return matches(command.callback) && command.model_selection_revision == m_model_selection_revision &&
+           command.model_options_revision == m_model_options_revision;
 }
 
 bool Session::matches_command(const CommandContext& command, bool uses_selection) const
@@ -417,7 +425,7 @@ bool Session::model_view_usable(ViewId view) const
     if (!m_group || m_invalidated_uploads[index(view)]) return false;
     const auto& image = m_group->views[index(view)];
     return image.usable && !image.asset_pending && !image.display_error &&
-        !m_group->pending_views[index(view)] && !image.version_id.empty() && !image.image_path.empty() &&
+        !image.version_id.empty() && !image.image_path.empty() &&
         image.version_id == image.canonical_version_id;
 }
 
@@ -458,7 +466,7 @@ std::vector<ViewId> Session::effective_model_views() const
 std::uint64_t Session::begin_model_selection()
 {
     m_pending_click.reset();
-    m_model_candidate = ModelSelectionCandidate {++m_candidate_sequence, 0, command_context(), m_model_selected};
+    m_model_candidate = ModelSelectionCandidate {++m_candidate_sequence, 0, command_context(), model_selection()};
     m_model_candidate->selected[0] = true;
     return m_model_candidate->id;
 }
@@ -487,7 +495,7 @@ Eligibility Session::candidate_model_eligibility(const Capabilities& capabilitie
     if (m_model_candidate && matches_model_command(m_model_candidate->command))
         return eligibility_for(capabilities, guards, m_model_candidate->selected);
     Eligibility result;
-    result.model_reason = "draft_changed";
+    result.model_reason = "stale_confirmation";
     return result;
 }
 
@@ -593,19 +601,21 @@ Eligibility Session::eligibility_for(const Capabilities& capabilities, const Hos
         return result;
     }
     const bool busy = m_group && (!m_group->active_operation_id.empty() || m_group->model_busy);
-    bool recoverable = false;
+    bool recoverable = false, selected_recoverable = false;
     bool unknown_design = false, selected_unknown_design = false;
-    bool missing = !model_view_usable(ViewId::Front), pending = false;
-    std::vector<ViewId> model_views;
-    for (ViewId view : AllViews) if (selected[index(view)]) model_views.push_back(view);
-    for (ViewId view : model_views) {
+    bool missing = !model_view_usable(ViewId::Front);
+    std::size_t model_view_count = 0;
+    for (ViewId view : AllViews) {
+        if (!selected[index(view)]) continue;
+        ++model_view_count;
         missing = missing || !model_view_usable(view);
-        pending = pending || (m_group && m_group->pending_views[index(view)]);
     }
     if (m_group) for (const auto view : AllViews) {
         const auto slot = index(view);
         const auto& state = m_group->views[slot].attempt_state;
-        recoverable = recoverable || design_attempt_recoverable(state);
+        const bool view_recoverable = design_attempt_recoverable(state);
+        recoverable = recoverable || view_recoverable;
+        selected_recoverable = selected_recoverable || (selected[slot] && view_recoverable);
         unknown_design = unknown_design || state == "ambiguous";
         selected_unknown_design = selected_unknown_design || (selected[slot] && state == "ambiguous");
         result.retry = result.retry || state == "failed" || state == "stopped" || state == "blocked";
@@ -615,7 +625,7 @@ Eligibility Session::eligibility_for(const Capabilities& capabilities, const Hos
     // A missing image can precede workbench_guard in model_reason. Project
     // interaction directly from the guards, not from the first error string.
     result.click_generate_design = !busy && guards.can_start;
-    result.click_generate_model = result.click_generate_design && !recoverable;
+    result.click_generate_model = result.click_generate_design;
     const bool any_upload = std::any_of(m_draft.uploads.begin(), m_draft.uploads.end(),
                                         [](const std::string& value) { return !value.empty(); });
     const bool valid = input_rejection().empty();
@@ -627,18 +637,16 @@ Eligibility Session::eligibility_for(const Capabilities& capabilities, const Hos
         !capabilities.service_available ? "service_unavailable" : any_upload && m_draft.uploads[0].empty() ? "missing_front" : !valid ? "invalid_input" :
         !image_capable ? "unsupported_multiview" : "";
     result.generate_design = result.design_reason.empty();
-    result.model_reason = busy ? "group_busy" : recoverable ? "recovery_required" :
-         selected_unknown_design ? "design_result_unknown" :
-        pending ? "design_regeneration_required" : missing ? "missing_current_view" :
-        m_draft.uploads != m_group->uploads || !m_group->latest_submitted_draft ||
-            m_draft.design != *m_group->latest_submitted_draft ? "draft_changed" : !guards.can_start ? "workbench_guard" :
+    result.model_reason = busy ? "group_busy" : selected_recoverable ? "recovery_required" :
+        selected_unknown_design ? "design_result_unknown" : missing ? "missing_current_view" :
+        !guards.can_start ? "workbench_guard" :
         !guards.model_options_valid ? "invalid_model_options" :
         !capabilities.service_available || !guards.model_service_available ? "service_unavailable" :
         !(selection_entry ? (capabilities.model_image_counts_known ?
           std::any_of(capabilities.model_image_counts.begin(), capabilities.model_image_counts.end(), [](bool supported) { return supported; }) :
-          capabilities.four_view_model) : model_views.size() >= 1 && model_views.size() <= 4 &&
-          (capabilities.model_image_counts_known ? capabilities.model_image_counts[model_views.size() - 1] :
-           model_views.size() == 4 && capabilities.four_view_model)) ? "unsupported_multiview" : "";
+          capabilities.four_view_model) : model_view_count >= 1 && model_view_count <= 4 &&
+          (capabilities.model_image_counts_known ? capabilities.model_image_counts[model_view_count - 1] :
+           model_view_count == 4 && capabilities.four_view_model)) ? "unsupported_multiview" : "";
     result.generate_model = result.model_reason.empty();
     result.retry = result.retry && !busy && !recoverable && !unknown_design && guards.can_start && capabilities.service_available;
     return result;

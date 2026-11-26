@@ -390,3 +390,65 @@ git diff --check
 - `AdvancedCreationWorkspace` 在页面及子控件存活时关停。解绑显示、DPI、大小、顶层窗口和计时器回调，撤销异步交付。通过隐藏浮层释放其窗口，避免在析构过程中修改描述输入框。普通隐藏、最小化恢复继续使用页面原有的显示事件。
 - `AdvancedCreationSession` 将弹框进入资格和当前选图提交资格分开。用户可在原确认窗取消异常辅助图，取消窗口只丢弃候选。`advanced_multiview_models.py` 准备时检查所选集合，执行时复核冻结版本、文件校验值和当前资格。活动任务、未决回执、可恢复结果继续使用既有保护，重复确认沿用同一计划的幂等处理。
 - 原生回归向页面投递晚到的隐藏、DPI 和计时事件，执行两次关停后处理事件。两家供应商的单、多图分派、缺图、旧四图调用、过期计划与幂等使用定向回归。Windows 结果详见[专项用例](2026-11-24-advanced-2d-description-preview-test-cases.md#a2d-exit-model-gate-results)。
+
+<a id="a2d-selected-design-model-development-20261126"></a>
+
+## 13. 高级 3D 按选中设计图生成的开发方案
+
+2026-11-26。沿 `UX/ADVANCED-MULTIVIEW-20261107`／`ADV-2D-06`，本地基线 `codex/team/integration`／`5d43bcaed3`。本节记录本次转测的实施范围。用户于 2026-11-26 授权执行。此前 2D 预览及高级 3D 选图方案保留作为历史记录。 [需求审批清单](../2026-09-25-product-convergence-and-lightweight-plan.md#advanced-3d-selected-design-approval-20261126) · [转测核心用例](2026-11-24-advanced-2d-description-preview-test-cases.md#a2d-selected-design-model-core-tests-20261126)
+
+### 13.1 业务规则与用户操作
+
+| 用户操作 | 预期行为 |
+| --- | --- |
+| 第一次打开还没有选图偏好的套图 | 勾选当前所有可用设计图。主视角必选，左、后、右可独立勾选或取消。某方向首次获得可用图时按现有默认规则勾选。 |
+| 同一套图往返 2D 和 3D | 保留手动勾选。已经取消的方向重画后仍保持取消。一个已选方向的当前版本失效时，指出该方向，允许取消辅助图后继续。 |
+| 修改全局描述、风格、生图供应商或模型 | 草稿用于下一次 2D 出图。已经发布且可用的图仍可建模。仅有 2D 待重生成标记时，保留现有 3D 勾选。用户可以选择不同批次的主图和辅图。 |
+| 首次生成或在已有成品上重新生成 | 首次沿用 3D 页的勾选。重新生成在原确认窗改选。确认后固定最终视角、图片版本与 3D 参数。仅主图走单图，主图加辅助图走多视图。取消确认保留原选择和成品。 |
+| 更换或删除上传原图 | 对应设计图被原有上传流程清除时，按当前仍有效的图选图。主设计图缺失需先补主图。 |
+| 生成或恢复期间 | 同组执行中、停止中、正在恢复或受理待核对时等待。已结束且仅未选辅助图有暂存结果时，允许其余有效图建模。对已选待恢复的方向沿用恢复提示，可取消受影响的辅助图。上次已结束且明确失败时，若仍有已发布的当前图，可用该图。结果未知仍按现有选中视角规则提示，已结束且未选中的辅助图可排除。 |
+
+手动进入 3D 页按当前可用图片判断。2D 首次完成后的自动切页仍由现有 2D 引导负责。3D 确认窗用已有图片和张数帮助用户判断是否混用新旧视角。
+
+### 13.2 桌面实现
+
+1. 由 `AdvancedCreationSession` 维护选图与资格。把已发布的当前版本、可读性、可见版本一致性和上传失效作为图片检查。去掉 3D 分支中的整组草稿比较、整组上传路径比较，以及 2D 风格待重生成标记。主图和所选辅助图使用共同的图片判断。保留既有选图偏好字段和本地记录。 [视角可用性](../../../src/slic3r/GUI/AI/ModelGeneration/AdvancedCreationSession.cpp#L415)
+2. 由 `AdvancedCreationFeatureHost` 复用首次建模和重新生成的计划请求及回执校验。两个入口沿用各自的确认交互。首次建模删除前置的 `save_draft`，自动保存定时器按既有忙碌状态稍后续跑。候选检查绑定套图身份、所选版本、3D 选项和当前任务状态。无关的 2D 草稿保存只更新显示及保存状态。 [首次生成入口](../../../src/slic3r/GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.cpp#L821) · [重新生成入口](../../../src/slic3r/GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.cpp#L908)
+3. 高级页继续使用原卡片、勾选和确认窗。3D 状态提示指出缺主图、所选视角待恢复、图片版本变化或真正的忙碌。清理指向旧草稿门禁的提示及失去调用方的代码。`latest_submitted_draft`、`pending_views`、`input_epoch`、草稿保存和 `inputs_match_results()` 继续服务 2D。共享提示按实际消费者复核。 [高级页状态投影](../../../src/slic3r/GUI/Redesign/AdvancedCreationWorkspace.cpp#L3222)
+
+### 13.3 本地服务、记录与并发
+
+1. 沿用 `model-plans` 和 `model-jobs`。新桌面请求由命令 ID、具名选择、各方向的版本 ID 与 SHA-256、3D 选项组成。更新显式选图计划的版本和桌面回执校验。旧无显式选择的四图调用沿既有兼容入口，历史计划和旧 v1／v2 图片快照按各自格式读取。新任务继续写现有 `approved-multiview-input-v2`，其中组输入 epoch 作为快照记录。任务里需要兼容的描述与供图元数据优先取自主图对应的生成记录。 [桌面回执校验](../../../src/slic3r/GUI/AI/ModelGeneration/AdvancedMultiviewClient.cpp#L35) · [服务计划入口](../../../tools/ai/advanced_multiview_models.py#L66)
+2. 在准备和执行阶段核对套图、主图、所选方向、当前版本及内容摘要。提交时在组事务内重新检查，复制所选图片到任务目录并校验文件。允许所选图片和任务条件均相同的草稿修订变化。所选版本改变、确认过期或 3D 选项改变时重新准备计划并由用户确认。保留计划指纹、命令幂等、供应商支持图数、旧任务受理核对和工作台只读检查。 [冻结图片和接受任务](../../../tools/ai/advanced_multiview_models.py#L154)
+3. 恢复与建模共用同组互斥。准备与正式提交重查所选方向的待恢复状态。显式恢复、受理核对触发的恢复以及启动补恢复，在挂接活动操作前检查同组 3D 状态。先被受理的一方持有忙碌状态，另一方等待。待恢复文件和旧回执可供随后继续处理。已接受的 3D 任务使用自身冻结的图片，历史成品按原快照打开。 [恢复入口](../../../tools/ai/advanced_multiview_runtime.py#L92) · [恢复事务](../../../tools/ai/advanced_multiview_design_workflow.py#L352)
+
+桌面负责用户看到的图片和候选状态。本地服务负责版本、回执和任务提交。3D 供应商沿现有单图或多视图分派，工作台沿现有资产交接入口。实施中发现需要改动智能创作或工作台业务时，按用户要求停在影响确认点。 [3D 供应商调用](../../../tools/ai/advanced_multiview_model_workflow.py#L41)
+
+### 13.4 实施与转测顺序
+
+| 顺序 | 交付检查 |
+| --- | --- |
+| 1. 对齐桌面与服务 | 在原分支配套改动资格、计划和恢复分支。核对旧草稿字段的 2D 调用方，清理可删除的 3D 代码和提示。同步维护高级创作契约说明。 |
+| 2. 跑定向回归 | 复用 `slic3rutils_tests` 的 `AdvancedCreation` 和高级多视角 Python 相关模块，覆盖核心用例下方的三组断言。计划契约和运行时修改按工程规则执行 `python scripts/verify_ai_integration.py --json`。 |
+| 3. 构建转测候选 | 拟沿用 V1.0.5 的产品版本，使用新的构建标识区分候选。复用 `.tmp/dev/build` 的增量构建，冻结完整源码快照，含已有未提交改动和删除项。按内部打包入口生成 Windows x64 安装 EXE、便携 ZIP、来源清单及 SHA-256。桌面、DLL、资源与本地服务使用同一快照。 |
+| 4. 走一遍核心实窗 | 用候选包和独立配置串行完成四条用户操作，安装权限在同一轮启动检查里记录。确认功能证据和产物标识一致后，交付转测包、核心结果和待测项。 |
+
+内部构建入口和源码身份要求见[打包说明](../../../release/README.md#internal-build-entry-point)及[工程验证命令](../../coordination/quick-development.md#日常入口)。
+
+<a id="advanced-3d-first-submit-race-design-20261126"></a>
+
+## 14. 高级模式首次建模保存冲突修复方案
+
+2026-11-26，待审批。沿 `UX/ADVANCED-MULTIVIEW-20261107`／`ADV-2D-06`，基线为 `codex/team/integration`／`5d43bcaed3` 加已构建选图候选快照 `8acd762233` 的产品改动。已复现等待动画持有 `job.json` 读取句柄时，后台提交前原子替换同一文件失败。单图和多图经同一高级任务入口提交。验收以两个新套图完成首次建模为准。 [现场证据与版本溯源](../2026-09-25-product-convergence-and-lightweight-plan.md#advanced-3d-job-state-save-failure-20261126) · [核心用例](2026-11-24-advanced-2d-description-preview-test-cases.md#advanced-3d-first-submit-race-tests-20261126)
+
+### 14.1 从已确认计划提供等待动画的主图
+
+1. 高级桌面在 `confirm_model_selection` 核对最终选图、计划身份及有效期，再从通过校验的 `approved_multiview_snapshot.views.front` 取得图片版本和 SHA-256。以当前套图、会话代次和本次 3D 任务 ID 绑定这份展示数据。只接受规范版本 ID、由 64 个十六进制字符组成的 SHA-256 摘要及任务内固定路径 `inputs/front.png`。计划里已有所需信息，宿主沿用现有 `ModelGenerationVisualReference` 传递，不为展示新建持久化记录。 [确认入口](../../../src/slic3r/GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.cpp#L945) · [计划校验](../../../src/slic3r/GUI/AI/ModelGeneration/AdvancedMultiviewClient.cpp#L35)
+2. 收到与当前请求匹配的本地受理回执后，宿主才发布该任务的等待图源。`observe_model_job` 把已绑定的版本和摘要传给动画，动画从此任务的 `inputs/front.png` 读取图片并校验内容。删除高级任务给动画传入 `job.json` 文件路径的做法。单图和多图的动画都只校验本次冻结的主图，所选辅助图继续按确认计划参加建模。 [当前图源入口](../../../src/slic3r/GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.cpp#L169) · [现有图片摘要检查](../../../src/slic3r/GUI/Redesign/GenerationParticleImage.hpp#L137)
+3. 同任务的网络受理核对可复用当前会话中匹配的展示信息，轮询只补齐同一版本。切换套图、开始新任务或关闭窗口时，旧图源随所属会话清理，迟到的回执和图片准备结果按既有身份检查丢弃。重启后打开旧任务、计划摘要不可用、冻结图片尚未就绪或内容校验失败时使用 Logo，任务状态和历史成品仍走现有流程。 [受理核对](../../../src/slic3r/GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.cpp#L1309) · [任务展示绑定](../../../src/slic3r/GUI/AI/ModelGeneration/AdvancedModelTaskFlow.hpp#L49)
+
+### 14.2 实施范围与通过条件
+
+桌面高级宿主保存本次确认所需的临时展示信息。等待动画只消费经过身份绑定和摘要校验的图片。后台继续负责冻结任务输入、保存提交前的任务记录和防重复提交。一次用户确认仍对应一个本地 3D 任务及至多一个远端生成任务。按所选图片决定单图或多图路由。实施重点在高级宿主和相应的现有测试。核实旧动画清单读取入口的调用方后，才清理失去用途的分支。若必须改变智能创作、工作台业务或共享持久化策略，先明确影响再提请审批。 [保存后提交的顺序](../../../tools/ai/advanced_multiview_model_workflow.py#L28)
+
+先用 Windows 临时目录和现有测试接缝控制读取与替换的先后。旧路径应能稳定复现 `WinError 5`。修后按正常高级任务入口取得的动画图源，在状态文件被替换时仍可从冻结主图校验并准备画面。再用匹配的桌面和侧车候选跑单图、多图实窗，两条都必须从新生成的 2D 设计图经第一次确认得到可预览的 GLB。旧故障的新版回归以本节为准，原转测专项仍保留历史和工作台交接等覆盖。

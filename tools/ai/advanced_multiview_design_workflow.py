@@ -328,7 +328,8 @@ class AdvancedMultiviewDesignWorkflow:
     def recover_interrupted(self, group_id: str, expected_revision: int | None = None,
                             *, expected_operation: str | None = None,
                             operation_running: Callable[[str], bool] | None = None,
-                            allow_failed_result_retry: bool = False) -> None:
+                            allow_failed_result_retry: bool = False,
+                            model_busy: Callable[[str], bool] | None = None) -> None:
         """Finish an existing receipt without issuing a supplier creation request."""
         with self._recovery_lock:
             if group_id in self._recovering:
@@ -336,7 +337,7 @@ class AdvancedMultiviewDesignWorkflow:
             self._recovering.add(group_id)
         try:
             self._recover_interrupted(group_id, expected_revision, expected_operation, operation_running,
-                                      allow_failed_result_retry)
+                                      allow_failed_result_retry, model_busy)
         finally:
             with self._recovery_lock:
                 self._recovering.remove(group_id)
@@ -352,8 +353,10 @@ class AdvancedMultiviewDesignWorkflow:
     def _recover_interrupted(self, group_id: str, expected_revision: int | None,
                              expected_operation: str | None,
                              operation_running: Callable[[str], bool] | None,
-                             allow_failed_result_retry: bool) -> None:
+                             allow_failed_result_retry: bool, model_busy: Callable[[str], bool] | None) -> None:
         with self.repository.transaction():
+            if model_busy and model_busy(group_id):
+                return
             group = self.repository.load(group_id)
             if expected_revision is not None and group["revision"] != expected_revision:
                 return

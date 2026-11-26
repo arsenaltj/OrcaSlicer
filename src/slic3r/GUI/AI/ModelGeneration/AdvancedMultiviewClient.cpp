@@ -38,13 +38,12 @@ bool AdvancedMultiviewClient::model_plan_matches(const Json& plan, const Json& r
         const auto& selected = request.at("selected_views");
         const auto& snapshot = plan.at("approved_multiview_snapshot");
         const auto& options = plan.at("options");
-        if (plan.at("schema") != "advanced-multiview-model-plan-v2" ||
+        if (plan.at("schema") != selected_plan_schema || request.at("schema") != selected_plan_schema ||
             plan.at("id") != request.at("command_id") || plan.at("job_id") != request.at("command_id") ||
-            plan.at("group_id") != group || plan.at("expected_group_revision") != request.at("expected_group_revision") ||
-            plan.at("draft") != request.at("draft") ||
+            plan.at("group_id") != group ||
             snapshot.at("schema") != "approved-multiview-input-v2" || snapshot.at("group_id") != group ||
             snapshot.at("snapshot_id") != request.at("command_id") || snapshot.at("selected_views") != selected ||
-            snapshot.at("input_epoch") != request.at("expected_input_epoch") ||
+            !valid_id(snapshot.at("input_epoch").get<std::string>()) ||
             snapshot.at("input_mode") != (selected.size() == 1 ? "image" : "multiview") ||
             !snapshot.at("views").is_object() || snapshot.at("views").size() != selected.size()) return false;
         for (const auto& view : selected) {

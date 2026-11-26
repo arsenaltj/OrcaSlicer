@@ -60,7 +60,8 @@ class AdvancedMultiviewRuntime:
         if not self.closed:
             try:
                 self.workflow.recover_interrupted(group_id, revision,
-                                                  operation_running=self.application.operation_running)
+                                                  operation_running=self.application.operation_running,
+                                                  model_busy=self.application.model_busy)
             except RequestError:
                 pass
 
@@ -94,7 +95,7 @@ class AdvancedMultiviewRuntime:
             group = self.repository.load(group_id)
             operation = self.application.operation(group_id, operation_id)
             if (group["active_operation_id"] not in {None, operation_id}
-                    or self.application.operation_running(operation_id)):
+                    or self.application.operation_running(operation_id) or self.application.model_busy(group_id)):
                 raise RequestError("group_busy", "Wait for the active operation before recovering saved results.", 409)
             if operation["state"] != "recovery_required":
                 return operation
@@ -106,7 +107,7 @@ class AdvancedMultiviewRuntime:
         # Known output download/local commit only, never a supplier creation request.
         self.workflow.recover_interrupted(group_id, expected_operation=operation_id,
                                           operation_running=self.application.operation_running,
-                                          allow_failed_result_retry=True)
+                                          allow_failed_result_retry=True, model_busy=self.application.model_busy)
         return self.application.operation(group_id, operation_id)
 
     def reconcile(self, group_id: str, operation_id: str) -> dict[str, Any]:
@@ -124,7 +125,8 @@ class AdvancedMultiviewRuntime:
             check_recovery = not self.application.operation_running(operation_id)
         if check_recovery:
             self.workflow.recover_interrupted(group_id, expected_operation=operation_id,
-                                              operation_running=self.application.operation_running)
+                                              operation_running=self.application.operation_running,
+                                              model_busy=self.application.model_busy)
         with self.repository.transaction():
             return {"accepted": True, "operation": self.application.operation(group_id, operation_id),
                     "group": self.snapshot(group_id)}

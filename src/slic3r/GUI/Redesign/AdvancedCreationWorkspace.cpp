@@ -84,8 +84,7 @@ wxString reason_text(const std::string& reason)
     if (reason == "recovery_required") return t("存在未完成的请求，请先恢复原任务结果。");
     if (reason == "invalid_input") return t("请上传主参考图或填写描述，描述最多 2000 字符。");
     if (reason == "missing_front") return t("请先上传主视角图片。");
-    if (reason == "design_regeneration_required") return t("上传图片或风格已修改，请先重新生成对应设计图。");
-    if (reason == "draft_changed") return t("输入已修改，请先生成对应设计图。");
+    if (reason == "stale_confirmation") return t("所选图片或确认计划已变化，请重新确认。");
     if (reason == "history_loading") return t("正在恢复整组历史…");
     return wxEmptyString;
 }
@@ -3243,7 +3242,7 @@ struct AdvancedCreationWorkspace::Impl {
                     if (detail.empty()) detail = t(result.error_code.c_str());
                     if (detail.empty()) detail = t("本次未成功生成该视角。");
                     if (!model_tab) detail += t("\n可通过左下角星芒添加局部描述并重新生成。");
-                } else if (result.usable) state = session.group()->pending_views[i] ? t("待重新生成") : t("设计图");
+                } else if (result.usable) state = !model_tab && session.group()->pending_views[i] ? t("待重新生成") : t("设计图");
             }
             const auto revision = session.group() ? session.group()->views[i].sha256 : std::string{};
             const bool local_visible = !model_tab && session.has_local_design_target(view);

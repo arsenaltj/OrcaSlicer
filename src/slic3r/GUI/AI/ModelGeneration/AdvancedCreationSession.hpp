@@ -22,7 +22,7 @@ public:
     std::vector<ViewId> all_design_views() const;
     bool has_local_design_target(ViewId view) const;
     std::string single_design_rejection(ViewId view, const std::string& text) const;
-    void set_model_options(ModelOptions options) { m_draft.geometry = std::move(options); ++m_draft_revision; }
+    void set_model_options(ModelOptions options);
     bool draft_dirty() const { return m_draft_dirty; }
     void mark_draft_saved(const DesignDraft& saved);
     bool inputs_match_results() const;
@@ -96,6 +96,7 @@ private:
     std::uint64_t m_draft_revision {0};
     std::uint64_t m_selection_revision {0};
     std::uint64_t m_model_selection_revision {0};
+    std::uint64_t m_model_options_revision {0};
     bool m_sidebar_expanded {true};
     bool m_draft_dirty {false};
 };

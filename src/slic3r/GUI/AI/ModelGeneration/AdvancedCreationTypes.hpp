@@ -155,6 +155,7 @@ struct CommandContext {
     std::uint64_t selection_revision {0};
     std::uint64_t group_revision {0};
     std::uint64_t model_selection_revision {0};
+    std::uint64_t model_options_revision {0};
 };
 
 struct ModelSelectionCandidate {

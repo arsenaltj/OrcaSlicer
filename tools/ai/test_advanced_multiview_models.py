@@ -13,7 +13,7 @@ from PIL import Image
 from advanced_multiview_application import AdvancedMultiviewApplication
 from advanced_multiview_contracts import VIEWS, new_id, fingerprint
 from advanced_multiview_design_workflow import AdvancedMultiviewDesignWorkflow, DesignImageResult
-from advanced_multiview_models import AdvancedModelPorts, AdvancedMultiviewModels
+from advanced_multiview_models import SELECTED_PLAN_SCHEMA, AdvancedModelPorts, AdvancedMultiviewModels
 from advanced_multiview_model_contracts import approved_paths
 from advanced_multiview_runtime import AdvancedMultiviewRuntime
 from model_contracts import RequestError
@@ -37,7 +37,7 @@ class ModelTests(unittest.TestCase):
             path.write_bytes(image({"front":"red","left":"green","back":"blue","right":"purple"}[_request.view])); return DesignImageResult()
         self.design = AdvancedMultiviewDesignWorkflow(self.repo, generate)
         self.images = AdvancedMultiviewApplication(self.repo,
-            capabilities=lambda *_: {"initial_text": "supported"},
+            capabilities=lambda *_: {"initial_text": "supported", "edit_current_with_context": "supported"},
             submit=lambda work: work(), run_design=self.design.run)
         self.initial = self.images.prepare(self.group["id"], {"command_id": new_id(), "kind": "initial", "expected_group_revision": 0})
         self.images.execute(self.group["id"], {"command_id": self.initial["id"], "plan_id": self.initial["id"],
@@ -89,6 +89,92 @@ class ModelTests(unittest.TestCase):
                          visible_versions={view: {"version_id": group["views"][view]["current"]["id"],
                                                  "sha256": group["views"][view]["current"]["sha256"]}
                                            for view in selected if view in VIEWS and group["views"][view]["current"]}, **fields)
+
+    def current_plan(self, selected, **fields):
+        group = self.repo.snapshot(self.group["id"])
+        return self.models.prepare(group["id"], {
+            "schema": SELECTED_PLAN_SCHEMA, "command_id": new_id(), "selected_views": selected,
+            "visible_versions": {view: {"version_id": record["id"], "sha256": record["sha256"]}
+                                 for view in selected if (record := group["views"][view]["current"])},
+            "geometry_quality": "standard", **fields})
+
+    def test_selected_plan_uses_the_published_view_across_unrelated_draft_and_input_epoch_changes(self):
+        from dataclasses import replace
+        self.models.ports = replace(self.models.ports, capability=lambda *_: {
+            "available": True, "supported_image_counts": [1, 2, 3, 4], "model": "model-a"})
+        group_id = self.group["id"]
+        old_front = self.repo.snapshot(group_id)["views"]["front"]["current"]["id"]
+        draft = dict(self.group["saved_draft"], prompt="  Different future image  ", style="cartoon",
+                     design_provider="yoyoclaw", design_model="qwen-image")
+        self.images.save_draft(group_id, {"draft": draft, "expected_group_revision": self.group["revision"]})
+        current = self.repo.load(group_id)
+        local_edit = self.images.prepare(group_id, {"command_id": new_id(), "kind": "edit",
+            "expected_group_revision": current["revision"], "target_views": ["front"],
+            "base_versions": {"front": old_front}, "draft": current["saved_draft"],
+            "design_request": {"version": 1, "scope": "single_view", "target_view": "front", "local_prompt": ""},
+            **current["saved_draft"]})
+        self.images.execute(group_id, {"command_id": local_edit["id"], "plan_id": local_edit["id"],
+                                     "confirmation_fingerprint": local_edit["confirmation_fingerprint"]})
+        finished = self.repo.snapshot(group_id)
+        self.assertNotEqual(finished["views"]["front"]["current"]["id"], old_front)
+        self.assertIn("left", finished["pending_views"])
+        self.assertNotEqual(finished["latest_submitted_draft"], finished["saved_draft"])
+        plan = self.current_plan(["front", "left"])
+        self.assertEqual(plan["draft"]["design_provider"], "yoyoclaw")
+        self.assertEqual(plan["draft"]["prompt"], draft["prompt"].strip())
+        self.images.save_draft(group_id, {"draft": dict(draft, style=self.initial["draft"]["style"]),
+                                         "expected_group_revision": finished["revision"]})
+        self.assertNotEqual(self.repo.load(group_id)["input_epoch"], finished["input_epoch"])
+        self.assertEqual(self.current_plan(["front", "left"], command_id=plan["id"]), plan)
+        job = self.execute(plan)
+        self.assertEqual(set(approved_paths(job.approved_multiview_snapshot, job.directory)), {"front", "left"})
+        self.assertEqual(self.execute(plan).id, job.id)
+        self.assertEqual(len(self.queue), 1)
+        self.drain()
+        self.assertEqual(job.state, "ready")
+        self.assertEqual(len(self.requests), 1)
+
+    def test_selected_plan_rejects_changed_files_and_serializes_auxiliary_recovery(self):
+        from dataclasses import replace
+        self.models.ports = replace(self.models.ports, capability=lambda *_: {
+            "available": True, "supported_image_counts": [1, 2, 3, 4], "model": "model-a"})
+        group_id = self.group["id"]
+        group = self.repo.load(group_id)
+        group["views"]["left"]["latest_attempt"]["state"] = "result_saved"
+        self.repo.save(group)
+        with self.assertRaises(RequestError) as selected_recovery:
+            self.current_plan(["front", "left"])
+        self.assertEqual(selected_recovery.exception.code, "provider_task_ambiguous")
+        plan = self.current_plan(["front"])
+        group = self.repo.load(group_id)
+        operation_id = group["views"]["left"]["latest_attempt"]["operation_id"]
+        group["active_operation_id"] = operation_id
+        self.repo.save(group)
+        with self.assertRaises(RequestError) as active_recovery:
+            self.execute(plan)
+        self.assertEqual(active_recovery.exception.code, "group_busy")
+        group = self.repo.load(group_id)
+        group["active_operation_id"] = None
+        original = group["views"]["front"]["current_version_id"]
+        group["views"]["front"]["current_version_id"] = None
+        self.repo.save(group)
+        with self.assertRaises(RequestError) as changed:
+            self.execute(plan)
+        self.assertEqual(changed.exception.code, "stale_confirmation")
+        group = self.repo.load(group_id)
+        group["views"]["front"]["current_version_id"] = original
+        self.repo.save(group)
+        job = self.execute(plan)
+        runtime = AdvancedMultiviewRuntime.__new__(AdvancedMultiviewRuntime)
+        runtime.repository, runtime.application, runtime.workflow = self.repo, self.images, self.design
+        with self.assertRaises(RequestError) as model_busy:
+            runtime.recover(group_id, operation_id)
+        self.assertEqual(model_busy.exception.code, "group_busy")
+        self.assertIsNone(self.repo.load(group_id)["active_operation_id"])
+        self.assertEqual(approved_paths(job.approved_multiview_snapshot, job.directory).keys(), {"front"})
+        self.assertEqual(self.repo.load(group_id)["views"]["left"]["latest_attempt"]["state"], "result_saved")
+        self.drain()
+        self.assertEqual(len(self.requests), 1)
 
     def test_both_providers_freeze_and_route_all_eight_front_inclusive_subsets(self):
         from dataclasses import replace
@@ -366,6 +452,31 @@ class ModelTests(unittest.TestCase):
                         else:
                             self.assertNotIn(plan["job_id"], self.jobs)
                             self.assertFalse((directory / "job.json").exists())
+
+    def test_accepted_model_preserves_receipt_when_worker_cannot_save_before_supplier(self):
+        from dataclasses import replace
+        self.models.ports = replace(self.models.ports, capability=lambda _provider, model:
+            {"available": True, "supported_image_counts": [1, 2, 3, 4], "model": model or "model-a"})
+        for selected in (["front"], ["front", "left"]):
+            with self.subTest(selected=selected):
+                plan = self.current_plan(selected)
+                job = self.execute(plan)
+                self.assertEqual(job.state, "queued")
+
+                def fail_required_checkpoint(current, **kwargs):
+                    if current.phase == "queued" and kwargs.get("required"):
+                        raise OSError("write unavailable before supplier submission")
+                    _persist_job(current, **kwargs)
+
+                with mock.patch.object(self.ports, "persist", side_effect=fail_required_checkpoint):
+                    self.drain()
+                self.assertEqual(job.state, "failed")
+                self.assertEqual(self.requests, [])
+                self.assertEqual(self.execute(plan).id, job.id)
+                recovered = self.models.reconcile(self.group["id"], job.id)
+                self.assertTrue(recovered["accepted"])
+                self.assertEqual(recovered["job"]["id"], job.id)
+                self.assertEqual(self.queue, [])
 
     def test_missing_or_oversized_selected_snapshot_files_fail_before_the_gateway(self):
         from dataclasses import replace

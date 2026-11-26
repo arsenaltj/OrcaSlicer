@@ -97,6 +97,7 @@ private:
     void run_plan(const std::string& group, Json plan, bool new_group, std::function<void(bool)> submitted = {});
     void submit_model_plan(const std::string& group, const Json& plan);
     AdvancedCreation::HostGuards command_guards(bool preparing_candidate = false) const;
+    Json model_plan_request(const std::string& command) const;
     AdvancedMultiviewClient::Error single_design_error(std::function<void(bool)> submitted);
     bool save_pending_receipt(Json receipt);
     void clear_pending_receipt(const std::string& operation);
@@ -123,6 +124,11 @@ private:
     std::string m_library_foreground_job;
     std::function<void(const AdvancedCreation::ModelJobEvent&)> m_model_job_listener;
     std::optional<AdvancedCreation::ModelJobEvent> m_model_request;
+    struct ConfirmedModelVisual {
+        AdvancedCreation::CallbackContext context;
+        ModelGenerationVisualReference reference;
+    };
+    std::optional<ConfirmedModelVisual> m_confirmed_model_visual;
     std::uint64_t m_model_request_sequence {0};
     std::string m_stopping_model_job;
     std::function<bool()> m_start_guard;

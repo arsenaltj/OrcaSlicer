@@ -1,3 +1,33 @@
+# 2026-11-26 当前 · 高级首次建模已验收，V1.0.5 修复包已构建
+
+**主线**　`UX/ADVANCED-MULTIVIEW-20261107`／`ADV-2D-06`。[首次建模修复、验收与打包](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#advanced-3d-first-submit-race-verified-20261126)
+
+**本轮**　高级模式主图单图、主加左两视角均在首次提交后生成可旋转的 GLB。单图成品通过历史恢复与工作台检查。实单 3 次 2D、2 次 3D。验收后完成 V1.0.5 Windows x64 内部 EXE 和 ZIP，快照 `bbc8e3b2ea`。
+
+**未结**　Program Files 安装后的标准用户模型写入待独立 Windows 环境。原专项其余验收保留原返回点。
+
+**下一步**　用 `.tmp/dev/package-v1.0.5-20261126-r3/` 中的修复包交付转测。后续在独立环境补标准用户安装写入。
+
+**计划变更**　沿原编号登记两条首单实窗、自动回归、两种包的版本及 SHA-256。修复及版本配置已纳入本轮本地提交。前序 r2 包保留原交付证据。[本轮打包收据](../../.tmp/dev/evidence/advanced-first-submit-race-20261126/package-receipt.json)
+
+---
+
+# 2026-11-26 前序 · 远端已合并，V1.0.5 r2 Windows 安装包已构建
+
+**主线**　`DELIVERY/WINDOWS-INSTALLER-20261126`。[合并与交付证据](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#windows-installer-v1.0.5-20261126)
+
+**本轮**　合并远端 `9e40c707f7`，本地合并 `fdddc4bb2b`，兼容修正 `5d43bcaed3`。Windows x64 V1.0.5 内部安装 EXE 和便携 ZIP 已生成并通过内容和哈希检查。包内程序完成启动、模型导入及四头换六头。
+
+**未结**　后续切片实窗停在系统防火墙许可提示。`Program Files` 安装权限验收待补。
+
+**下一步**　可用包位于 `.tmp/dev/package-v1.0.5-20261126-r2/`。按原专项返回点续接补验。
+
+**计划变更**　登记本地合并、修正、完整快照和实窗范围，保留设置 UX 等原专项证据。 [GPT 生图传输失败日志核查](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#installed-gpt-image-transport-20261126)已记录，具体中断点待网关日志确认。
+
+**附加返回点**　[高级“进入工作台”日志定位](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#advanced-workbench-handoff-log-20261126)：测试运行 V1.0.4／`dc76651`／快照 `6a2ecdefd2`，未含 `7b113a2728` 修复。旧历史投影覆盖已准备模型摘要，使交接被静默拒绝；生成、解析与预览已有成功日志。当前 V1.0.5 已包含修复，待测试机用同一历史模型换包复验。本轮仅分析并补记，无产品改动或新增生成。
+
+---
+
 # 2026-11-26 当前 · 设置 UX 核心验收及本地提交
 
 **主线**　`UX/PRINTER-SETTINGS-20261125`。[本次整改与实窗证据](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#printer-settings-ux-polish-20261126)
@@ -9,6 +39,16 @@
 **下一步**　核心验收已收尾。后续补测按主计划恢复，优先覆盖原生导入、发送和真实 AI 任务联测。
 
 **计划变更**　原编号内登记本地提交、构建和实窗证据，保留前序专项结果和高级创作返回点。
+
+---
+
+# 2026-11-26 前序 · 高级 3D 按选图生成原候选
+
+**主线**　`UX/ADVANCED-MULTIVIEW-20261107`／`ADV-2D-06`。[开发方案与转测用例索引](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#advanced-3d-selected-design-approval-20261126)
+
+**未结**　候选包及自动测试已完成。自动审批拒绝启动候选，四条核心实窗和 `Program Files` 标准用户安装待验。用户现场核心-02 首单失败，同图重试出模。已离线复现等待动画读任务文件与后台替换同文件的竞态，溯源到 2026-11-17 动效提交 `d36337eccf`。[现场诊断](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#advanced-3d-job-state-save-failure-20261126)
+
+**下一步**　[修复方案及单图、多图首次建模用例](../../Docs/plans/ui-redesign/2026-11-24-advanced-2d-description-preview-development-design.md#advanced-3d-first-submit-race-design-20261126)已在本轮修复候选完成实窗验收和打包，见本文当前焦点。原候选产物和 SHA-256 见 [验证记录](../../.tmp/dev/evidence/advanced-selected-views-20261126/validation.json)。其余工作沿各自返回点。
 
 ---
 
