@@ -283,4 +283,119 @@ class AndroidPackage(unittest.TestCase):
             self.assertTrue((out/'licenses/dependencies/DEP_SOURCE/NOTICE').is_file())
 
 
+class AndroidNamespace(unittest.TestCase):
+    KEYS=['FETCHCONTENT_SOURCE_DIR_'+k for k in ('BOOST','CEREAL','EIGEN','LIBNOISE','NLOPT','PNG','TBB','ZLIB')]+['ORCA_MOBILE_EXPAT_SOURCE']
+
+    def fixture(self,root,keys=('DEP_SOURCE',),refs=None,tracked_extra=()):
+        repo=root/'sdk';repo.mkdir();out=root/'out';out.mkdir()
+        names=['LICENSE.txt','mobile-slicing/tests/honor_multihead_thermal_test.cpp','deps_src/nlohmann/json.hpp',
+               'src/orca_model_sdk/include/orca/model/model_sdk_c.h','src/orca_mobile_slicing_sdk/include/orca/mobile/slicing_sdk_c.h']
+        for name in names:
+            path=repo/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b'/*license*/ tiny-source')
+        dep=root/'dep';dep.mkdir();(dep/'NOTICE').write_bytes(b'notice')
+        files=refs if refs is not None else [dict(path='NOTICE',sha256=a.identity(dep/'NOTICE')['sha256'])]
+        manifest=root/'dependency.json';manifest.write_text(json.dumps([dict(key=k,path=str(dep),files=files) for k in keys]))
+        cache=root/'cache';cache.write_text(''.join(k+':PATH='+str(dep)+'\n' for k in keys),encoding='utf8')
+        receipt=root/'receipt';receipt.write_text(json.dumps(dict(companions=[dict(role='cache',current=a.identity(cache))])))
+        cgal=root/'cgal';cgal.write_bytes(b'fixture archive')
+        plan=dict(sdkRepository=str(repo),output=str(out),git='never',dependencyManifest=a.identity(manifest),
+                  cgalArchive=a.identity(cgal),companions={s:dict(receipt=a.identity(receipt)) for s in p.STAGES})
+        return plan, ('\0'.join(names+list(tracked_extra))+'\0').encode()
+
+    def assert_snapshot_rejected_without_writes(self,plan,tracked):
+        with patch.object(p.subprocess,'check_output',return_value=tracked), \
+             patch.object(p.zipfile,'ZipFile',side_effect=AssertionError('ZIP opened before namespace rejection')) as writer, \
+             patch.object(a,'stream_copy',side_effect=AssertionError('copy before namespace rejection')) as copier:
+            with self.assertRaises(ValueError):p.snapshot(plan,lambda:None)
+            writer.assert_not_called();copier.assert_not_called()
+        self.assertFalse(list(Path(plan['output']).rglob('*')))
+        self.assertFalse((Path(plan['output'])/'source-snapshot.zip').exists())
+        self.assertFalse((Path(plan['output'])/'candidate-result.json').exists())
+
+    def test_original_review_dotdot_namespace_is_rejected_before_any_write(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan,tracked=self.fixture(Path(d),keys=('../escaped',))
+            self.assert_snapshot_rejected_without_writes(plan,tracked)
+
+    def test_namespace_empty_path_drive_device_and_noncanonical_keys(self):
+        for key in ('','.', '..','A/B','A\\B','C:/ABS','\\\\server\\share','lower','CON','PRN','AUX','NUL','COM1','LPT9','DEP_SOURCE.','DEP_SOURCE ','ÉXAMPLE'):
+            with self.subTest(key=key),tempfile.TemporaryDirectory() as d:
+                plan,tracked=self.fixture(Path(d),keys=(key,))
+                self.assert_snapshot_rejected_without_writes(plan,tracked)
+
+    def test_duplicate_namespace_and_source_names(self):
+        for keys,refs,extra in [(('DEP_SOURCE','DEP_SOURCE'),None,()),
+                (('DEP_SOURCE','dep_source'),None,()),
+                (('DEP_SOURCE',),[dict(path='NOTICE',sha256=hashlib.sha256(b'notice').hexdigest())]*2,()),
+                (('DEP_SOURCE',),None,('LICENSE.txt',))]:
+            with self.subTest(keys=keys,extra=extra),tempfile.TemporaryDirectory() as d:
+                plan,tracked=self.fixture(Path(d),keys,refs,extra)
+                self.assert_snapshot_rejected_without_writes(plan,tracked)
+
+    def test_dependency_ref_paths_rejected_before_any_write(self):
+        for rel in ('../NOTICE','a/../NOTICE','a//NOTICE','/NOTICE','C:/NOTICE','a\\NOTICE',
+                    'COM1.txt','x/NUL','notice.','notice ','name:stream','bad\x00name','x?y'):
+            with self.subTest(rel=rel),tempfile.TemporaryDirectory() as d:
+                plan,tracked=self.fixture(Path(d),refs=[dict(path=rel,sha256=hashlib.sha256(b'notice').hexdigest())])
+                self.assert_snapshot_rejected_without_writes(plan,tracked)
+
+    def test_final_names_case_unicode_file_directory_and_reserved_metadata(self):
+        for names in [('a','A'),('src/café','src/cafe\u0301'),('a','a/b'),('A/B','a'),
+                      ('source-files.json','SOURCE-FILES.JSON'),
+                      ('dependency-source-inputs.json','dependency-source-inputs.json'),
+                      ('licenses/NOTICE','LICENSES/notice'),('manifest.json','manifest.json')]:
+            with self.subTest(names=names),self.assertRaises(ValueError):p.register_names(names)
+        for name in ('CON.txt','AUX.md','a/LPT1.log','COM¹','a.','a ','a/../b','/a','D:/a'):
+            with self.subTest(name=name),self.assertRaises(ValueError):p.register_names([name])
+
+    def test_license_target_link_non_directory_and_prefix_are_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);(root/'licenses').write_bytes(b'not a directory')
+            with self.assertRaises(ValueError):p.safe_target(root,'licenses/NOTICE')
+        with tempfile.TemporaryDirectory() as d,patch.object(Path,'is_symlink',lambda value:value.name=='licenses'):
+            with self.assertRaises(ValueError):p.safe_target(Path(d),'licenses/NOTICE')
+        with self.assertRaises(ValueError):p.register_names(['licenses/foo','licenses/FOO/bar'])
+        for name in ('licenses/../escape','licenses/C:/escape','licenses/a/NUL'):
+            with self.assertRaises(ValueError):p.safe_target(Path('unused'),name)
+
+    def test_all_nine_canonical_namespaces_keep_source_notice_header_and_zip_hashes(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan,tracked=self.fixture(Path(d),keys=self.KEYS)
+            with patch.object(p.subprocess,'check_output',return_value=tracked),patch.object(p,'CGAL_SHA',plan['cgalArchive']['sha256']):
+                sources=p.snapshot(plan,lambda:None)
+            out=Path(plan['output'])
+            with zipfile.ZipFile(out/'source-snapshot.zip') as z:
+                self.assertEqual(set(z.namelist()),{r['path'] for r in sources}|{'source-files.json','dependency-source-inputs.json'})
+                self.assertEqual(json.loads(z.read('source-files.json')),sources)
+                for ref in sources:self.assertEqual(hashlib.sha256(z.read(ref['path'])).hexdigest(),ref['sha256'])
+                for key in self.KEYS:self.assertIn('dependencies/'+key+'/NOTICE',z.namelist())
+            for key in self.KEYS:self.assertEqual((out/'licenses/dependencies'/key/'NOTICE').read_bytes(),b'notice')
+            self.assertEqual((out/'include/orca/model/model_sdk_c.h').read_bytes(),(out/'include/orca/mobile/model_sdk_c.h').read_bytes())
+            self.assertTrue((out/'include/orca/mobile/slicing_sdk_c.h').is_file())
+
+    def test_final_bundle_exact_manifest_set_and_bytes(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);out=root/'out';out.mkdir();(out/'payload').write_bytes(b'tiny')
+            declared=[dict(path='payload',sizeBytes=4,sha256=hashlib.sha256(b'tiny').hexdigest())]
+            (out/'manifest.json').write_text(json.dumps(dict(files=declared)))
+            p.write_bundle(out,root/'bundle.zip')
+            with zipfile.ZipFile(root/'bundle.zip') as z:self.assertEqual(set(z.namelist()),{'payload','manifest.json'})
+            (out/'extra').write_bytes(b'extra')
+            with self.assertRaises(ValueError):p.write_bundle(out,root/'extra.zip')
+            self.assertFalse((root/'extra.zip').exists())
+            (out/'extra').unlink();(out/'payload').write_bytes(b'changed')
+            with self.assertRaises(ValueError):p.write_bundle(out,root/'changed.zip')
+            self.assertFalse((root/'changed.zip').exists())
+
+    def test_final_bundle_malicious_duplicate_and_metadata_names_precede_zip_open(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);out=root/'out';out.mkdir()
+            for names in (('../escape',),('a','A'),('a','a/b'),('manifest.json',)):
+                (out/'manifest.json').write_text(json.dumps(dict(files=[dict(path=n,sizeBytes=0,sha256='0'*64) for n in names])))
+                with patch.object(p.zipfile,'ZipFile',side_effect=AssertionError('ZIP opened early')) as writer:
+                    with self.assertRaises(ValueError):p.write_bundle(out,root/'bad.zip')
+                    writer.assert_not_called()
+                self.assertFalse((root/'bad.zip').exists())
+
+
 if __name__=='__main__':unittest.main()

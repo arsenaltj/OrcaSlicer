@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import time
+import unicodedata
 import zipfile
 import adapter as a
 import companion
@@ -356,12 +357,82 @@ def cache_values(path):
             if not x.startswith(('#','//')) and ':' in x and '=' in x}
 
 
+def archive_name(name):
+    """Canonical portable names are checked without rewriting source identities."""
+    need(isinstance(name,str) and name,'empty archive name')
+    a.relative(name)
+    need(not any(ord(c)<32 or ord(c)==127 or c in '<>:"\\|?*' for c in name),
+         'nonportable archive name')
+    for part in name.split('/'):
+        need(not part.endswith((' ','.')),'archive component ends in space/dot')
+        stem=part.split('.',1)[0].upper()
+        need(stem not in {'CON','PRN','AUX','NUL','CONIN$','CONOUT$','CLOCK$'}
+             and not re.fullmatch('(?:COM|LPT)[1-9¹²³]',stem),
+             'reserved Windows device name')
+    return name
+
+
+def register_names(names):
+    """One file namespace: exact/case/Unicode aliases and file/dir clashes fail."""
+    seen=set()
+    for name in names:
+        archive_name(name)
+        folded=unicodedata.normalize('NFC',name).casefold()
+        need(folded not in seen,'duplicate/case/Unicode archive name')
+        seen.add(folded)
+    for name in seen:
+        parts=name.split('/')
+        need(all('/'.join(parts[:n]) not in seen for n in range(1,len(parts))),
+             'archive file/directory prefix conflict')
+
+
+def safe_target(root, name):
+    archive_name(name)
+    base=Path(root).absolute();target=base.joinpath(*name.split('/'))
+    need(target.resolve().is_relative_to(base.resolve()),'archive target escapes root')
+    # Check existing ancestors, including the root, before mkdir/open and reads.
+    for path in [target,*target.parents]:
+        need(not path.is_symlink() and not getattr(path,'is_junction',lambda:False)(),
+             'archive target/ancestor is a link')
+        if path!=target and path.exists():need(path.is_dir(),'archive parent is not a directory')
+    need(not target.exists() or target.is_file(),'archive target is not a regular file')
+    return target
+
+
+def payload_files(root):
+    out=Path(root);files=[]
+    for path in out.rglob('*'):
+        name=path.relative_to(out).as_posix()
+        safe_target(out,name) if not path.is_dir() else safe_target(out,name+'/.path-check')
+        if path.is_file():files.append((name,path))
+    register_names([name for name,_ in files])
+    return sorted(files)
+
+
+def write_bundle(out, bundle):
+    """Validate the final complete namespace and declared bytes before opening ZIP."""
+    out=Path(out)
+    data=a.small_json(safe_target(out,'manifest.json'))
+    declared=data['files']
+    names=[row['path'] for row in declared]+['manifest.json']
+    register_names(names)
+    actual=payload_files(out)
+    need({name for name,_ in actual}==set(names),'final Android archive file set differs')
+    for row in declared:
+        need(type(row['sizeBytes']) is int and row['sizeBytes']>=0,'invalid manifest file size')
+        a.verify(dict(path=str(safe_target(out,row['path'])),bytes=row['sizeBytes'],sha256=row['sha256']))
+    destination=safe_target(Path(bundle).parent,Path(bundle).name)
+    with zipfile.ZipFile(destination,'x',zipfile.ZIP_DEFLATED,compresslevel=1) as z:
+        for name,_ in actual:
+            a.zip_copy(z,safe_target(out,name),archive_name(name))
+
+
 def snapshot(plan, monitor):
     repo=Path(plan['sdkRepository']);out=Path(plan['output'])
     tracked=subprocess.check_output([plan['git'],'-C',str(repo),'ls-files','-z'],env=dict(os.environ),cwd=repo).decode('utf8').split('\0')
-    files={n:repo/a.relative(n) for n in tracked if n and (n.startswith(('src/','mobile-slicing/','tests/','deps_src/','deps/','cmake/','scripts/','resources/'))
-         or n in ('LICENSE.txt','CMakeLists.txt') or n.startswith(('Docs/','docs/')))}
-    need('mobile-slicing/tests/honor_multihead_thermal_test.cpp' in files,'permanent thermal source missing')
+    files=[(n,repo/n) for n in tracked if n and (n.startswith(('src/','mobile-slicing/','tests/','deps_src/','deps/','cmake/','scripts/','resources/'))
+         or n in ('LICENSE.txt','CMakeLists.txt') or n.startswith(('Docs/','docs/')))]
+    need(any(n=='mobile-slicing/tests/honor_multihead_thermal_test.cpp' for n,_ in files),'permanent thermal source missing')
     deps=a.dependency_json(plan['dependencyManifest'])
     need(deps,'dependency source inputs required')
     caches=[]
@@ -369,47 +440,71 @@ def snapshot(plan, monitor):
         receipt=a.small_json(a.verify(plan['companions'][stage]['receipt']))
         cache=next(x['current'] for x in receipt['companions'] if x['role']=='cache')
         caches.append(cache_values(a.verify(cache)))
+    keys=[item['key'] for item in deps]
+    for namespace in keys:
+        need(isinstance(namespace,str) and re.fullmatch('[A-Z][A-Z0-9_]*',namespace),
+             'canonical single-component dependency namespace required')
+        archive_name(namespace)
+    register_names(keys)
     for item in deps:
         root=Path(item['path']).resolve()
         need(any(Path(c.get(item['key'],'.')).resolve()==root for c in caches),'dependency/cache input mismatch')
         for ref in item['files']:
-            rel=a.relative(ref['path']);path=root/rel
+            rel=archive_name(ref['path']);path=safe_target(root,rel)
             need(path.resolve().is_relative_to(root),'dependency source escape')
             need(a.identity(path)['sha256']==ref['sha256'],'dependency source drift')
             name='dependencies/'+item['key']+'/'+rel
-            need(name not in files,'duplicate dependency snapshot name');files[name]=path
+            files.append((name,path))
+    metadata=['source-files.json','dependency-source-inputs.json']
+    register_names([name for name,_ in files]+metadata)
+    notices=[('licenses/'+name,path) for name,path in files if
+        Path(name).name.upper().split('.')[0] in {'LICENSE','COPYING','COPYRIGHT','NOTICE'}
+        or 'LICENSES' in [part.upper() for part in Path(name).parts]]
+    headers=[('src/orca_model_sdk/include/orca/model/model_sdk_c.h','include/orca/mobile/model_sdk_c.h'),
+             ('src/orca_model_sdk/include/orca/model/model_sdk_c.h','include/orca/model/model_sdk_c.h'),
+             ('src/orca_mobile_slicing_sdk/include/orca/mobile/slicing_sdk_c.h','include/orca/mobile/slicing_sdk_c.h')]
+    generated=['source-snapshot.zip','licenses/nlohmann-json-LICENSE.MIT','dependencies/CGAL-6.2.1.zip']
+    planned=[name for name,_ in notices]+[name for _,name in headers]+generated
+    # The entire source ZIP and every future license/header/archive destination
+    # must pass before the first snapshot or notice write.
+    register_names(planned)
+    existing=[name for name,_ in payload_files(out)]
+    register_names(existing+planned+['manifest.json'])
+    for name,path in files:
+        archive_name(name);safe_target(repo,name) if path.is_relative_to(repo) else None
+    for name in planned:safe_target(out,name)
     sources=[]
-    with zipfile.ZipFile(out/'source-snapshot.zip','x',zipfile.ZIP_DEFLATED,compresslevel=1) as z:
-        for name,path in sorted(files.items()):
+    with zipfile.ZipFile(safe_target(out,'source-snapshot.zip'),'x',zipfile.ZIP_DEFLATED,compresslevel=1) as z:
+        for name,path in sorted(files):
+            archive_name(name)
+            need(safe_target(path.parent,path.name)==path.absolute(),'source ZIP input path changed')
             monitor();before=a.identity(path);a.zip_copy(z,path,name)
             need(a.identity(path)==before,'snapshot source changed')
             sources.append(dict(path=name,sha256=before['sha256']))
-        z.writestr('source-files.json',json.dumps(sources,indent=2))
-        z.writestr('dependency-source-inputs.json',json.dumps(deps,indent=2))
+        z.writestr(archive_name('source-files.json'),json.dumps(sources,indent=2))
+        z.writestr(archive_name('dependency-source-inputs.json'),json.dumps(deps,indent=2))
     # Preserve all notices listed by the complete dependency inventory and repo.
-    for name,path in files.items():
-        relative=Path(name)
-        if relative.name.upper().split('.')[0] in {'LICENSE','COPYING','COPYRIGHT','NOTICE'} or 'LICENSES' in [x.upper() for x in relative.parts]:
-            dst=out/'licenses'/name;dst.parent.mkdir(parents=True,exist_ok=True);a.stream_copy(path,dst)
+    for name,path in notices:
+        dst=safe_target(out,name);dst.parent.mkdir(parents=True,exist_ok=True);a.stream_copy(path,safe_target(out,name))
     need((out/'licenses/LICENSE.txt').is_file(),'Orca source license absent')
     text=(repo/'deps_src/nlohmann/json.hpp').read_text(encoding='utf8').split('*/',1)[0]+'*/\n'
-    (out/'licenses/nlohmann-json-LICENSE.MIT').write_text(text,encoding='utf8')
-    for source,dest in [('src/orca_model_sdk/include/orca/model/model_sdk_c.h','include/orca/mobile/model_sdk_c.h'),
-                        ('src/orca_model_sdk/include/orca/model/model_sdk_c.h','include/orca/model/model_sdk_c.h'),
-                        ('src/orca_mobile_slicing_sdk/include/orca/mobile/slicing_sdk_c.h','include/orca/mobile/slicing_sdk_c.h')]:
-        path=out/dest;path.parent.mkdir(parents=True,exist_ok=True);a.stream_copy(repo/source,path)
+    safe_target(out,'licenses/nlohmann-json-LICENSE.MIT').write_text(text,encoding='utf8')
+    for source,dest in headers:
+        path=safe_target(out,dest);path.parent.mkdir(parents=True,exist_ok=True);a.stream_copy(safe_target(repo,source),safe_target(out,dest))
     archive=a.verify(plan['cgalArchive'])
     need(plan['cgalArchive']['sha256']==CGAL_SHA,'fixed CGAL archive required')
-    target=out/'dependencies/CGAL-6.2.1.zip';target.parent.mkdir(parents=True,exist_ok=True);a.stream_copy(archive,target)
+    target=safe_target(out,'dependencies/CGAL-6.2.1.zip');target.parent.mkdir(parents=True,exist_ok=True)
+    a.stream_copy(archive,safe_target(out,'dependencies/CGAL-6.2.1.zip'))
     return sources
 
 
 def manifest(plan, sources, static_ref):
     out=Path(plan['output'])
     files=[]
-    for p in sorted(out.rglob('*')):
-        if p.is_file():
-            r=a.identity(p);files.append(dict(path=p.relative_to(out).as_posix(),sha256=r['sha256'],sizeBytes=r['bytes']))
+    entries=payload_files(out)
+    register_names([name for name,_ in entries]+['manifest.json'])
+    for name,p in entries:
+        r=a.identity(p);files.append(dict(path=name,sha256=r['sha256'],sizeBytes=r['bytes']))
     return dict(schemaVersion=SCHEMA,bundleId=out.name,platformScope=['android-arm64-v8a'],
         sourceCommit=a.SOURCE,buildSourceCommit=a.SOURCE,packagingSourceCommit=a.SOURCE,toolSource=plan['toolSource'],
         sourceStatus='clean',uncommitted=False,android=dict(abi='arm64-v8a',api=24,ndk='28.2.13676358'),
@@ -484,11 +579,9 @@ def execute(plan, go, plan_sha,observe=False):
             a.stream_copy(a.verify(ref),provenance/(str(n)+'-'+Path(ref['path']).name))
         a.stream_copy(evidence/'android-static-proof.json',provenance/'android-static-proof.json')
         static_ref=dict(path='provenance/android-static-proof.json',**{k:v for k,v in a.identity(provenance/'android-static-proof.json').items() if k!='path'})
-        a.write(Path(plan['output'])/'manifest.json',manifest(plan,sources,static_ref))
+        a.write(safe_target(plan['output'],'manifest.json'),manifest(plan,sources,static_ref))
         bundle=evidence/(Path(plan['output']).name+'.zip')
-        with zipfile.ZipFile(bundle,'x',zipfile.ZIP_DEFLATED,compresslevel=1) as z:
-            for p in sorted(Path(plan['output']).rglob('*')):
-                if p.is_file():a.zip_copy(z,p,p.relative_to(plan['output']).as_posix())
+        write_bundle(plan['output'],bundle)
         validate_originals=lambda:[original_graph(plan,s,verify_all=True) for s in STAGES]
         validate_originals();source_check(plan);monitor(True)
         state['state']='android_candidate_phone_pending';save()
