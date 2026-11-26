@@ -31,7 +31,7 @@ ENV_POLICY={
  'presentEmptyToolCallValue':'normalize-like-any-present-value',
  'allOtherKeysAndValues':'exact'}
 PROTECTED={
- 'artifact_owner.py':'83ded9e155a62c1b59e5e778dfb861d1c6678c3e10c33fd8783025377648fb20',
+ 'artifact_owner.py':'ece99ca9cbe1aa8999eee2326e6dddfba2178f846ad31ec0569102894410ccf8',
  'api_context.py':'3c216415d9d7e99dc6edf9b37fbe8077f8f0bcf6b93752fa26f2807159f4774b',
  'adapter.py':'f29334763b117fe4bfe5b94ddfad90b3ba942c572968864931475437b15da697',
  'contracts.py':'bb8aa6170a6d08d32492d13bf235fe9794751483e9239bb1c5e98f156fb3cf90',

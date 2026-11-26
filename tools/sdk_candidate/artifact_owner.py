@@ -78,7 +78,7 @@ def runtime():
 
 def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=7200,
               mode='artifact', *, permitted_commands, permitted_images, env=None, cwd=None, lifecycle_profile=None,
-              package_plan=None):
+              package_plan=None, android_plan=None):
     global TRACE_CONTEXT
     assert mode == 'artifact', 'artifact protocol only'
     assert argv in permitted_commands, 'command outside exact artifact contract'
@@ -93,7 +93,14 @@ def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=720
     if lifecycle_profile is not None:
         from suspended_root import PROFILE, SuspendedContext
         assert lifecycle_profile == PROFILE, 'unknown lifecycle profile'
-        if package_plan is None:
+        assert package_plan is None or android_plan is None, 'conflicting artifact scopes'
+        if android_plan is not None:
+            from package_android import owner_contract, commands as android_commands
+            life = owner_contract(android_plan)
+            assert permitted_commands == android_commands(android_plan), 'Android command table differs'
+            assert launch_cwd == life['cwd'] and type(timeout) is int and timeout == life['commandTimeoutSeconds'], 'Android budget/cwd differs'
+            assert permitted_images == [android_plan['strip'], android_plan['readelf']], 'Android images differ'
+        elif package_plan is None:
             from owner_preflight import commands as fixed_commands, REPO
             assert permitted_commands == fixed_commands() and argv in fixed_commands(), 'fixed suspended SDK fixtures only'
             assert timeout == 60 and launch_cwd == str(REPO), 'fixed suspended budget/cwd only'
@@ -106,7 +113,7 @@ def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=720
             assert permitted_images == [package_plan[k] for k in ('python','node','readobj','readelf','strip','git')], 'normal package images differ'
         Context = SuspendedContext
     else:
-        assert package_plan is None, 'normal package requires explicit suspended profile'
+        assert package_plan is None and android_plan is None, 'normal package requires explicit suspended profile'
     Domain, sample, heavy, identity, now, attempt, remember, wait = runtime()
     errors = record.setdefault('monitorErrors', [])
     TRACE_CONTEXT = Context(record, save, errors, argv, lambda:getattr(ctypes,'get_last_error',lambda:None)(),
