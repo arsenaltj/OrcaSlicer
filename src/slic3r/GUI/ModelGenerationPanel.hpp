@@ -254,6 +254,10 @@ private:
     bool restore_native_workbench_partition_checkpoint();
     bool ensure_native_workbench_partition(NativeWorkbenchPartitionConsumers consumers);
     void queue_honor_suite_after_native_partition();
+    const char* workbench_honor_optimization_status() const {
+        return WorkbenchArtifacts::honor_people_optimization_status(m_native_workbench_partition_consumers,
+            m_honor_suite_partition_resume_queued, m_workbench_honor_semantic_active);
+    }
     void cancel_native_workbench_partition();
     void apply_smart_ui_state(ModelGenerationUIState& state);
     bool m_smart_mode {false};

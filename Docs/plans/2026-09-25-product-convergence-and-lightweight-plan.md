@@ -1166,6 +1166,30 @@ TG-39新旧输入文件SHA一致，style／custom_style／user_prompt一致；�
 
 ---
 
+2026-11-26 V1.0.5 本地提交在独立工作树的 `codex/task/v1-0-5-release` 同步集成基线 `1b268e3bfa`。两处协调文档冲突均保留双方记录。`bbc8e3b2ea` 仍是同步前的内部测试包标识，合并候选的检查另行登记。
+
+<a id="mainline-bugfix-portrait-cancel-20261126"></a>
+
+# MAINLINE-BUGFIX-001｜人像配色回退与取消（2026-11-26）
+
+人物六色复用已校验的原生颜色分区。未识别到人像、识别不可用或没有可信区域绑定时应用近色匹配，配色区显示「近色回退」。校验失败时恢复此前配色。准备配色区域时使用「取消优化」，以当次绘制的字体居中。取消后丢弃本次未应用的结果，并保留原配色、耗材和检查记录。
+
+实窗验收补充了窄窗进度卡留边和近色回退状态换行。固定 Windows Release 构建通过，已同步到原运行目录和快捷方式，164 项定向回归通过。200% 最大化和 125% 下的 900×700 窄窗均确认按钮文字居中，点击取消后返回工作台，日志记录本次分区结果已丢弃。200% 下还确认了「正在取消人像优化……」提示。狮子手办识别未命中，界面显示「近色回退」和 `5/6 色`，人像样本成功应用人物套装。[验收记录](/D:/TEST/artifacts/mainline-bugfix/evidence/workbench-portrait-cancel-20261126/validation.json)
+
+运行中从 125% 改到 200% 时，进度卡曾异常放大。在 200% 下重启后恢复为 410×174。[实窗截图](/D:/TEST/artifacts/mainline-bugfix/evidence/workbench-portrait-cancel-20261126/cancel-200-after-dpi-change.jpg)
+
+---
+
+<a id="mainline-bugfix-workbench-first-palette-portrait-20261126"></a>
+
+# MAINLINE-BUGFIX-001｜人像优化提示与默认六色首帧（2026-11-26）
+
+人物六色从准备分区到人像识别使用「正在进行人像优化」。工作台入口在加载任务中为未配色模型准备默认六色，并在首帧前提交。历史配色沿用保存数据。首次使用原色证据匹配时，后续分区经模型身份和当前配色校验后更新色卡、映射及重置基准。
+
+固定 Windows Release 和 244 项定向回归通过，覆盖冷分区、缓存、普通修复文案、历史和过期调色。在原运行目录确认带贴图 GLB 首帧已启用 AI 配色，六色减到五色后重置，六个色值及顺序一致。899×701、125% 实窗核对人物六色的识别进度与操作入口。原窗口已恢复 200% 与最大化。[验收记录](/D:/TEST/artifacts/mainline-bugfix/evidence/workbench-first-palette-portrait-20261126/validation.json)
+
+---
+
 <a id="mainline-bugfix-workbench-import-color-comparison-20261125"></a>
 
 # MAINLINE-BUGFIX-001｜去切片配色不匹配卡片（2026-11-25）

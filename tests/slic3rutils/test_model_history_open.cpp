@@ -210,21 +210,25 @@ TEST_CASE("History reuses a scene only while the version record still matches", 
     auto cold = fixture.open(selected);
     auto metadata = std::make_shared<ModelHistoryMetadata>();
     auto initial = prepare_model_preview_load(selected.model_path, fixture.record(selected), metadata,
-        cold, [] { return false; }, false);
+        cold, [] { return false; }, false, true);
     INFO(initial.error);
     REQUIRE(initial.error.empty());
     REQUIRE(initial.prepared->history_scene);
-    REQUIRE(initial.prepared->history_colors);
-    CHECK(initial.prepared->history_colors->size() == 1);
+    CHECK_FALSE(initial.prepared->history_colors);
+    CHECK_FALSE(initial.prepared->color_trial);
+    REQUIRE(initial.prepared->default_workbench_palette);
+    CHECK(initial.prepared->default_workbench_palette->requested_count == 6);
+    CHECK(initial.prepared->default_workbench_palette->source_palette.size() == 1);
     cold->verified_files.reset();
 
     auto warm = fixture.open(selected);
     warm->cached_scenes.push_back(initial.prepared->history_scene);
     auto hit = prepare_model_preview_load(selected.model_path, fixture.record(selected), metadata,
-        warm, [] { return false; }, false);
+        warm, [] { return false; }, false, true);
     INFO(hit.error);
     REQUIRE(hit.error.empty());
     CHECK(hit.prepared->reuse_history_scene);
+    CHECK_FALSE(hit.prepared->default_workbench_palette);
     REQUIRE(warm->verified_files);
     CHECK(warm->verified_files->current());
     warm->verified_files.reset();
@@ -241,15 +245,45 @@ TEST_CASE("History reuses a scene only while the version record still matches", 
     auto updated = fixture.open(selected);
     updated->cached_scenes.push_back(initial.prepared->history_scene);
     auto miss = prepare_model_preview_load(selected.model_path, fixture.record(selected), metadata,
-        updated, [] { return false; }, false);
+        updated, [] { return false; }, false, true);
     INFO(miss.error);
     REQUIRE(miss.error.empty());
     CHECK_FALSE(miss.prepared->reuse_history_scene);
+    CHECK_FALSE(miss.prepared->default_workbench_palette);
     REQUIRE(miss.prepared->color_trial);
     CHECK(miss.prepared->color_trial->source == 0);
     CHECK(miss.prepared->color_trial->count == 2);
     CHECK(miss.prepared->color_trial->colors == palette.colors);
     CHECK(miss.prepared->color_trial->locks[1]);
+}
+
+TEST_CASE("The first workbench palette preserves legacy color cards and derives colors from generated models",
+    "[ModelHistoryOpen][ModelPreviewLoad][ModelPreviewPalette]")
+{
+    wxInitializer init;
+    REQUIRE(init.IsOk());
+    HistoryFixture fixture;
+    const auto selected = fixture.model("palette-origin", nullptr, false, false);
+    const bool generated = GENERATE(false, true);
+    auto record = fixture.read(selected);
+    if (generated) record["source"] = "text_image";
+    record["palette"] = {"#FF0000", "#FFFFFF"};
+    fixture.write(selected, record);
+
+    auto opened = prepare_model_preview_load(selected.model_path, fixture.record(selected),
+        std::make_shared<ModelHistoryMetadata>(), fixture.open(selected), [] { return false; }, false, true);
+    INFO(opened.error);
+    REQUIRE(opened.error.empty());
+    if (generated) {
+        CHECK_FALSE(opened.prepared->history_colors);
+        REQUIRE(opened.prepared->default_workbench_palette);
+        CHECK(opened.prepared->default_workbench_palette->requested_count == 6);
+        CHECK(opened.prepared->default_workbench_palette->source_palette.size() == 1);
+    } else {
+        REQUIRE(opened.prepared->history_colors);
+        CHECK(opened.prepared->history_colors->size() == 2);
+        CHECK_FALSE(opened.prepared->default_workbench_palette);
+    }
 }
 
 TEST_CASE("A frozen preview keeps its geometry and surface attributes across duplicate completion", "[ModelHistoryOpen][ModelPreviewLoad][PreviewFreeze]")
