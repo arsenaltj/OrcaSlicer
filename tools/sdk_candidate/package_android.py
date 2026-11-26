@@ -417,7 +417,7 @@ def validate(plan, *, companions=True, verify_all=False):
 def tool_refs(plan):
     refs=exact_refs(plan['toolFiles'])
     need(len(refs)==len(plan['toolFiles']),'duplicate Android tool pins')
-    local=['package_android.py','android_elf.py','adapter.py','companion.py','artifact_owner.py','api_context.py',
+    local=['package_android.py','execution_journal.py','android_elf.py','adapter.py','companion.py','artifact_owner.py','api_context.py',
            'suspended_root.py','suspended_launch.py']
     required=[HERE/n for n in local]
     import artifact_owner
@@ -892,7 +892,9 @@ def execute(plan, go, plan_sha,observe=False):
     evidence=Path(plan['evidence']);safe_target(evidence.parent,evidence.name).mkdir(parents=True)
     state=dict(state='started',commands=[],entry=entry,sourceAdmissionSamples=preflight_samples,ioSamples=[],
                timingAdmission=budget.receipt())
-    def save():(evidence/'execution.json').write_text(json.dumps(state,indent=2),encoding='utf8')
+    from execution_journal import ExecutionJournal
+    journal=ExecutionJournal(evidence)
+    def save():journal.save(state)
     last=[0.0]
     def monitor(force=False):
         admit_cancel(cancel);budget.check()
@@ -910,6 +912,7 @@ def execute(plan, go, plan_sha,observe=False):
         run_owned(argv,path,step,save,cancel,lambda:None,timeout=7200,mode='artifact',
             permitted_commands=commands(plan),permitted_images=[plan['strip'],plan['readelf']],env=dict(os.environ),
             cwd=plan['sdkRepository'],lifecycle_profile=PROFILE,android_plan=plan,**resource_kwargs)
+        journal.command_finished(state)
         admit_cancel(cancel);budget.check()
         result=path.read_text(encoding='utf8');budget.check();return result
     previous=a.IO_MONITOR;a.IO_MONITOR=monitor
@@ -919,6 +922,8 @@ def execute(plan, go, plan_sha,observe=False):
             verify_closure(go['closure'])
             source_check(plan);monitor(True)
             state['state']='android_inputs_observed_not_packaged';save()
+            journal.finish(state)
+            admit_cancel(cancel);budget.check()
             return
         # Both full source passes completed before exclusive evidence publication.
         monitor(True)
@@ -944,10 +949,23 @@ def execute(plan, go, plan_sha,observe=False):
         state['state']='android_candidate_phone_pending';save()
         a.publish_result(evidence,dict(state=state['state'],manifest=a.identity(Path(plan['output'])/'manifest.json'),archive=a.identity(bundle)),
                          lambda:(monitor(True),validate_originals(),source_check(plan),monitor(True)),
-                         lambda:(save(),admit_cancel(cancel),budget.check()))
+                         lambda:(save(),admit_cancel(cancel),budget.check(),journal.finish(state),admit_cancel(cancel),budget.check()))
     except BaseException as ex:
-        state.update(state='failed_partial_no_retry',error=repr(ex));save();raise
-    finally:a.IO_MONITOR=previous
+        state.update(state='failed_partial_no_retry',error=repr(ex))
+        try:journal.finish(state)
+        except BaseException as persistence_error:
+            state['journalPersistenceError']=repr(persistence_error)
+            ex.add_note('execution persistence failed: '+repr(persistence_error))
+            try:journal.write_final(state)
+            except BaseException as final_error:ex.add_note('failure receipt unavailable: '+repr(final_error))
+        raise
+    finally:
+        a.IO_MONITOR=previous
+        first_error=sys.exc_info()[1]
+        try:journal.close()
+        except BaseException as close_error:
+            if first_error is None:raise
+            first_error.add_note('journal close failed: '+repr(close_error))
 
 
 def observe_inputs(plan,evidence,monitor):

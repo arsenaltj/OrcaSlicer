@@ -947,7 +947,7 @@ class AndroidPhase(unittest.TestCase):
                 debug=str(root/'debug'),evidence=str(root/'execution'),bindingPath=str(root/'plan.json'),ownerDirectory=str(core),artifactOwner=str(p.HERE/'artifact_owner.py'),
                 python=sys.executable,git=str(images/'git.exe'),strip=str(images/'llvm-strip.exe'),readelf=str(images/'llvm-readelf.exe'),dependencyManifest=a.identity(manifest),cgalArchive=a.identity(cgal),
                 functionalQualification=None,qualification={})
-            local=[p.HERE/n for n in ('package_android.py','android_elf.py','adapter.py','companion.py','artifact_owner.py','api_context.py','suspended_root.py','suspended_launch.py')]
+            local=[p.HERE/n for n in ('package_android.py','execution_journal.py','android_elf.py','adapter.py','companion.py','artifact_owner.py','api_context.py','suspended_root.py','suspended_launch.py')]
             sdktools=[repo/n for n in ('src/orca_model_sdk/tools/strip_android_model.py','src/orca_model_sdk/repair_core/verify_approved_tbb.py','src/orca_model_sdk/repair_core/approved_tbb.json','mobile-slicing/build_android_arm64.cjs')]
             # Real host EXE is an explicit external verification fake, never read/executed.
             pythonref=dict(path=sys.executable,bytes=1,sha256='a'*64)
