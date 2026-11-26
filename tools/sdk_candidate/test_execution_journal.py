@@ -14,6 +14,94 @@ def state():
 
 
 class JournalScale(unittest.TestCase):
+    def test_partial_final_pending_and_final_file_close_failure_preserve_failed_receipt(self):
+        import execution_journal as module
+        from test_package_android import AndroidPhase
+        write=ExecutionJournal.write_final
+        def partial(j,s):
+            if s['state']=='android_candidate_phone_pending':
+                j.final.with_suffix('.pending.json').write_text('retained partial')
+                raise OSError('first final body write')
+            self.assertEqual(j.final.with_suffix('.pending.json').read_text(),'retained partial')
+            return write(j,s)
+        with patch.object(ExecutionJournal,'write_final',partial):r=AndroidPhase().exercise(memory=True)
+        self.assertFalse(r['published']);self.assertEqual(r['error'],'first final body write')
+        self.assertEqual(r['state']['state'],'failed_partial_no_retry')
+        terminal=module.close_stream
+        def broken(stream,status,close,first=None):
+            if status.get('path','').endswith('execution.pending.json'):
+                def report_error():close();raise OSError('final JSON close error')
+                return terminal(stream,status,report_error,first)
+            return terminal(stream,status,close,first)
+        with patch.object(module,'close_stream',broken):r=AndroidPhase().exercise(memory=True)
+        self.assertFalse(r['published']);self.assertEqual(r['error'],'final JSON close error')
+        self.assertTrue(r['state']['finalReceiptTerminal']['observedClosed'])
+        self.assertIn('final JSON close error',r['state']['finalReceiptTerminal']['closeError'])
+        self.assertTrue(r['state']['journalRecovery']['rawArraysAndCommandsEquivalent'])
+
+    def test_close_error_after_real_close_prevents_publication_and_checks_all_raw(self):
+        from test_package_android import AndroidPhase
+        close=ExecutionJournal.close;calls=[]
+        def fail(j):
+            close(j);calls.append(True);raise OSError('terminal close after actual close')
+        with patch.object(ExecutionJournal,'close',fail):r=AndroidPhase().exercise(memory=True)
+        self.assertEqual(calls,[True]);self.assertFalse(r['published'])
+        self.assertEqual(r['error'],'terminal close after actual close')
+        self.assertEqual(r['state']['state'],'failed_partial_no_retry')
+        self.assertTrue(r['state']['journalTerminal']['observedClosed'])
+        self.assertTrue(r['state']['journalRecovery']['rawArraysAndCommandsEquivalent'])
+        self.assertEqual(r['state']['journalRecovery']['lastCompleteStage'],'android_candidate_phone_pending')
+        self.assertFalse(r['state']['journalRecovery']['failureFieldsAppended'])
+
+    def test_earlier_business_failure_remains_first_when_terminal_close_fails(self):
+        from test_package_android import AndroidPhase
+        close=ExecutionJournal.close;calls=[]
+        def fail(j):
+            close(j);calls.append(True);raise OSError('secondary terminal close')
+        with patch.object(ExecutionJournal,'close',fail):r=AndroidPhase().exercise('late-output')
+        self.assertFalse(r['published']);self.assertEqual(calls,[True])
+        self.assertIn('FileExistsError',r['state']['error'])
+        self.assertIn('secondary terminal close',r['state']['journalTerminal']['closeError'])
+        self.assertTrue(r['state']['journalRecovery']['rawArraysAndCommandsEquivalent'])
+
+    def test_indeterminate_close_not_retried_and_flush_failure_still_closes_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            j=ExecutionJournal(d);j.save(state())
+            try:
+                with patch.object(j,'close',return_value=None):
+                    with self.assertRaisesRegex(OSError,'not observed complete'):j.finish(state())
+                self.assertFalse(j.final.exists());self.assertFalse(j.terminal['observedClosed'])
+            finally:j.stream.close()
+        with tempfile.TemporaryDirectory() as d:
+            j=ExecutionJournal(d);j.save(state());calls=[]
+            def unknown():calls.append(True);raise OSError('unknown close status')
+            try:
+                with patch.object(j,'close',unknown):
+                    with self.assertRaises(OSError):j.finish(state())
+                    with self.assertRaises(OSError):j.terminate()
+                self.assertEqual(calls,[True]);self.assertFalse(j.terminal['observedClosed'])
+                self.assertTrue(j.terminal['closeAttempted']);self.assertFalse(j.final.exists())
+            finally:j.stream.close() # fixture releases its known real stream, never a production retry
+        with tempfile.TemporaryDirectory() as d:
+            j=ExecutionJournal(d);j.save(state());close=j.close;calls=[]
+            def counted():calls.append(True);close()
+            with patch.object(j,'close',counted),patch('execution_journal.os.fsync',side_effect=OSError('terminal fsync')):
+                with self.assertRaises(OSError):j.terminate()
+            self.assertEqual(calls,[True]);self.assertTrue(j.terminal['observedClosed'])
+            self.assertIn('terminal fsync',j.terminal['error'])
+
+    def test_result_atomic_replace_failure_after_close_is_failed_not_published(self):
+        import adapter
+        from test_package_android import AndroidPhase
+        replace=adapter.os.replace
+        def fail(source,destination):
+            if Path(destination).name=='candidate-result.json':raise OSError('result atomic replace failure')
+            return replace(source,destination)
+        with patch.object(adapter.os,'replace',fail):r=AndroidPhase().exercise(memory=True)
+        self.assertEqual(r['error'],'result atomic replace failure');self.assertFalse(r['published'])
+        self.assertTrue(r['state']['journalTerminal']['observedClosed'])
+        self.assertTrue(r['state']['journalRecovery']['rawArraysAndCommandsEquivalent'])
+
     def test_full_execute_append_error_prevents_first_command_and_publication(self):
         from test_package_android import AndroidPhase
         original=ExecutionJournal.append

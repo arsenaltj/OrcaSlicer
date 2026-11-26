@@ -9,6 +9,29 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=True, allow_nan=False)
 
 
+def close_stream(stream, status, close, first=None):
+    """One terminal close, preserving an earlier body/flush/fsync exception."""
+    status['attempted'] = True
+    try:
+        stream.flush()
+        os.fsync(stream.fileno())
+    except BaseException as error:
+        first = first or error
+    try:
+        status['closeAttempted'] = True
+        close()
+    except BaseException as error:
+        status['closeError'] = repr(error)
+        first = first or error
+    finally:
+        status['observedClosed'] = stream.closed
+    if not status['observedClosed']:
+        first = first or OSError('execution journal close not observed complete')
+    if first is not None:
+        status['error'] = repr(first)
+        raise first
+
+
 def reconstruct(path):
     state = None
     with Path(path).open('rb') as stream:
@@ -67,6 +90,8 @@ class ExecutionJournal:
         self.fields = None
         self.field_keys = set()
         self.command_text = None
+        self.terminal = dict(attempted=False, closeAttempted=False, observedClosed=False, error=None, closeError=None)
+        self.final_terminal = None
 
     def append(self, kind, value):
         if self.failed:
@@ -85,6 +110,8 @@ class ExecutionJournal:
             raise
 
     def save(self, state):
+        if self.terminal['attempted']:
+            raise OSError('execution journal terminal attempt already made')
         if self.failed:
             raise OSError('execution journal permanently failed')
         if not self.initialized:
@@ -118,11 +145,17 @@ class ExecutionJournal:
             self.command_text = None
 
     def write_final(self, state):
-        pending = self.final.with_suffix('.pending.json')
-        with pending.open('x', encoding='utf8') as stream:
+        suffix = '.failed.pending.json' if state['state']=='failed_partial_no_retry' else '.pending.json'
+        pending = self.final.with_suffix(suffix)
+        self.final_terminal = dict(path=str(pending),attempted=False,closeAttempted=False,
+                                   observedClosed=False,error=None,closeError=None)
+        stream = pending.open('x', encoding='utf8')
+        first = None
+        try:
             json.dump(state, stream, indent=2, allow_nan=False)
-            stream.flush()
-            os.fsync(stream.fileno())
+        except BaseException as error:
+            first = error
+        close_stream(stream,self.final_terminal,stream.close,first)
         os.replace(pending, self.final)
 
     def command_finished(self, state):
@@ -134,7 +167,7 @@ class ExecutionJournal:
 
     def finish(self, state):
         self.save(state)
-        self.stream.flush()
+        self.terminate()
         restored = reconstruct(self.path)
         if canonical(restored) != canonical(state):
             raise ValueError('complete execution journal differs from final state')
@@ -142,3 +175,25 @@ class ExecutionJournal:
 
     def close(self):
         self.stream.close()
+
+    def terminate(self):
+        """Attempt terminal durability exactly once, even if close is uncertain."""
+        if self.terminal['attempted']:
+            raise OSError('execution journal terminal attempt already made')
+        try:
+            close_stream(self.stream,self.terminal,self.close)
+        except BaseException as error:
+            self.failed = True
+            raise
+
+    def recovery(self, state):
+        """Failure receipt describes the preserved journal, never amends it."""
+        try:
+            restored = reconstruct(self.path)
+            equal = all(canonical(restored[k]) == canonical(state[k]) for k in
+                        ('entry','sourceAdmissionSamples','ioSamples','commands'))
+            return dict(completeRows=True, lastCompleteStage=restored['state'],
+                        rawArraysAndCommandsEquivalent=equal, failureFieldsAppended=False)
+        except BaseException as error:
+            return dict(completeRows=False, rawArraysAndCommandsEquivalent=False,
+                        failureFieldsAppended=False, error=repr(error))

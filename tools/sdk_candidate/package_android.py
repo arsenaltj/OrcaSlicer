@@ -955,6 +955,13 @@ def execute(plan, go, plan_sha,observe=False):
         try:journal.finish(state)
         except BaseException as persistence_error:
             state['journalPersistenceError']=repr(persistence_error)
+            if not journal.terminal['attempted']:
+                try:journal.terminate()
+                except BaseException as cleanup_error:state['journalCleanupError']=repr(cleanup_error)
+            state['journalTerminal']=dict(journal.terminal)
+            state['finalReceiptTerminal']=journal.final_terminal
+            state['journalReconstructionComplete']=False
+            state['journalRecovery']=journal.recovery(state)
             ex.add_note('execution persistence failed: '+repr(persistence_error))
             try:journal.write_final(state)
             except BaseException as final_error:ex.add_note('failure receipt unavailable: '+repr(final_error))
@@ -962,7 +969,8 @@ def execute(plan, go, plan_sha,observe=False):
     finally:
         a.IO_MONITOR=previous
         first_error=sys.exc_info()[1]
-        try:journal.close()
+        try:
+            if not journal.terminal['attempted']:journal.terminate()
         except BaseException as close_error:
             if first_error is None:raise
             first_error.add_note('journal close failed: '+repr(close_error))
