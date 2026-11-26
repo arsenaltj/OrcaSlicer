@@ -50,15 +50,33 @@ def pins(value):
 
 
 def exact_refs(refs):
+    """Unique physical identities, independent of original provenance annotations."""
     out = {}
     for ref in refs:
-        need(isinstance(ref,dict) and Path(ref['path']).is_absolute()
-             and type(ref['bytes']) is int and ref['bytes'] >= 0
+        need(isinstance(ref,dict) and isinstance(ref.get('path'),str) and Path(ref['path']).is_absolute()
+             and type(ref.get('bytes')) is int and ref['bytes'] >= 0
+             and isinstance(ref.get('sha256'),str)
              and re.fullmatch('[0-9a-f]{64}',ref['sha256']), 'malformed Android pin')
         k = key(ref['path'])
-        need(k not in out or out[k] == ref, 'conflicting Android identity')
-        out[k] = ref
+        identity=dict(path=k,bytes=ref['bytes'],sha256=ref['sha256'])
+        need(k not in out or out[k] == identity, 'conflicting Android identity')
+        out[k] = identity
     return out
+
+
+def original_refs(refs):
+    """Keep every original dictionary shape after checking physical conflicts.
+
+    Only byte-for-byte JSON-equivalent duplicate records are omitted. This list
+    is for strict companion drift membership, never the unique GO pin index.
+    """
+    exact_refs(refs)
+    seen=set();result=[]
+    for ref in refs:
+        shape=json.dumps(ref,sort_keys=True,ensure_ascii=False)
+        if shape not in seen:
+            seen.add(shape);result.append(ref)
+    return result
 
 
 def life(plan, enabled=False):
@@ -125,9 +143,10 @@ def original_graph(plan, stage, *, verify_all=False):
     origins=[r for r in refs if Path(r['path']).name=='recovery-origin.json']
     original=a.small_json(a.verify(origins[0]))['originalRecords'] if origins else {}
     need(original==item.get('originalRecords',{}),'original recovery records substituted')
-    graph=exact_refs(refs+list(original.values()))
+    provenance=refs+list(original.values())
+    graph=exact_refs(provenance)
     summary_ref=plan['resourceSummaries'][stage]
-    need(graph.get(key(summary_ref['path']))==summary_ref,'resource summary outside original graph')
+    need(summary_ref in provenance,'resource summary outside original graph')
     summary=a.small_json(a.verify(summary_ref))
     record=graph.get(key(Path(summary_ref['path']).parent/'execution.json'))
     need(record is not None and summary['source']==a.SOURCE,'same-directory original execution missing')
@@ -146,8 +165,8 @@ def original_graph(plan, stage, *, verify_all=False):
     source=a.small_json(a.verify(member('actual-compiler-inputs.json')))
     inventory=a.small_json(a.verify(member('new-object-inventory.json')))
     member('actual-source-command-flags.json')
-    all_refs=list(graph.values())+list(pins(source))+list(pins(inventory))+[raw,
-        dict(raw,path=item['rawSource']['buildPath']),item['seal']]
+    all_refs=original_refs(provenance+list(pins(source))+list(pins(inventory))+[raw,
+        dict(raw,path=item['rawSource']['buildPath']),item['seal']])
     if verify_all:
         for ref in exact_refs(all_refs).values():a.verify(ref) # execution streamed, never JSON-loaded
     return item,source,all_refs
@@ -603,7 +622,7 @@ def observe_inputs(plan,evidence,monitor):
         item,source,refs=original_graph(plan,stage,verify_all=True)
         appendix=plan['sourceAppendices'][stage]
         refs += [appendix]+companion.appendix(dict(sourceAppendix=appendix),item,stage)
-        before=list(exact_refs(refs).values())
+        before=original_refs(refs)
         for ref in before:a.verify(ref)
         entries=[]
         requests=plan['observationRequests'][stage]

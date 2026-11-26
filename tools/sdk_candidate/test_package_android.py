@@ -283,6 +283,116 @@ class AndroidPackage(unittest.TestCase):
             self.assertTrue((out/'licenses/dependencies/DEP_SOURCE/NOTICE').is_file())
 
 
+class AndroidPinTracks(unittest.TestCase):
+    def test_physical_projection_keeps_original_annotations_and_is_independent(self):
+        for annotation in (dict(identityFromCompletedProducerReceipt=True),dict(hashEvidence='original recovery receipt')):
+            bare=dict(path='D:/original/raw.so',bytes=123,sha256='a'*64)
+            annotated=dict(bare,**annotation);refs=[annotated,bare,copy.deepcopy(annotated)]
+            before=copy.deepcopy(refs)
+            index=p.exact_refs(refs)
+            self.assertEqual(list(index.values()),[dict(path=p.key(bare['path']),bytes=123,sha256='a'*64)])
+            provenance=p.original_refs(refs)
+            self.assertEqual(provenance,[annotated,bare])
+            self.assertEqual(refs,before)
+            next(iter(index.values()))['bytes']=456
+            self.assertEqual(refs,before)
+
+    def test_annotation_types_are_preserved_and_real_identity_conflicts_refused(self):
+        bare=dict(path='D:/original/raw.so',bytes=123,sha256='a'*64)
+        self.assertEqual(len(p.original_refs([dict(bare,observed=True),dict(bare,observed=1)])),2)
+        for other in (dict(bare,bytes=124),dict(bare,sha256='b'*64)):
+            with self.subTest(other=other),self.assertRaisesRegex(ValueError,'conflicting'):
+                p.original_refs([dict(bare,proof='keep'),other])
+        for other in (dict(bare,bytes=True),dict(bare,bytes=-1),dict(bare,sha256=None),dict(bare,path='relative')):
+            with self.subTest(other=other),self.assertRaisesRegex(ValueError,'malformed'):
+                p.exact_refs([other])
+
+    def test_original_graph_preserves_both_shapes_and_rejects_replaced_original_metadata(self):
+        with tempfile.TemporaryDirectory() as d:
+            for stage,extra in [('model-android',dict(identityFromCompletedProducerReceipt=True)),
+                                ('slicing-android',dict(hashEvidence='actual original raw'))]:
+                item,summary,expected=producer(Path(d),stage)
+                annotated=dict(item['rawSource']['raw'],**extra)
+                item['fullIndex']['files'].append(annotated)
+                Path(item['seal']['path']).write_text(json.dumps(item['fullIndex']))
+                item['seal']=a.identity(item['seal']['path']);expected['seal']=item['seal']['sha256']
+                plan=dict(producers={stage:item},resourceSummaries={stage:summary});before=copy.deepcopy(plan)
+                with patch.dict(p.ORIGINS,{stage:expected}):
+                    _,_,refs=p.original_graph(plan,stage,verify_all=False)
+                    self.assertIn(annotated,refs);self.assertIn(item['rawSource']['raw'],refs)
+                    self.assertEqual(plan,before)
+                    for key in ('fullIndex','rawSource'):
+                        changed=copy.deepcopy(plan)
+                        if key=='fullIndex':changed['producers'][stage][key]['files'][-1].update(extra='substituted')
+                        else:changed['producers'][stage][key]['raw'].update(extra='substituted')
+                        with self.assertRaisesRegex(ValueError,'differs|substituted'):
+                            p.original_graph(changed,stage,verify_all=False)
+
+    def test_tiny_observer_preserves_annotated_and_bare_drift_and_strict_membership(self):
+        original_producer=producer;real_validate=p.companion.validate;seen=[]
+        def annotated_producer(root,stage):
+            item,summary,expected=original_producer(root,stage)
+            obj=root/stage/'tiny.o';obj.write_bytes(b'synthetic object')
+            inventory=root/stage/'new-object-inventory.json'
+            inventory.write_text(json.dumps(dict(objects=[a.identity(obj)])))
+            item['fullIndex']['files']=[a.identity(inventory) if Path(r['path'])==inventory else r
+                                       for r in item['fullIndex']['files']]
+            extra=dict(identityFromCompletedProducerReceipt=True) if stage=='model-android' else dict(hashEvidence='original recovery')
+            item['fullIndex']['files'].append(dict(item['rawSource']['raw'],**extra))
+            Path(item['seal']['path']).write_text(json.dumps(item['fullIndex']))
+            item['seal']=a.identity(item['seal']['path']);expected['seal']=item['seal']['sha256']
+            return item,summary,expected
+        def validate(receipt,item,stage):
+            real_validate(receipt,item,stage)
+            annotated=next(r for r in item['fullIndex']['files'] if Path(r['path']).name==p.NAMES[stage])
+            bare=item['rawSource']['raw']
+            self.assertNotEqual(annotated,bare)
+            inventory=next(r for r in item['fullIndex']['files'] if Path(r['path']).name=='new-object-inventory.json')
+            object_pin=next(p.pins(a.small_json(inventory['path'])))
+            for variant in (annotated,bare,object_pin):
+                self.assertIn(variant,receipt['driftBefore']);self.assertIn(variant,receipt['driftAfter'])
+                bad=copy.deepcopy(receipt)
+                missing=[r for r in bad['driftBefore'] if r!=variant]
+                bad['driftBefore']=missing;bad['driftAfter']=copy.deepcopy(missing)
+                with self.assertRaisesRegex(ValueError,'coverage'):real_validate(bad,item,stage)
+            bad=copy.deepcopy(receipt);bad['origin']['stage']='foreign-stage'
+            with self.assertRaisesRegex(ValueError,'origin'):real_validate(bad,item,stage)
+            seen.append(stage)
+        with patch(__name__+'.producer',annotated_producer),patch.object(p.companion,'validate',validate):
+            AndroidPackage().test_android_two_producer_observation_uses_actual_approved_basis_and_first_observed()
+        self.assertEqual(set(seen),set(p.STAGES))
+
+    def test_actual_two_stage_small_json_boundary_without_any_target_io(self):
+        evidence=Path('D:/Codex/artifacts/task-20261125-b5f-sdk-package-tooling/evidence')
+        original=json.loads((evidence/'prepared-v1/binding.json').read_text(encoding='utf8'))
+        field=json.loads((evidence/'se-real-binding-fieldmap.json').read_text(encoding='utf8'))
+        plan=dict(producers={s:original['producers'][s] for s in p.STAGES},
+                  resourceSummaries={s:field['stages'][s]['resourceSummary'] for s in p.STAGES})
+        before=copy.deepcopy(plan);verified=[];real_verify=a.verify
+        allowed={'key-seal.json','actual-recovery-seal.json','actual-terminal.json','raw-source.json',
+                 'recovery-origin.json','actual-compiler-inputs.json','new-object-inventory.json'}
+        def metadata_only(ref):
+            path=Path(ref['path'])
+            self.assertIn(path.name,allowed)
+            self.assertLessEqual(path.stat().st_size,4*1024*1024)
+            verified.append(str(path));return real_verify(ref)
+        with patch.object(a,'verify',metadata_only),patch('subprocess.Popen',side_effect=AssertionError('no process')):
+            for stage in p.STAGES:
+                item,source,refs=p.original_graph(plan,stage,verify_all=False)
+                raw=item['rawSource']['raw']
+                indexed=item['fullIndex'].get('files',item['fullIndex'].get('refs'))
+                annotated=next(r for r in indexed if p.key(r['path'])==p.key(raw['path']))
+                self.assertNotEqual(annotated,raw)
+                self.assertIn(annotated,refs);self.assertIn(raw,refs)
+                for ref in indexed+list(item.get('originalRecords',{}).values())+list(p.pins(source)):
+                    self.assertIn(ref,refs)
+                inventory=next(r for r in indexed if Path(r['path']).name=='new-object-inventory.json')
+                for ref in p.pins(a.small_json(metadata_only(inventory))):self.assertIn(ref,refs)
+                self.assertEqual(set(p.exact_refs([annotated,raw])[p.key(raw['path'])]),{'path','bytes','sha256'})
+        self.assertEqual(plan,before)
+        self.assertTrue(verified)
+
+
 class AndroidNamespace(unittest.TestCase):
     KEYS=['FETCHCONTENT_SOURCE_DIR_'+k for k in ('BOOST','CEREAL','EIGEN','LIBNOISE','NLOPT','PNG','TBB','ZLIB')]+['ORCA_MOBILE_EXPAT_SOURCE']
 
