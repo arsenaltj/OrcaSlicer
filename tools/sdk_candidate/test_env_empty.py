@@ -105,7 +105,8 @@ class EmptyEnvironment(unittest.TestCase):
                 observed.append(kw);self.assertEqual(env_hash(dict(os.environ)),env_hash(before));Path(path).write_text('ok')
             env=dict(source_check=lambda:None,admit_cancel=lambda x:None,cancel=Path(d)/'cancel',state={'commands':[]},
                 gate=lambda *x:None,save=lambda:None,evidence=Path(d),os=os,run_owned=run,commands=lambda p:[['tool']],
-                plan={k:'tool' for k in ('python','node','readobj','readelf','strip','git')},base_env=before,repo=Path(d))
+                plan={k:'tool' for k in ('python','node','readobj','readelf','strip','git')},base_env=before,repo=Path(d),
+                lifecycle=dict(profile='SDK_SUSPENDED_ROOT_V1',commandTimeoutSeconds=7200))
             exec(compile(ast.Module(body=[fn],type_ignores=[]),'actual-adapter-env','exec'),env)
             self.assertEqual(env['command'](['tool'],'test',{'CODEX_ENV_TEST_EMPTY':''}),'ok')
             self.assertEqual(env_hash(observed[0]['env']),env_hash(dict(before,CODEX_ENV_TEST_EMPTY='')))

@@ -5,6 +5,69 @@ import subprocess
 import re
 
 
+def package_lifecycle(plan, *, enabled=False):
+    """Build an inert contract; callers must explicitly enable and root-bind it."""
+    from artifact_owner import commands
+    from suspended_root import PROFILE, FLAGS
+    return dict(schema='sdk-normal-package-lifecycle-v1', enabled=enabled,
+                profile=PROFILE, effectiveCreationFlags=FLAGS,
+                neverResumedAbortExitCode=74, custodian='CURRENT_CREATING_PROCESS',
+                source=plan['source'], toolSource=plan['toolSource'],
+                cwd=str(Path(plan['sdkRepository'])), commandTimeoutSeconds=7200,
+                commands=commands(plan), toolFiles=plan['toolFiles'])
+
+
+def normal_lifecycle(plan, api, go=None):
+    """Reject absent/disabled contracts. Never choose the legacy owner implicitly."""
+    need = api.require
+    life = plan.get('lifecycle')
+    need(isinstance(life, dict) and type(life.get('enabled')) is bool
+         and type(life.get('effectiveCreationFlags')) is int
+         and type(life.get('neverResumedAbortExitCode')) is int
+         and type(life.get('commandTimeoutSeconds')) is int,
+         'typed normal package lifecycle required')
+    need(life == package_lifecycle(plan, enabled=True), 'normal package lifecycle binding differs or disabled')
+    need(Path(plan['sdkRepository']).is_absolute(), 'absolute normal package cwd required')
+    need(plan['source'] == api.SOURCE and isinstance(plan['toolSource'], str)
+         and re.fullmatch('[0-9a-f]{40}', plan['toolSource'])
+         and plan['toolSource'] != api.SOURCE, 'normal package source/tool identity differs')
+    if go is not None:
+        need(go.get('lifecycle') == life, 'GO normal package lifecycle differs')
+        other = go['lifecycle']
+        need(type(other.get('enabled')) is bool and type(other.get('effectiveCreationFlags')) is int
+             and type(other.get('neverResumedAbortExitCode')) is int
+             and type(other.get('commandTimeoutSeconds')) is int, 'typed GO lifecycle required')
+    here = Path(__file__).resolve().parent
+    tools = {str(Path(x['path']).resolve()): x for x in plan['toolFiles']}
+    need(len(tools) == len(plan['toolFiles']), 'duplicate lifecycle tool pins')
+    required = [here / name for name in ('adapter.py', 'contracts.py', 'artifact_owner.py',
+                'api_context.py', 'suspended_root.py', 'suspended_launch.py', 'companion.py', 'static_proof.py')]
+    import artifact_owner
+    need(Path(plan['artifactOwner']).resolve() == here / 'artifact_owner.py', 'normal package owner differs')
+    required += [Path(plan['ownerDirectory']) / name for name in artifact_owner.SUPPORT]
+    required += [Path(plan[name]) for name in ('python', 'node', 'git', 'readobj', 'readelf', 'strip')]
+    repo = Path(plan['sdkRepository'])
+    required += [repo / name for name in ('src/orca_model_sdk/tools/package_sdk.py',
+        'src/orca_model_sdk/tools/strip_android_model.py', 'src/orca_model_sdk/repair_core/verify_approved_tbb.py',
+        'src/orca_model_sdk/repair_core/approved_tbb.json', 'mobile-slicing/build_android_arm64.cjs')]
+    required += [Path(plan[name]) for name in ('cgalArchive', 'dependencyManifest')]
+    need(plan['postprocessProof'] == tools.get(str((here / 'static_proof.py').resolve())),
+         'normal lifecycle static proof differs')
+    for path in required:
+        key = str(path.resolve())
+        need(key in tools, 'missing lifecycle closure pin: ' + str(path))
+        api.verify(tools[key])
+        if path.parent == here:
+            import sys
+            loaded = sys.modules.get(path.stem)
+            need(loaded is None or Path(getattr(loaded, '__file__', '')).resolve() == path.resolve(),
+                 'shadowed normal lifecycle module: ' + path.stem)
+    for name, digest in artifact_owner.SUPPORT.items():
+        need(tools[str((Path(plan['ownerDirectory']) / name).resolve())]['sha256'] == digest,
+             'normal lifecycle core identity differs')
+    return life
+
+
 def check(plan, api):
     need, pin, load = api.require, api.verify, api.small_json
     def shape(ref):
@@ -182,6 +245,7 @@ def check(plan, api):
 
 
 def go_closure(plan, go, api):
+    normal_lifecycle(plan, api, go)
     expected = plan['toolFiles'] + [x['source'] for x in plan['stageInputs']]
     expected += list(plan.get('ownerQualification', {}).values())
     for ref in plan.get('ownerQualification', {}).values():
@@ -243,6 +307,7 @@ def owner_protocol(plan, api):
              and receipt['protocol'] == artifact_owner.PROTOCOL
              and receipt['toolSource'] == plan['toolSource']
              and receipt['owner'] == local, 'artifact owner qualification/version mismatch')
+        normal_lifecycle(plan, api, dict(lifecycle=receipt.get('lifecycle')))
         need(receipt['support'] == {name: tools[str((Path(plan['ownerDirectory'])/name).resolve())]
                                    for name in artifact_owner.SUPPORT}, 'qualification helper mismatch')
         api.verify(receipt['report'])

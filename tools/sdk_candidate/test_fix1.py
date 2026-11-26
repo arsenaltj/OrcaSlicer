@@ -117,7 +117,8 @@ class Fix1(unittest.TestCase):
     def test_go_closure_rejects_missing_input_before_effect(self):
         with tempfile.TemporaryDirectory() as d:
             plan=self.fixture(Path(d))
-            with self.assertRaises(ValueError): contracts.go_closure(plan, {'closure':[]}, a)
+            with patch.object(contracts,'normal_lifecycle',lambda *x:None):
+                with self.assertRaises(ValueError): contracts.go_closure(plan, {'closure':[]}, a)
 
     def test_stream_copy_and_zip_cancel(self):
         import zipfile
@@ -166,6 +167,7 @@ class Fix1(unittest.TestCase):
             def git(argv,**k):return (a.TREE if argv[-1]=='HEAD^{tree}' else a.SOURCE if argv[-1]=='HEAD' else '')+'\n'
             with patch.dict(a.sys.modules, {'build_resources':resources,'artifact_owner':owner}), \
                  patch.object(a,'validate_binding',lambda p:None),patch.object(contracts,'go_closure',lambda *x:None), \
+                 patch.object(contracts,'normal_lifecycle',lambda *x:dict(profile='SDK_SUSPENDED_ROOT_V1',commandTimeoutSeconds=7200)), \
                  patch.object(a,'verify_indexes',lambda p:None),patch.object(a,'copy_inputs',lambda *x:None), \
                  patch.object(a,'select_tbb',lambda *x:None),patch.object(a,'finish_manifest',lambda p:{'tiny':'candidate'}), \
                  patch.object(a.subprocess,'check_output',git):

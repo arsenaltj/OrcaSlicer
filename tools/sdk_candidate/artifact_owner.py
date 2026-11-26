@@ -77,7 +77,8 @@ def runtime():
 
 
 def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=7200,
-              mode='artifact', *, permitted_commands, permitted_images, env=None, cwd=None, lifecycle_profile=None):
+              mode='artifact', *, permitted_commands, permitted_images, env=None, cwd=None, lifecycle_profile=None,
+              package_plan=None):
     global TRACE_CONTEXT
     assert mode == 'artifact', 'artifact protocol only'
     assert argv in permitted_commands, 'command outside exact artifact contract'
@@ -87,17 +88,27 @@ def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=720
     assert all(isinstance(k,str) and isinstance(v,str) for k,v in launch_env.items()), 'explicit string environment required'
     images = {os.path.normcase(str(Path(x).resolve())) for x in permitted_images}
     assert os.path.normcase(str(Path(argv[0]).resolve())) in images, 'unbound root image'
-    Domain, sample, heavy, identity, now, attempt, remember, wait = runtime()
-    errors = record.setdefault('monitorErrors', [])
     import ctypes
     from api_context import Context
     if lifecycle_profile is not None:
         from suspended_root import PROFILE, SuspendedContext
         assert lifecycle_profile == PROFILE, 'unknown lifecycle profile'
-        from owner_preflight import commands as fixed_commands, REPO
-        assert permitted_commands == fixed_commands() and argv in fixed_commands(), 'fixed suspended SDK fixtures only'
-        assert timeout == 60 and launch_cwd == str(REPO), 'fixed suspended budget/cwd only'
+        if package_plan is None:
+            from owner_preflight import commands as fixed_commands, REPO
+            assert permitted_commands == fixed_commands() and argv in fixed_commands(), 'fixed suspended SDK fixtures only'
+            assert timeout == 60 and launch_cwd == str(REPO), 'fixed suspended budget/cwd only'
+        else:
+            import adapter
+            from contracts import normal_lifecycle
+            life = normal_lifecycle(package_plan, adapter)
+            assert permitted_commands == commands(package_plan), 'normal package command table differs'
+            assert launch_cwd == life['cwd'] and timeout == life['commandTimeoutSeconds'], 'normal package budget/cwd differs'
+            assert permitted_images == [package_plan[k] for k in ('python','node','readobj','readelf','strip','git')], 'normal package images differ'
         Context = SuspendedContext
+    else:
+        assert package_plan is None, 'normal package requires explicit suspended profile'
+    Domain, sample, heavy, identity, now, attempt, remember, wait = runtime()
+    errors = record.setdefault('monitorErrors', [])
     TRACE_CONTEXT = Context(record, save, errors, argv, lambda:getattr(ctypes,'get_last_error',lambda:None)(),
                             lambda value:getattr(ctypes,'set_last_error',lambda v:None)(value) if value is not None else None,
                             journal_path=Path(log_path).with_suffix('.api.jsonl'))

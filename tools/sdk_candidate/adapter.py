@@ -410,6 +410,7 @@ def execute(plan, go, plan_sha):
     validate_binding(plan)
     import contracts
     contracts.go_closure(plan, go, sys.modules[__name__])
+    lifecycle = contracts.normal_lifecycle(plan, sys.modules[__name__], go)
     required_tools = {str(Path(plan['ownerDirectory']) / n) for n in
                       ('build_resources.py', 'kernel_job.py', 'qa_owner_safety.py')}
     require(required_tools <= {x['path'] for x in plan['toolFiles']}, 'unpinned owner imports')
@@ -456,7 +457,8 @@ def execute(plan, go, plan_sha):
         if env:child_env.update(env)
         run_owned(argv, evidence / (label + '.log'), step, save, cancel, lambda: None, mode='artifact',
                   permitted_commands=commands(plan),
-                  permitted_images=[plan[k] for k in ('python','node','readobj','readelf','strip','git')],env=child_env,cwd=repo)
+                  permitted_images=[plan[k] for k in ('python','node','readobj','readelf','strip','git')],env=child_env,cwd=repo,
+                  timeout=lifecycle['commandTimeoutSeconds'], lifecycle_profile=lifecycle['profile'], package_plan=plan)
         return (evidence / (label + '.log')).read_text(encoding='utf8')
     try:
         IO_MONITOR = monitor

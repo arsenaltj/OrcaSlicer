@@ -32,10 +32,10 @@ ENV_POLICY={
  'presentEmptyToolCallValue':'normalize-like-any-present-value',
  'allOtherKeysAndValues':'exact'}
 PROTECTED={
- 'artifact_owner.py':'bdba7d7853aac86fcd5c05e0e2a337c4b10b02f3845359e9aaa7b9374cd778c5',
+ 'artifact_owner.py':'83ded9e155a62c1b59e5e778dfb861d1c6678c3e10c33fd8783025377648fb20',
  'api_context.py':'3c216415d9d7e99dc6edf9b37fbe8077f8f0bcf6b93752fa26f2807159f4774b',
- 'adapter.py':'2f2a2ab02a0ad6daef59ccf8ead3accf0aa0dada20fa5599298d8e50d6a1b51b',
- 'contracts.py':'eb71e6f108890435db0a39e0d8b4d3c2f0de4230b3967647763ae1ba044675f7',
+ 'adapter.py':'f29334763b117fe4bfe5b94ddfad90b3ba942c572968864931475437b15da697',
+ 'contracts.py':'bb8aa6170a6d08d32492d13bf235fe9794751483e9239bb1c5e98f156fb3cf90',
  'companion.py':'ff11ddc10f7dee58f03abe22f7a2fab1cae303598c9679e28b369a522e9b8bb5',
  'static_proof.py':'811b15714d6ae0c8f18b57df5ceb519f2c7b9945cd6bad85c5006a5ce95b0175'}
 SUPPORT={

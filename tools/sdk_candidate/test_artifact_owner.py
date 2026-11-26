@@ -101,10 +101,16 @@ class ArtifactTests(unittest.TestCase):
             runtime,state=self.fake(fast=True)
             plan={k:'exact-tool' for k in ('python','node','readobj','readelf','strip','git')}
             record=dict(commands=[])
+            life=dict(profile='SDK_SUSPENDED_ROOT_V1',commandTimeoutSeconds=7200)
+            def mapped_run(*args, **kw):
+                self.assertEqual(kw.pop('lifecycle_profile'), life['profile'])
+                self.assertIs(kw.pop('package_plan'), plan)
+                self.assertEqual(kw['timeout'], life['commandTimeoutSeconds'])
+                return o.run_owned(*args, **kw)
             env=dict(source_check=lambda:None,admit_cancel=o.admit_cancel,cancel_file=None,
                      cancel=Path(d)/'cancel',state=record,gate=lambda *x:None,save=lambda:None,
-                     evidence=Path(d),os=o.os,run_owned=o.run_owned,commands=lambda p:[['exact-tool']],plan=plan,
-                     base_env=dict(o.os.environ),repo=Path(d))
+                     evidence=Path(d),os=o.os,run_owned=mapped_run,commands=lambda p:[['exact-tool']],plan=plan,
+                     base_env=dict(o.os.environ),repo=Path(d),lifecycle=life)
             exec(compile(ast.Module(body=[command],type_ignores=[]),'actual-adapter-command','exec'),env)
             with patch.object(o,'runtime',return_value=runtime),patch.object(o.time,'sleep',lambda x:None):
                 env['command'](['exact-tool'],'direct')
