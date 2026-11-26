@@ -1181,6 +1181,20 @@ public:
         wxWindow::SetLabel(label);
         Refresh(false);
     }
+    void use_centered_label() {
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxPaintDC dc(this);
+            StaticBox::render(dc);
+            dc.SetFont(GetFont());
+            auto text_color = GetTextColor();
+            dc.SetTextForeground(text_color.colorForStates(state_handler.states()));
+            auto bounds = GetClientRect();
+            bounds.Deflate(FromDIP(8), 0);
+            if (bounds.IsEmpty()) return;
+            const auto label = wxControl::Ellipsize(GetLabel(), dc, wxELLIPSIZE_END, bounds.GetWidth());
+            dc.DrawLabel(label, bounds, wxALIGN_CENTER);
+        });
+    }
     void set_multiline_label() {
         m_multiline = true;
         Bind(wxEVT_PAINT, [this](wxPaintEvent&) {

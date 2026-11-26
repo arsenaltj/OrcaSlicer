@@ -794,7 +794,9 @@ bool ModelPreview3D::rebuild_semantic_preview_from_color_blocks()
 bool ModelPreview3D::fallback_honor_people_suite(const wxString& reason)
 {
     if (!m_color_trial || !m_color_trial->honor_suite_request_pending() ||
-        !active_honor_filament_suite() || active_honor_filament_suite()->id != "honor.people.six")
+        !active_honor_filament_suite() || active_honor_filament_suite()->id != "honor.people.six" ||
+        !m_semantic_source || !m_native_portrait_partition || !m_native_portrait_partition->valid() ||
+        m_native_portrait_partition->geometry_id != m_semantic_source->geometry_id)
         return reject_honor_suite_application(reason);
     m_semantic_error = reason;
     m_suppress_semantic_change = true;
@@ -903,7 +905,8 @@ void ModelPreview3D::finish_semantic_coloring()
                 fallback_reason = _L("人物语义预览无法建立，未应用套装。");
             if (!fallback_reason.empty() && result->color_blocks && !result->color_blocks->source_palette.empty() &&
                 result->error.empty() && !result->geometry.is_empty()) {
-                result->semantic_fallback_reason = std::string("近色回退：") + fallback_reason.ToStdString(wxConvUTF8);
+                if (result->semantic_fallback_reason.empty())
+                    result->semantic_fallback_reason = std::string("近色回退：") + fallback_reason.ToStdString(wxConvUTF8);
                 fallback_reason.clear();
             }
             if (!fallback_reason.empty()) {

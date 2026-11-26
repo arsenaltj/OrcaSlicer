@@ -63,6 +63,54 @@
 
 using namespace Slic3r::GUI;
 
+TEST_CASE("People six shows portrait progress through partition, cached continuation and recognition",
+    "[PostGenerationWorkbench][HonorFilamentSuite][Regression]")
+{
+    namespace PP = Slic3r::GUI::WorkbenchArtifacts;
+    using Consumer = PP::NativeWorkbenchPartitionConsumer;
+    const auto automatic = PP::native_workbench_partition_consumer(Consumer::AutomaticPalette);
+    const auto suit = PP::native_workbench_partition_consumer(Consumer::HonorSuite);
+    const std::string expected = "正在进行人像优化";
+    REQUIRE(PP::honor_people_optimization_status(suit, false, false));
+    CHECK(expected == PP::honor_people_optimization_status(suit, false, false));
+    CHECK(expected == PP::honor_people_optimization_status(automatic | suit, false, false));
+    CHECK(expected == PP::honor_people_optimization_status(0, true, false));
+    CHECK(expected == PP::honor_people_optimization_status(0, false, true));
+    CHECK(PP::honor_people_optimization_status(automatic, false, false) == nullptr);
+    CHECK(PP::honor_people_optimization_status(0, false, false) == nullptr);
+    WorkbenchCheckResult check;
+    check.status = WorkbenchCheckStatus::Running;
+    check.phase = WorkbenchCheckPhase::Repairing;
+    CHECK(workbench_check_status_line(check) == "高级修复进行中");
+}
+
+TEST_CASE("A refined default palette only replaces the matching untouched initial palette",
+    "[PostGenerationWorkbench][ModelPreviewPalette][Regression]")
+{
+    ModelPreviewInitialColorState initial;
+    initial.geometry_id = "g";
+    initial.default_ai_palette = true;
+    initial.basis.basis_signature = initial.trial.automatic_basis_signature = "current-basis";
+    initial.trial.source = 0;
+    initial.trial.enabled = true;
+    initial.trial.count = 2;
+    initial.trial.colors = initial.trial.mapping_colors = {{1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}};
+    CHECK(initial.matches_default_workbench_palette("g", initial.trial));
+    CHECK_FALSE(initial.matches_default_workbench_palette("other", initial.trial));
+    auto edited = initial.trial;
+    edited.source = 2;
+    CHECK_FALSE(initial.matches_default_workbench_palette("g", edited));
+    edited = initial.trial;
+    edited.locks[1] = true;
+    CHECK_FALSE(initial.matches_default_workbench_palette("g", edited));
+    edited = initial.trial;
+    std::swap(edited.mapping_colors[0], edited.mapping_colors[1]);
+    CHECK_FALSE(initial.matches_default_workbench_palette("g", edited));
+    edited = initial.trial;
+    edited.automatic_basis_signature = "new-basis";
+    CHECK_FALSE(initial.matches_default_workbench_palette("g", edited));
+}
+
 TEST_CASE("Partition consumers cannot activate a new choice from an uploading checkpoint",
           "[PostGenerationWorkbench][WorkbenchCheckLifecycle][PortraitNativePartition]")
 {
@@ -294,7 +342,7 @@ TEST_CASE("Manual and automatic repairs publish only verified topology geometry 
     }
 }
 
-TEST_CASE("Workbench palette status keeps fallback details without detection absence notices",
+TEST_CASE("Workbench palette status shows a short label for each nearest color fallback",
           "[PostGenerationWorkbench][ModelPreviewPalette][UiRedesign]")
 {
     CHECK(workbench_palette_status_line(WorkbenchOriginalAppearanceState::Available, false, 0, 6) == "当前色卡 · 6 色");
@@ -302,15 +350,18 @@ TEST_CASE("Workbench palette status keeps fallback details without detection abs
         "荣耀耗材套装 · 模型当前使用 5/6 色");
     CHECK(workbench_palette_status_line(WorkbenchOriginalAppearanceState::Available, true, 4, 4,
         "未检测到人物，已回退为全局相近色匹配。") ==
-        "已回退为全局相近色匹配。\n模型当前使用 4/6 色");
+        "近色回退\n模型当前使用 4/6 色");
     CHECK(workbench_palette_status_line(WorkbenchOriginalAppearanceState::Available, true, 5, 6,
         "近色回退：未检测到人物。") == "近色回退\n模型当前使用 5/6 色");
     CHECK(workbench_palette_status_line(WorkbenchOriginalAppearanceState::Available, true, 5, 6,
         "近色回退：未检测到人像，保留 AI 源色区域并近色匹配。") ==
-        "近色回退：保留 AI 源色区域并近色匹配。\n模型当前使用 5/6 色");
+        "近色回退\n模型当前使用 5/6 色");
     CHECK(workbench_palette_status_line(WorkbenchOriginalAppearanceState::Available, true, 5, 6,
         "近色回退：本地人物语义识别不可用。") ==
-        "近色回退：本地人物语义识别不可用。\n模型当前使用 5/6 色");
+        "近色回退\n模型当前使用 5/6 色");
+    CHECK(workbench_palette_status_line(WorkbenchOriginalAppearanceState::Available, true, 5, 6,
+        "近色回退：缺少可信的人像区域。") ==
+        "近色回退\n模型当前使用 5/6 色");
 }
 
 TEST_CASE("Workbench defers original appearance diagnostics until the current model is loaded",

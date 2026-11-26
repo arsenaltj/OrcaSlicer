@@ -647,6 +647,7 @@ public:
         std::optional<ModelPreviewColorControls::State> color_trial;
         std::vector<PreviewPalette::Color> discrete_colors;
         std::optional<std::vector<PreviewPalette::Color>> history_colors;
+        std::optional<PreviewPalette::AutomaticColorBasis> default_workbench_palette;
         std::shared_ptr<const ModelHistoryScene> history_scene;
         bool reuse_history_scene {false};
         bool external_texture_dependencies {false};
@@ -673,6 +674,20 @@ public:
         OriginalAppearanceReference original_appearance;
         std::string original_appearance_error;
         nlohmann::json leaf_edits;
+
+        void prepare_default_workbench_palette()
+        {
+            if (!has_source_appearance || !trial_histogram || color_trial || history_colors ||
+                printer_filament_restore || color_blocks || shape_details || !face_color_overrides.empty() ||
+                !saved_semantic_faces.empty() || !saved_semantic_subfaces.empty() || !leaf_edits.empty()) return;
+            const auto native_basis = [this](size_t count) -> std::optional<PreviewPalette::AutomaticColorBasis> {
+                if (!native_portrait_partition) return std::nullopt;
+                return native_workbench_automatic_basis(*native_portrait_partition, geometry_id, triangles, count);
+            };
+            auto result = prepare_workbench_palette_reset(geometry_id, *trial_histogram,
+                automatic_color_units.get(), native_basis);
+            if (result.basis.valid()) default_workbench_palette = std::move(result.basis);
+        }
     };
 
     static bool prepare_model(const boost::filesystem::path& path, PreparedModel& prepared,
@@ -1470,7 +1485,14 @@ public:
         m_restored_persisted_color_trial = prepared.color_trial.has_value();
         m_history_colors = std::move(prepared.history_colors);
         m_color_trial->load(m_trial_histogram, m_trial_palette, m_geometry_id,
-            std::move(prepared.automatic_color_units), m_history_colors ? &*m_history_colors : nullptr);
+            std::move(prepared.automatic_color_units), m_history_colors ? &*m_history_colors : nullptr,
+            std::move(prepared.default_workbench_palette));
+        const bool default_palette_applied = m_color_trial->enabled();
+        if (default_palette_applied) {
+            m_color_trial_enabled = true;
+            m_trial_palette = m_color_trial->colors();
+            m_trial_toggle_started = std::chrono::steady_clock::now();
+        }
         if (prepared.color_trial) {
             m_suppress_semantic_change = m_beauty_view || !prepared.saved_semantic_faces.empty() || !prepared.saved_semantic_subfaces.empty();
             m_color_trial->restore(*prepared.color_trial);
@@ -1505,7 +1527,7 @@ public:
         if (!keep_workbench_view) default_view();
         if (prepared.round_base_enabled && !set_round_base_preview(true, error)) return false;
         m_history_scene = std::move(prepared.history_scene);
-        remember_initial_color_trial();
+        remember_initial_color_trial(default_palette_applied);
         m_pending_library_thumbnail_sha = std::move(prepared.artifact_sha256);
         notify_selection_changed();
         return true;
@@ -3149,6 +3171,9 @@ public:
     }
     std::shared_ptr<const ModelPreviewInitialColorState> initial_color_trial_snapshot() const {
         return m_color_trial->initial_trial_snapshot();
+    }
+    bool uses_default_workbench_palette() const {
+        return m_color_trial->uses_default_workbench_palette();
     }
     void restore_initial_color_trial_snapshot(const std::shared_ptr<const ModelPreviewInitialColorState>& initial) {
         m_color_trial->set_initial_trial_snapshot(initial);

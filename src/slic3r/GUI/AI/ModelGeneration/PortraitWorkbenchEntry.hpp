@@ -29,6 +29,15 @@ constexpr bool native_workbench_partition_requested(
     return (consumers & native_workbench_partition_consumer(consumer)) != 0;
 }
 
+inline constexpr char honor_people_optimization_progress[] = "正在进行人像优化";
+
+constexpr const char* honor_people_optimization_status(NativeWorkbenchPartitionConsumers consumers,
+    bool continuation_queued, bool semantic_active)
+{
+    return native_workbench_partition_requested(consumers, NativeWorkbenchPartitionConsumer::HonorSuite) ||
+        continuation_queued || semantic_active ? honor_people_optimization_progress : nullptr;
+}
+
 // Activation choices are frozen before uploading the frame. Repeating an
 // existing request may wait for it; a new choice must wait until installation
 // finishes so it cannot consume a CPU-only checkpoint or invalidate that frame.

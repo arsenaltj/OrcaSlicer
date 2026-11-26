@@ -20,5 +20,14 @@ struct ModelPreviewInitialColorState {
     PreviewPalette::AutomaticColorBasis basis;
     std::vector<PreviewPalette::Color> suggestions;
     bool default_ai_palette {false};
+
+    bool matches_default_workbench_palette(const std::string& current_geometry,
+        const ModelPreviewColorState& current) const
+    {
+        return default_ai_palette && current_geometry == geometry_id && current.enabled && current.source == 0 &&
+            current.suite_id.empty() && current.count == trial.count && current.colors == trial.colors &&
+            current.mapping_colors == trial.mapping_colors && current.locks == trial.locks &&
+            current.fidelity == trial.fidelity && current.automatic_basis_signature == basis.basis_signature;
+    }
 };
 }

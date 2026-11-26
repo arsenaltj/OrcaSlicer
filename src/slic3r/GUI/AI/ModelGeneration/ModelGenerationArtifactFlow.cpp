@@ -85,6 +85,7 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
     m_preview_canceled = std::make_shared<std::atomic<bool>>(false);
     const auto canceled = m_preview_canceled;
     const bool share_exact_vertices = !m_model_preview->retains_surface_attributes();
+    const bool workbench_entry = m_role == Role::WorkbenchAssets;
     refresh_controls();
     const uint64_t sequence = m_sequence;
     wxWeakRef<ModelGenerationPanel> weak(this);
@@ -94,7 +95,7 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
             history_open->cached_scenes = m_model_preview->reusable_history_scenes();
     }
     auto launch = [weak, path, palette, sequence, loaded, failed, metadata_path, local_cancel, canceled,
-                   history_metadata, share_exact_vertices, may_install, history_open] {
+                   history_metadata, share_exact_vertices, workbench_entry, may_install, history_open] {
         if (!weak || weak->m_shutdown) return;
         auto* self = weak.get();
         if (history_open && history_open->canceled) {
@@ -110,7 +111,7 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
             const auto task = self->m_preview_task_scope.begin(path.string());
             const bool accepted = Presentation::background_tasks().submit(task,
                 [path, metadata_path, local_cancel, canceled, history_metadata, sequence,
-                 share_exact_vertices, history_open](const Presentation::TaskContext& context) {
+                 share_exact_vertices, workbench_entry, history_open](const Presentation::TaskContext& context) {
                     BOOST_LOG_TRIVIAL(info) << "[ModelPreviewLoad] worker started request="
                         << (history_open ? history_open->generation : sequence)
                         << " sequence=" << sequence << " history=" << bool(history_open);
@@ -119,7 +120,7 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
                             (history_open && history_open->canceled.load());
                     };
                     return prepare_model_preview_load(path, metadata_path, history_metadata, history_open,
-                        stopped, share_exact_vertices);
+                        stopped, share_exact_vertices, workbench_entry);
                 }, [weak, path, palette, sequence, start, loaded, failed, local_cancel, canceled,
                     metadata_path, history_metadata, may_install, history_open, task](Presentation::TaskResult<ModelPreviewLoadResult> outcome) mutable {
                     if (!weak || weak->m_shutdown) return;

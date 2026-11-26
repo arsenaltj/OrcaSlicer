@@ -389,7 +389,7 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
     state.editing = m_workbench_editing;
     state.workbench_presented = m_workbench_presented;
     state.modal_blocking = workbench_modal_navigation_blocked(m_finishing_workbench,
-        m_workbench_presented, m_workbench_honor_semantic_active, m_workbench_check_card_visible,
+        m_workbench_presented, workbench_honor_optimization_status() != nullptr, m_workbench_check_card_visible,
         m_workbench_check_running, m_workbench_auto_repair && m_finishing_running,
         m_native_workbench_partition_running, m_workbench_check_result);
     state.semantic_mode = m_semantic_mode;

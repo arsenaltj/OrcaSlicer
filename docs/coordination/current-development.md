@@ -1,3 +1,31 @@
+# MAINLINE-BUGFIX-001｜人像配色回退与取消（2026-11-26）
+
+`task/mainline-bugfix` 的 Windows Release 已同步到原运行目录，并通过原快捷方式启动验证。
+
+狮子手办自动应用近色回退并显示 `5/6 色`。人像样本成功应用人物套装。164 项定向回归通过，200% 最大化和 125% 窄窗均确认「取消优化」居中可点，任务退出后保留原配色、耗材和检查记录。[验收记录](/D:/TEST/artifacts/mainline-bugfix/evidence/workbench-portrait-cancel-20261126/validation.json)
+
+运行中从 125% 改到 200% 时，进度卡曾异常放大。在 200% 下重启后尺寸恢复。[实窗截图](/D:/TEST/artifacts/mainline-bugfix/evidence/workbench-portrait-cancel-20261126/cancel-200-after-dpi-change.jpg)
+
+应用内复核以原快捷方式启动的 Release 为准。
+
+实窗验收补充了窄窗进度卡留边和近色回退状态换行。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-portrait-cancel-20261126)
+
+---
+
+# MAINLINE-BUGFIX-001｜人像优化提示与默认六色首帧（2026-11-26）
+
+**主线** `task/mainline-bugfix` 固定 Windows Release 已从原入口启动。
+
+**本轮** 244 项定向回归通过。带贴图 GLB 在工作台切入前提交配色帧，六色减到五色后重置，六个色值与顺序恢复。899×701 的 125% 窄窗显示人物六色优化提示。[验收记录](/D:/TEST/artifacts/mainline-bugfix/evidence/workbench-first-palette-portrait-20261126/validation.json)
+
+**未结** 人像首次分区与取消由定向回归覆盖，实窗核对了缓存命中的识别阶段。
+
+**下一步** 原运行窗口已恢复 200% 缩放和最大化，可查看人物六色结果。
+
+**计划变更** 未配色模型的默认匹配在首帧前提交，后续分区只更新仍在使用此次默认配色的模型。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-workbench-first-palette-portrait-20261126)
+
+---
+
 # MAINLINE-BUGFIX-001｜去切片配色不匹配卡片（2026-11-25）
 
 **主线** `task/mainline-bugfix` 去切片交接已本地提交 `e0984a8b34`。

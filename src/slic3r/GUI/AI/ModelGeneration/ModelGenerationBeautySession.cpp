@@ -370,7 +370,8 @@ void ModelGenerationPanel::refresh_model_finishing()
         m_finishing_redo_path.clear();
     m_finishing_redo->Show(!m_finishing_workbench && !m_finishing_redo_path.empty() && !pending && !m_finishing_running);
     m_finishing_redo->Enable(editable);
-    if (pending || m_finishing_running || transaction_busy) {
+    const auto* honor_progress = workbench_honor_optimization_status();
+    if (pending || m_finishing_running || transaction_busy || honor_progress) {
         // A generated-model result can have an automatic topology candidate
         // from the background workbench check.  That candidate belongs to the
         // workbench review flow; it must not relabel the generation page as a
@@ -378,6 +379,7 @@ void ModelGenerationPanel::refresh_model_finishing()
         const bool generation_result = m_ui_model_generation_context && !m_finishing_workbench;
         m_status->SetLabel(generation_result && !m_workbench_check_running && !m_finishing_running
             ? _L("3D 模型已生成，可打开工作台查看与检查。")
+            : honor_progress ? wxString::FromUTF8(honor_progress)
             : m_native_workbench_partition_running ? wxString::FromUTF8(m_workbench_operation_notice)
             : m_workbench_check_running ? wxString::FromUTF8(workbench_check_status_line(m_workbench_check_result))
             : m_finishing_running ? _L("正在本地处理，可切换页面或取消。")

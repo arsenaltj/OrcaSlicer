@@ -249,6 +249,7 @@ void ModelGenerationPanel::queue_honor_suite_after_native_partition()
         if (!exact_owner) {
             self->m_honor_suite_partition_pending = false;
             self->m_honor_suite_partition_resume_queued = false;
+            self->refresh_post_generation_workbench();
             return;
         }
         self->m_honor_suite_partition_pending = false;
@@ -286,6 +287,7 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
             !PP::native_workbench_partition_can_join(m_native_workbench_partition_consumers,
                 consumers, m_model_preview->model_installation_frame_pending())) return false;
         m_native_workbench_partition_consumers |= consumers;
+        if (honor_suite_requested) refresh_post_generation_workbench();
         return true;
     }
 
@@ -338,8 +340,10 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                 m_workbench_operation_notice =
                     "原生原子分区已恢复，但当前模型无法应用 6 色 AI配色。";
         }
-        if (honor_suite_requested && completed)
+        if (honor_suite_requested && completed) {
             queue_honor_suite_after_native_partition();
+            refresh_post_generation_workbench();
+        }
         m_native_workbench_partition_consumers &= std::uint8_t(~consumers);
         return completed;
     }
@@ -423,7 +427,8 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     if (!weak || weak->m_shutdown || canceled->load() ||
                         weak->m_native_workbench_partition_cancel != canceled) return;
                     weak->m_workbench_operation_notice = message;
-                    weak->m_status->SetLabel(wxString::FromUTF8(message));
+                    const auto* honor_progress = weak->workbench_honor_optimization_status();
+                    weak->m_status->SetLabel(wxString::FromUTF8(honor_progress ? honor_progress : message));
                     weak->refresh_post_generation_workbench();
                 });
             };
@@ -756,8 +761,11 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     self->m_busy = false;
                     self->m_workbench_operation_notice.clear();
                 };
+                const bool same_model = self->native_workbench_context_matches(context);
+                const bool replaced_palette = automatic_requested && same_model &&
+                    !self->m_model_preview->uses_default_workbench_palette();
                 if (self->m_shutdown || canceled->load() ||
-                    !self->native_workbench_context_matches(context) ||
+                    !same_model || replaced_palette ||
                     (retry_files && !retry_files->current()) ||
                     (retry_source_file && !retry_source_file->current()) ||
                     self->m_model_preview->leaf_edit_revision() != edit_revision) {
@@ -770,10 +778,12 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                         self->m_sequence == context.generation) {
                         if (automatic_requested) self->clear_pending_workbench_ai_palette();
                         const bool was_canceled = canceled->load();
-                        self->fail_workbench_check(was_canceled
-                            ? "已取消检查与修复，原模型保留；可重新检查。"
-                            : "模型在修复期间已变化，未应用过期结果；请重新检查。",
-                            was_canceled ? WorkbenchCheckIssue::Canceled : WorkbenchCheckIssue::SourceChanged);
+                        if ((!replaced_palette || was_canceled) && !(was_canceled && honor_suite_requested)) {
+                            self->fail_workbench_check(was_canceled
+                                ? "已取消检查与修复，原模型保留；可重新检查。"
+                                : "模型在修复期间已变化，未应用过期结果；请重新检查。",
+                                was_canceled ? WorkbenchCheckIssue::Canceled : WorkbenchCheckIssue::SourceChanged);
+                        }
                     }
                     if (honor_suite_requested) {
                         self->m_honor_suite_partition_pending = false;
@@ -885,8 +895,12 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                 report->success = false;
                 report->error.clear();
                 report->total_ms = portrait_elapsed_ms(*report_started);
+                const bool apply_default_palette = automatic_requested ||
+                    (honor_suite_requested && activation_before->beauty.initial_color_trial &&
+                        activation_before->beauty.initial_color_trial->matches_default_workbench_palette(
+                            context.geometry_id, activation_before->beauty.color_trial));
                 bool automatic_applied = true;
-                if (automatic_requested) {
+                if (apply_default_palette) {
                     automatic_applied = self->m_model_preview->activate_current_ai_palette(
                         int(NativePortrait::default_model_color_count));
                 }
@@ -971,7 +985,8 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                 self->m_native_workbench_partition_context = installed_context;
                 self->m_model_preview->after_model_installation_frame(
                     [weak, installed_context, canceled, accepted_check, report, report_started,
-                     preview_started, activation_before, automatic_requested, honor_suite_requested](bool presented) {
+                     preview_started, activation_before, automatic_requested, honor_suite_requested,
+                     apply_default_palette](bool presented) {
                     if (!weak || weak->m_shutdown || weak->m_native_workbench_partition_cancel != canceled ||
                         !weak->native_workbench_context_matches(installed_context)) return;
                     auto* self = weak.get();
@@ -984,9 +999,10 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     self->m_native_workbench_partition_context = {};
                     self->m_workbench_check_card_visible = false;
                     self->m_busy = false;
-                    if (!presented || canceled->load()) {
+                     const bool was_canceled = canceled->load();
+                     if (!presented || was_canceled) {
                         preview.status = NativePortrait::BuildStageStatus::Failed;
-                        preview.detail = canceled->load() ? "Installation canceled after publication." :
+                         preview.detail = was_canceled ? "Installation canceled after publication." :
                             "GPU upload, shader or frame submission failed after publication.";
                         report->success = false; report->error = preview.detail;
                         log_native_portrait_partition_report(*report, "presentation-failed");
@@ -994,7 +1010,7 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                         self->m_displayed_model_job_id = activation_before->displayed_model_job_id;
                         self->m_workbench_library_binding = activation_before->library_binding;
                         self->restore_beauty_candidate_async(activation_before->beauty,
-                            [weak, activation_before, automatic_requested, honor_suite_requested](bool restored) {
+                             [weak, activation_before, automatic_requested, honor_suite_requested, was_canceled](bool restored) {
                             if (!weak || weak->m_shutdown) return;
                             auto* self = weak.get();
                             self->m_native_workbench_context = {};
@@ -1011,10 +1027,12 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                                 self->m_honor_suite_partition_pending = false;
                                 self->m_honor_suite_partition_resume_queued = false;
                             }
-                            self->fail_workbench_check(restored ?
-                                "检查成果已保存，但完整预览未完成；已恢复原模型，重新检查可复用成果。" :
-                                "检查成果已保存，但原预览恢复失败；请重新打开模型。成果不会重复修复。",
-                                WorkbenchCheckIssue::PreviewFailed);
+                             if (!restored || !was_canceled || !honor_suite_requested) {
+                                 self->fail_workbench_check(restored ?
+                                     "检查成果已保存，但完整预览未完成；已恢复原模型，重新检查可复用成果。" :
+                                     "检查成果已保存，但原预览恢复失败；请重新打开模型。成果不会重复修复。",
+                                     WorkbenchCheckIssue::PreviewFailed);
+                             }
                             self->refresh_controls(); self->refresh_post_generation_workbench(); self->publish_workbench_state();
                         });
                         return;
@@ -1024,10 +1042,8 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     report->success = true; report->error.clear();
                     self->m_workbench_check_result = accepted_check;
                     self->m_native_workbench_partition_report = NativePortrait::encode_native_portrait_partition_build_report(*report);
-                    if (automatic_requested) {
-                        self->m_model_preview->remember_initial_color_trial(true);
-                        self->clear_pending_workbench_ai_palette();
-                    }
+                    if (apply_default_palette) self->m_model_preview->remember_initial_color_trial(true);
+                    if (automatic_requested) self->clear_pending_workbench_ai_palette();
                     if (honor_suite_requested) self->queue_honor_suite_after_native_partition();
                     log_native_portrait_partition_report(*report, "succeeded");
                     self->refresh_controls(); self->refresh_post_generation_workbench(); self->publish_workbench_state();
