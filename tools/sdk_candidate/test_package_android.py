@@ -194,10 +194,15 @@ class AndroidPackage(unittest.TestCase):
             root=Path(d);file=root/'input';file.write_bytes(b'tiny');ref=a.identity(file)
             plan=dict(bindingPath=str(root/'plan.json'),runtimeInputs={},qualification={},evidence=str(root/'evidence'))
             Path(plan['bindingPath']).write_text(json.dumps(plan));sha=a.identity(plan['bindingPath'])['sha256']
-            go=dict(schema='android-artifact-go-v1',authorized=True,rootConversation=p.ROOT,
+            now=p.utc_now();stamp=lambda t:t.isoformat().replace('+00:00','Z')
+            go=dict(schema='android-artifact-go-v2',authorized=True,rootConversation=p.ROOT,
                     artifactOnlyAuthorized=True,allowSDKLoad=False,operation='package-android',
+                    issuedUtc=stamp(now),expiresUtc=stamp(now+p.dt.timedelta(seconds=360)),
+                    operationDeadlineUtc=stamp(now+p.dt.timedelta(seconds=7200)),
+                    resourceAdmissionWindowEndUtc=stamp(now+p.dt.timedelta(seconds=7200)),
+                    lifecycle=dict(timingPolicy=p.timing_policy()),
                     planSha256=sha,planPath=plan['bindingPath'],closure=[ref],cancel=str(root/'evidence.cancel'))
-            with patch.object(p,'fresh',lambda g:None),patch.object(p,'validate_life',lambda *x:None), \
+            with patch.object(p,'fresh',lambda g,**kw:None),patch.object(p,'validate_life',lambda *x:None), \
                  patch.object(p,'validate',return_value=[ref]),patch.object(p,'tool_refs',return_value=[]), \
                  patch.object(p,'source_check',lambda x:None):
                 p.exact_go(plan,go,sha)
@@ -735,6 +740,154 @@ class AndroidNamespace(unittest.TestCase):
                     with self.assertRaises(ValueError):p.write_bundle(out,root/'bad.zip')
                     writer.assert_not_called()
                 self.assertFalse((root/'bad.zip').exists())
+
+
+class AndroidTiming(unittest.TestCase):
+    BASE=p.dt.datetime(2026,11,26,tzinfo=p.dt.timezone.utc)
+    def clock(self):
+        c=types.SimpleNamespace(wall=0.0,mono=0.0)
+        c.now=lambda:self.BASE+p.dt.timedelta(seconds=c.wall)
+        c.tick=lambda seconds:(setattr(c,'wall',c.wall+seconds),setattr(c,'mono',c.mono+seconds))
+        return c
+
+    def go(self):
+        stamp=lambda seconds:(self.BASE+p.dt.timedelta(seconds=seconds)).isoformat().replace('+00:00','Z')
+        return dict(schema='android-artifact-go-v2',authorized=True,artifactOnlyAuthorized=True,allowSDKLoad=False,
+            rootConversation=p.ROOT,operation='package-android',
+            issuedUtc=stamp(0),expiresUtc=stamp(360),operationDeadlineUtc=stamp(7200),
+            resourceAdmissionWindowEndUtc=stamp(7200),lifecycle=dict(timingPolicy=p.timing_policy()))
+
+    def test_entry359_and360_and_single287second_admission_budget(self):
+        c=self.clock();go=self.go()
+        with patch.object(p,'utc_now',c.now),patch.object(p.time,'monotonic',lambda:c.mono):
+            c.tick(359);budget=p.OperationBudget(go);original=budget.monoDeadline
+            c.tick(287);budget.check()
+            self.assertEqual(budget.monoDeadline,original);self.assertFalse(budget.receipt()['earlyAdmissionDurable'])
+            with self.assertRaises(ValueError):p.OperationBudget(go)
+            c.tick(7200-c.wall)
+            with self.assertRaises(ValueError):budget.check()
+        c=self.clock();c.tick(360)
+        with patch.object(p,'utc_now',c.now),self.assertRaises(ValueError):p.fresh(go)
+
+    def test_forward_backward_wall_clock_never_extends_monotonic_authority(self):
+        for wall,mono in [(7200,1),(-1000,7200)]:
+            c=self.clock()
+            with patch.object(p,'utc_now',c.now),patch.object(p.time,'monotonic',lambda:c.mono):
+                budget=p.OperationBudget(self.go());c.wall=wall;c.mono=mono
+                with self.assertRaises(ValueError):budget.check()
+
+    def test_typed_canonical_deadline_policy_and_old_go_rejections(self):
+        c=self.clock();go=self.go()
+        for change in [dict(schema='android-artifact-go-v1'),dict(operationDeadlineUtc=True),
+            dict(operationDeadlineUtc='2026-11-26T02:00:01Z'),dict(operationDeadlineUtc='2026-11-26T00:00:00'),
+            dict(resourceAdmissionWindowEndUtc='2026-11-26T01:59:59Z'),dict(expiresUtc='2026-11-26T00:06:01Z')]:
+            with self.subTest(change=change),patch.object(p,'utc_now',c.now),patch.object(p.time,'monotonic',lambda:c.mono):
+                with self.assertRaises(ValueError):p.OperationBudget(dict(go,**change))
+        bad=copy.deepcopy(go);bad['lifecycle']['timingPolicy']['renewalAllowed']=0
+        with patch.object(p,'utc_now',c.now),self.assertRaises(ValueError):p.OperationBudget(bad)
+        bad=copy.deepcopy(go);del bad['operationDeadlineUtc']
+        with patch.object(p,'utc_now',c.now),self.assertRaises(ValueError):p.OperationBudget(bad)
+        with self.assertRaises(ValueError):p.execute({},dict(go,rootConversation='foreign'),'fixture')
+        with self.assertRaises(ValueError):p.execute({},dict(go,operation='observe-inputs'),'fixture')
+
+    def test_deadline_and_policy_mutations_cannot_renew(self):
+        for field in ('operationDeadlineUtc','resourceAdmissionWindowEndUtc','issuedUtc'):
+            c=self.clock();go=self.go()
+            with patch.object(p,'utc_now',c.now),patch.object(p.time,'monotonic',lambda:c.mono):
+                budget=p.OperationBudget(go);go[field]='2026-11-26T03:00:00Z'
+                with self.assertRaises(ValueError):budget.check()
+        c=self.clock();go=self.go()
+        with patch.object(p,'utc_now',c.now),patch.object(p.time,'monotonic',lambda:c.mono):
+            budget=p.OperationBudget(go);go['lifecycle']['timingPolicy']['entryFreshnessMaxSeconds']=360.0
+            with self.assertRaises(ValueError):budget.check()
+
+    def scenario(self, *, entry_wait=0, command_wait=0, child_elapsed=0, io_expire=False, operation_deadline=7200,
+                 publication_expire=False, source_failure=False, cancelled=False):
+        from contextlib import ExitStack
+        c=self.clock();calls=[];closed=[];published=[];core=Path('D:/Codex/artifacts/task-20261122-v102-api-upstream-integration/evidence/d3cc-validation-tools-v8')
+        with tempfile.TemporaryDirectory() as d,ExitStack() as stack:
+            root=Path(d);plan=copy.deepcopy(AndroidConcreteContract.actual_metadata()[0])
+            plan.update(output=str(root/'out'),evidence=str(root/'evidence'),debug=str(root/'debug'),ownerDirectory=str(core))
+            plan['lifecycle']=p.life(plan,True)
+            go=self.go();go.update(lifecycle=plan['lifecycle'],cancel=str(root/'cancel'),closure=[])
+            go['operationDeadlineUtc']=(self.BASE+p.dt.timedelta(seconds=operation_deadline)).isoformat().replace('+00:00','Z')
+            gates=[]
+            def gate(rows,save):
+                gates.append(1);c.tick(entry_wait if len(gates)==1 else command_wait)
+            resources=types.SimpleNamespace(__file__=str(core/'build_resources.py'),gate=gate,
+                sample=lambda:dict(freeKiB=4*1024**2,processes=[]),heavy=lambda row:False)
+            stack.enter_context(patch.dict('sys.modules',{'build_resources':resources}))
+            stack.enter_context(patch.object(p,'utc_now',c.now));stack.enter_context(patch.object(p.time,'monotonic',lambda:c.mono))
+            stack.enter_context(patch.object(a,'verify',side_effect=lambda ref:Path(ref['path'])))
+            def admit(path):
+                if cancelled:raise ValueError('cancelled')
+            stack.enter_context(patch.object(owner,'admit_cancel',side_effect=admit))
+            def source(plan):
+                if source_failure:raise ValueError('source/tool drift')
+            stack.enter_context(patch.object(p,'source_check',side_effect=source))
+            def preflight(plan,go,sha,observe=False,admission=None):
+                c.tick(287);admission.check()
+            stack.enter_context(patch.object(p,'exact_go',side_effect=preflight))
+            stack.enter_context(patch.object(p,'validate',return_value=[]));stack.enter_context(patch.object(p,'original_graph',return_value=({}, {}, [])))
+            def run(argv,path,record,save,cancel,checkpoint,**kw):
+                self.assertEqual(kw['timeout'],7200);self.assertEqual(kw['lifecycle_profile'],p.PROFILE)
+                self.assertEqual(kw['permitted_commands'],p.commands(plan));calls.append(argv)
+                c.tick(child_elapsed);Path(path).write_text('fake native output');closed.append('natural-close-once')
+            stack.enter_context(patch.object(owner,'run_owned',side_effect=run))
+            def process(plan,command,monitor):
+                if io_expire:c.wall=7200;a.IO_MONITOR() # mono unchanged: still inside the5s sample throttle
+                command(p.commands(plan)[0],'first')
+                if child_elapsed:command(p.commands(plan)[1],'must-not-start-after-expiry')
+                Path(plan['output']).mkdir();return {}
+            stack.enter_context(patch.object(p,'process_libraries',side_effect=process))
+            stack.enter_context(patch.object(p,'snapshot',return_value=[]))
+            stack.enter_context(patch.object(p,'distribute_provenance',return_value=dict(path='provenance/evidence-index.json',bytes=1,sha256='0'*64)))
+            stack.enter_context(patch.object(p,'manifest',return_value=dict(schemaVersion=p.SCHEMA,files=[])))
+            stack.enter_context(patch.object(p,'write_bundle',side_effect=lambda out,bundle:Path(bundle).write_bytes(b'tiny zip')))
+            def publish(evidence,result,final_checks,save):
+                final_checks()
+                if publication_expire:c.tick(7200)
+                save();published.append(True)
+            stack.enter_context(patch.object(a,'publish_result',side_effect=publish))
+            error=None
+            try:p.execute(plan,go,'fixture')
+            except ValueError as ex:error=str(ex)
+            state=json.loads((root/'evidence/execution.json').read_text()) if (root/'evidence/execution.json').exists() else None
+            return dict(error=error,calls=calls,closed=closed,published=published,state=state)
+
+    def test_expired_resource_wait_cannot_admit_or_create_evidence(self):
+        r=self.scenario(entry_wait=360);self.assertIn('GO expired',r['error'])
+        self.assertFalse(r['calls']);self.assertIsNone(r['state'])
+        r=self.scenario(operation_deadline=200);self.assertIn('deadline',r['error'])
+        self.assertFalse(r['calls']);self.assertIsNone(r['state'])
+
+    def test_gate_expiry_prevents_owner_dispatch(self):
+        r=self.scenario(command_wait=7000);self.assertIn('deadline',r['error'])
+        self.assertFalse(r['calls']);self.assertEqual(r['state']['state'],'failed_partial_no_retry')
+
+    def test_child_outlives_deadline_drains_once_no_next_or_publish(self):
+        r=self.scenario(child_elapsed=7000);self.assertEqual(len(r['calls']),1)
+        self.assertEqual(r['closed'],['natural-close-once']);self.assertFalse(r['published'])
+        self.assertIn('deadline',r['error'])
+
+    def test_io_and_final_publication_expiry_reject_success(self):
+        for kwargs in (dict(io_expire=True),dict(publication_expire=True)):
+            r=self.scenario(**kwargs);self.assertIn('deadline',r['error']);self.assertFalse(r['published'])
+            self.assertEqual(r['state']['state'],'failed_partial_no_retry')
+
+    def test_source_tool_and_cancel_remain_fail_closed(self):
+        for kwargs in (dict(source_failure=True),dict(cancelled=True)):
+            r=self.scenario(**kwargs);self.assertIsNotNone(r['error']);self.assertFalse(r['calls']);self.assertFalse(r['published'])
+
+    def test_in_time_pipeline_records_nondurable_entry_and_keeps_command_table(self):
+        r=self.scenario();self.assertIsNone(r['error']);self.assertTrue(r['published'])
+        self.assertFalse(r['state']['timingAdmission']['earlyAdmissionDurable'])
+        self.assertEqual(r['state']['timingAdmission']['entryUtc'],'2026-11-26T00:00:00Z')
+        plan=AndroidConcreteContract.actual_metadata()[0]
+        self.assertEqual(len(p.commands(plan)),29)
+        changed=copy.deepcopy(plan);changed['lifecycle']=p.life(changed,True)
+        changed['lifecycle']['schema']='android-artifact-lifecycle-v1'
+        with self.assertRaises(ValueError):p.validate_life(changed)
 
 
 if __name__=='__main__':unittest.main()

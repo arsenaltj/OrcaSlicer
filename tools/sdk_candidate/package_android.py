@@ -171,7 +171,7 @@ def original_refs(refs):
 
 
 def life(plan, enabled=False):
-    return dict(schema='android-artifact-lifecycle-v1',enabled=enabled,profile=PROFILE,
+    return dict(schema='android-artifact-lifecycle-v2',enabled=enabled,profile=PROFILE,timingPolicy=timing_policy(),
         effectiveCreationFlags=FLAGS,neverResumedAbortExitCode=74,custodian='CURRENT_CREATING_PROCESS',
         source=a.SOURCE,toolSource=plan['toolSource'],cwd=str(Path(plan['sdkRepository'])),
         commandTimeoutSeconds=7200,commands=commands(plan),toolFiles=plan['toolFiles'])
@@ -456,11 +456,58 @@ def owner_contract(plan):
     return life(plan,True)
 
 
-def fresh(go):
-    now=dt.datetime.now(dt.timezone.utc)
-    issued=dt.datetime.fromisoformat(go['issuedUtc'].replace('Z','+00:00'))
-    expiry=dt.datetime.fromisoformat(go['expiresUtc'].replace('Z','+00:00'))
+def timing_policy():
+    return dict(schema='android-dispatch-io-deadline-v1',entryFreshnessMaxSeconds=360,
+        operationIssueBudgetMaxSeconds=7200,deadlineEvent='command-dispatch-and-io-publication-admission',
+        clockPolicy='utc-and-once-derived-monotonic',renewalAllowed=False,
+        childCompletionDeadlineEnforced=False,hostReleaseDeadlineEnforced=False)
+
+
+def utc_now():return dt.datetime.now(dt.timezone.utc)
+
+
+def utc_value(value):
+    need(type(value) is str and value.endswith('Z'),'canonical aware UTC string required')
+    parsed=dt.datetime.fromisoformat(value[:-1]+'+00:00')
+    need(parsed.isoformat().replace('+00:00','Z')==value,'noncanonical UTC time')
+    return parsed
+
+
+def fresh(go, *, now=None):
+    now=utc_now() if now is None else now
+    issued=utc_value(go['issuedUtc']);expiry=utc_value(go['expiresUtc'])
     need(issued<=now<expiry and 0<(expiry-issued).total_seconds()<=360,'Android GO expired')
+
+
+class OperationBudget:
+    """One nondurable envelope admission; never a child-completion deadline."""
+    FIELDS=('issuedUtc','expiresUtc','operationDeadlineUtc','resourceAdmissionWindowEndUtc')
+    def __init__(self,go):
+        need(all(k in go for k in self.FIELDS),'Android timing fields required')
+        self.entryUtc=utc_now();self.entryMono=time.monotonic()
+        fresh(go,now=self.entryUtc)
+        need(go.get('schema')=='android-artifact-go-v2','versioned Android timing GO required')
+        need(typed_equal(go['lifecycle']['timingPolicy'],timing_policy()),'typed Android timing policy differs')
+        self.go=go;self.bound={k:go[k] for k in self.FIELDS}
+        self.policy=typed_json(go['lifecycle']['timingPolicy'])
+        issued=utc_value(go['issuedUtc']);deadline=utc_value(go['operationDeadlineUtc'])
+        resource_end=utc_value(go['resourceAdmissionWindowEndUtc'])
+        need(self.entryUtc<deadline<=min(issued+dt.timedelta(seconds=7200),resource_end),
+             'Android operation deadline outside issue/resource window')
+        self.deadline=deadline
+        self.monoDeadline=self.entryMono+(deadline-self.entryUtc).total_seconds()
+        self.check()
+
+    def check(self):
+        need(typed_equal({k:self.go[k] for k in self.FIELDS},self.bound)
+             and typed_json(self.go['lifecycle']['timingPolicy'])==self.policy,'Android timing authority changed; no renewal')
+        need(utc_now()<self.deadline and time.monotonic()<self.monoDeadline,'Android operation deadline elapsed')
+
+    def receipt(self):
+        return dict(entryUtc=self.entryUtc.isoformat().replace('+00:00','Z'),
+            entryMonotonic=self.entryMono,monotonicDeadline=self.monoDeadline,**self.bound,
+            earlyAdmissionDurable=False,earlyPhase='envelope_admitted_source_verification_pending',
+            fullSourceAdmissionCompleted=True,timingPolicy=timing_policy())
 
 
 def source_check(plan):
@@ -470,12 +517,14 @@ def source_check(plan):
         if tree:need(git('rev-parse','HEAD^{tree}')==tree,'SDK tree changed')
 
 
-def exact_go(plan,go,plan_sha,observe=False):
-    need(go.get('schema')=='android-artifact-go-v1' and go.get('authorized') is True
+def exact_go(plan,go,plan_sha,observe=False,admission=None):
+    need(go.get('schema')=='android-artifact-go-v2' and go.get('authorized') is True
          and type(go['authorized']) is bool and go.get('rootConversation')==ROOT
          and go.get('artifactOnlyAuthorized') is True and go.get('allowSDKLoad') is False,
          'explicit Android artifact-only root GO required')
-    fresh(go)
+    budget=OperationBudget(go) if admission is None else admission
+    need(type(budget) is OperationBudget and budget.go is go,'different Android admission token')
+    budget.check()
     need(go.get('operation')==('observe-inputs' if observe else 'package-android'), 'Android GO operation differs')
     need(go['planSha256']==plan_sha and a.identity(go['planPath'])['sha256']==plan_sha
          and key(plan['bindingPath'])==key(go['planPath']) and typed_equal(a.small_json(go['planPath']),plan),'Android exact plan mismatch')
@@ -493,6 +542,7 @@ def exact_go(plan,go,plan_sha,observe=False):
     need(len(actual)==len(go['closure']) and actual==expected,'exact Android GO closure differs')
     for ref in actual.values():a.verify(ref)
     source_check(plan)
+    budget.check()
 
 
 def dynamic_tables(command,ref,label,kind=None):
@@ -790,8 +840,10 @@ def verify_closure(refs):
 
 
 def execute(plan, go, plan_sha,observe=False):
-    need(go.get('authorized') is True and go.get('artifactOnlyAuthorized') is True
-         and go.get('allowSDKLoad') is False,'Android artifact GO required before resource admission')
+    need(go.get('schema')=='android-artifact-go-v2' and go.get('authorized') is True and go.get('artifactOnlyAuthorized') is True
+         and go.get('allowSDKLoad') is False and go.get('rootConversation')==ROOT
+         and go.get('operation')==('observe-inputs' if observe else 'package-android'),
+         'Android artifact GO required before resource admission')
     validate_life(plan,go)
     # Verify the small inert cores before importing their admission monitor.
     import artifact_owner
@@ -807,32 +859,40 @@ def execute(plan, go, plan_sha,observe=False):
     from artifact_owner import admit_cancel,run_owned
     cancel=Path(go['cancel']);admit_cancel(cancel)
     entry=[];gate(entry,lambda:None)
+    budget=OperationBudget(go) # capture once AFTER resource wait, before full source verification
     preflight_samples=[];preflight_last=[0.0]
     def preflight_monitor():
-        admit_cancel(cancel)
+        admit_cancel(cancel);budget.check()
         if time.monotonic()-preflight_last[0]<5:return
         preflight_last[0]=time.monotonic();s=sample();preflight_samples.append(s)
         need(s['freeKiB']>3*1024**2 and not any(heavy(p) for p in s['processes']),'Android source admission IO gate')
+        budget.check()
     previous_preflight=a.IO_MONITOR;a.IO_MONITOR=preflight_monitor
-    try:exact_go(plan,go,plan_sha,observe)
+    try:exact_go(plan,go,plan_sha,observe,admission=budget)
     finally:a.IO_MONITOR=previous_preflight
+    budget.check();admit_cancel(cancel)
     evidence=Path(plan['evidence']);evidence.mkdir(parents=True)
-    state=dict(state='started',commands=[],entry=entry,sourceAdmissionSamples=preflight_samples,ioSamples=[])
+    state=dict(state='started',commands=[],entry=entry,sourceAdmissionSamples=preflight_samples,ioSamples=[],
+               timingAdmission=budget.receipt())
     def save():(evidence/'execution.json').write_text(json.dumps(state,indent=2),encoding='utf8')
     last=[0.0]
     def monitor(force=False):
-        admit_cancel(cancel)
+        admit_cancel(cancel);budget.check()
         if not force and time.monotonic()-last[0]<5:return
         last[0]=time.monotonic();s=sample();state['ioSamples'].append(s);save()
         need(s['freeKiB']>3*1024**2 and not any(heavy(p) for p in s['processes']),'Android IO resource gate')
+        budget.check()
     def command(argv,label):
-        admit_cancel(cancel);source_check(plan);fresh(go)
+        admit_cancel(cancel);budget.check();source_check(plan);budget.check()
         step=dict(argv=argv,label=label);state['commands'].append(step);gate(step.setdefault('admission',[]),save)
         path=evidence/(label+'.log')
+        admit_cancel(cancel);budget.check()
+        step['dispatchAdmissionUtc']=utc_now().isoformat().replace('+00:00','Z')
         run_owned(argv,path,step,save,cancel,lambda:None,timeout=7200,mode='artifact',
             permitted_commands=commands(plan),permitted_images=[plan['strip'],plan['readelf']],env=dict(os.environ),
             cwd=plan['sdkRepository'],lifecycle_profile=PROFILE,android_plan=plan)
-        return path.read_text(encoding='utf8')
+        admit_cancel(cancel);budget.check()
+        result=path.read_text(encoding='utf8');budget.check();return result
     previous=a.IO_MONITOR;a.IO_MONITOR=monitor
     try:
         if observe:
@@ -842,10 +902,12 @@ def execute(plan, go, plan_sha,observe=False):
             state['state']='android_inputs_observed_not_packaged';save()
             return
         # Full streamed source closure and approved TBB/header validation before any copy.
-        validate(plan,verify_all=True);source_check(plan)
+        monitor(True);validate(plan,verify_all=True);source_check(plan);monitor(True)
         proof=process_libraries(plan,command,monitor)
+        monitor(True)
         a.write(evidence/'android-static-proof.json',proof)
         sources=snapshot(plan,monitor)
+        monitor(True)
         provenance=Path(plan['output'])/'provenance';provenance.mkdir()
         a.write(provenance/'binding.json',plan)
         index_ref=distribute_provenance(plan,go['closure'])
@@ -854,13 +916,16 @@ def execute(plan, go, plan_sha,observe=False):
         final_manifest=manifest(plan,sources,static_ref)
         final_manifest['provenanceIndex']=index_ref
         write_role(safe_target(plan['output'],'manifest.json'),final_manifest,'manifest')
+        monitor(True)
         bundle=evidence/(Path(plan['output']).name+'.zip')
         write_bundle(plan['output'],bundle)
+        monitor(True)
         validate_originals=lambda:([original_graph(plan,s,verify_all=True) for s in STAGES],verify_closure(go['closure']))
         validate_originals();source_check(plan);monitor(True)
         state['state']='android_candidate_phone_pending';save()
         a.publish_result(evidence,dict(state=state['state'],manifest=a.identity(Path(plan['output'])/'manifest.json'),archive=a.identity(bundle)),
-                         lambda:(validate_originals(),source_check(plan),monitor(True)),save)
+                         lambda:(monitor(True),validate_originals(),source_check(plan),monitor(True)),
+                         lambda:(save(),admit_cancel(cancel),budget.check()))
     except BaseException as ex:
         state.update(state='failed_partial_no_retry',error=repr(ex));save();raise
     finally:a.IO_MONITOR=previous
