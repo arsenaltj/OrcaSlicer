@@ -1,0 +1,27 @@
+{
+  "pr": 89,
+  "run": 45850128527,
+  "head": "97f1e175374157a923cd9c440a0be17aa0e226f1",
+  "base": "1b268e3bfa3569f2004fd3bc11d6053239ab7e31",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "整合 V1.0.5 打印机设置与高级创作修复",
+  "path": "pr/89/97f1e175374157a923cd9c440a0be17aa0e226f1/45850128527",
+  "created": "2026-11-26T15:35:50+00:00",
+  "files": {
+    "index.html": "bbc48748843f777d4bd116ec726f3324d4e383bf3de6ffb7a0c85ce403816a39",
+    "details.html": "3dd8fc879b52656af096a7c030639d5c617c6e297460339160e33e8f9f383372",
+    "report.json": "d71ef47e54b03f0cfabdf62270252439b4ef00d69c083a6f1f130b2ea3af26ed",
+    "summary.md": "bb27700b1e75658e333b458310f8a1d33b91512bb90c083a655e27ad7c531306",
+    "archify-receipts.json": "5401333f08d4aea0a0eeea686ed71c92b165123dbbaf1e8063437a5507a20f5a",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l0-platform.html": "99935095d905d448319e796148e04715478224ba9576c63820c2d1ba37e75aa2",
+    "l0-platform.json": "cf11ddcc6ebffc6bb2ab8f18b82871e1b72d147778df05af8f63b1c196dcaefa",
+    "l1-modules.html": "6b1b41b24a3098facd5c3d2a39ccc23538f0505c5f08f144c853635898924c96",
+    "l1-modules.json": "2d337872192e2dea0a464d17592f945db1532b038d57913d940744367f164991",
+    "l2-generation.html": "5ab5558ef137d23eda721ae0ddaa25f82afe2839900e0e142691cb8020e85350",
+    "l2-generation.json": "9d870a02f238a819088346855f3b6c4f912a733fb48dec971a7ab4e6ed8caea5",
+    "l2-slicing.html": "d90d8be9e8d358423e04a3e12617d88a0796cd9e9740d2339cbfeeb1b5277a0d",
+    "l2-slicing.json": "5137fddbf8b9b2e17bd079e501454a6cdb667e6e12f11f40f49207ca165d243c"
+  }
+}
