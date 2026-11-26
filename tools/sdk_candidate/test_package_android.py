@@ -1129,7 +1129,8 @@ class AndroidMemory(unittest.TestCase):
 
 
 class MemoryOwner(unittest.TestCase):
-    def scenario(self, *, bad_child=False, malformed_own=False, low=False, reuse=False, unknown_job=False, malformed_child=False, cancelled=False, timeout=False):
+    def scenario(self, *, bad_child=False, malformed_own=False, low=False, reuse=False, unknown_job=False, malformed_child=False, cancelled=False, timeout=False,
+                 foreign_child=None,reverse_rows=False,parent_absent=False,parent_exit=False,own_child_birth=None):
         from contextlib import ExitStack
         import sys
         core='D:/Codex/artifacts/task-20261122-v102-api-upstream-integration/evidence/d3cc-validation-tools-v8'
@@ -1142,13 +1143,14 @@ class MemoryOwner(unittest.TestCase):
                 def poll(self):return 0
             class API:
                 def job(self):return 'job'
-                def info(self,h):return (42,100000,200000 if reuse else None) if h=='root' else (43,110000,None)
+                def info(self,h):return (42,100000,200000 if reuse or parent_exit else None) if h=='root' else (43,own_child_birth if own_child_birth is not None else 110000,None)
                 def opened(self,pid):opened.append(pid);return 'child'
                 def member(self,h,job):return True
-                def signaled(self,h,timeout=0):return True
+                def signaled(self,h,timeout=0):return h!='child' or own_child_birth is None or state.get('childReleased',False)
                 def active(self,job):
                     state['activeCalls']=state.get('activeCalls',0)+1
-                    return 2 if unknown_job and state['activeCalls']==1 else 0
+                    if unknown_job and state['activeCalls']==1:return 2
+                    return 1 if own_child_birth is not None and opened and not state.get('childReleased',False) else 0
                 def close(self,h):closed.append(h)
             class Domain(kernel.KernelDomain):
                 def __init__(self):super().__init__(API())
@@ -1160,8 +1162,12 @@ class MemoryOwner(unittest.TestCase):
             foreign=[dict(ProcessId=900+i,ParentProcessId=1,Name=name,CreationDate=None,CommandLine=None) for i,name in enumerate(('dart.exe','java.exe','clang.exe','exact-tool'))]
             foreign += [{},dict(ProcessId=[],Name=None),dict(ProcessId=950,ParentProcessId=[],CreationDate=None),None]
             rows=foreign+[own]
+            if parent_absent:rows=foreign.copy()
             if bad_child:rows.append(dict(ProcessId=43,ParentProcessId=42,Name='java.exe',CreationDate='/Date(110000)/',CommandLine='unpermitted'))
             if malformed_child:rows.append(dict(ProcessId=43,ParentProcessId=42,Name='java.exe',CreationDate=None))
+            if foreign_child is not None:rows.append(dict(ParentProcessId=42,Name=None,CommandLine=None,**foreign_child))
+            if own_child_birth is not None:rows.append(dict(ProcessId=43,ParentProcessId=42,Name='exact-tool',CreationDate='/Date('+str(own_child_birth)+')/',CommandLine='allowed tiny child'))
+            if reverse_rows:rows.reverse()
             def attempt(errors,label,fn):
                 try:fn();return True
                 except BaseException as ex:errors.append(dict(stage=label,error=repr(ex)));return False
@@ -1169,7 +1175,7 @@ class MemoryOwner(unittest.TestCase):
             def wait(child,monitor,errors,pause):
                 state['waited']=True
                 if cancelled:(Path(d)/'cancel').write_text('cancel while owned')
-                monitor();return 0
+                monitor();state['childReleased']=True;return 0
             runtime=(Domain,lambda:dict(freeKiB=1 if low else 10*1024**2,processes=rows),lambda row:True,
                 lambda row:(row['ProcessId'],row['CreationDate'],row.get('CommandLine')),lambda:'now',attempt,remember,wait)
             record={};error=None
@@ -1197,6 +1203,35 @@ class MemoryOwner(unittest.TestCase):
     def test_proven_later_foreign_pid_reuse_is_never_opened_or_owned(self):
         r=self.scenario(reuse=True);self.assertTrue(r['state']['returned']);self.assertFalse(r['opened'])
         self.assertTrue(all(not p['rawProcessIndices'] for p in r['record']['ownProjections']))
+
+    def test_reused_foreign_parent_unknown_descendants_do_not_break_complete_owner(self):
+        for row in (dict(ProcessId=43,CreationDate=None),dict(ProcessId='bad',CreationDate=None),dict(ProcessId=[],CreationDate=None),
+                    dict(ProcessId=43,CreationDate='not-a-date'),dict(ProcessId=43,CreationDate='0001-01-01T00:00:00Z'),dict(ProcessId=43,CreationDate='/Date(310000)/')):
+            for reverse in (False,True):
+                with self.subTest(row=row,reverse=reverse):
+                    r=self.scenario(reuse=True,foreign_child=row,reverse_rows=reverse)
+                    self.assertTrue(r['state']['returned']);self.assertIsNone(r['error']);self.assertFalse(r['opened'])
+                    self.assertEqual(r['record']['monitorErrors'],[]);self.assertGreaterEqual(r['record']['kernelEvidence']['consistentZeroChecks'],2)
+                    self.assertTrue(all(not p['rawProcessIndices'] for p in r['record']['ownProjections']))
+
+    def test_exited_parent_retained_lifetime_still_proves_own_live_child(self):
+        for absent in (False,True):
+            for birth in (100000,150000,200000):
+                with self.subTest(absent=absent,birth=birth):
+                    r=self.scenario(reuse=not absent,parent_exit=True,parent_absent=absent,own_child_birth=birth)
+                    self.assertTrue(r['state']['returned']);self.assertIn(43,r['opened']);self.assertIn('child',r['closed'])
+                    self.assertTrue(any(projection['rawProcessIndices'] for projection in r['record']['ownProjections']))
+
+    def test_exited_parent_unknown_or_outside_lifetime_is_not_inherited(self):
+        for absent,reuse in ((False,True),(True,False)):
+            for row in (dict(ProcessId=43,CreationDate=None),dict(ProcessId='bad',CreationDate=None),
+                        dict(ProcessId=43,CreationDate='/Date(99999)/'),dict(ProcessId=43,CreationDate='/Date(200001)/')):
+                r=self.scenario(reuse=reuse,parent_exit=True,parent_absent=absent,foreign_child=row)
+                self.assertTrue(r['state']['returned']);self.assertFalse(r['opened'])
+        r=self.scenario(reuse=True,foreign_child=dict(ProcessId=43,CreationDate=None),unknown_job=True)
+        self.assertIsNotNone(r['error']);self.assertFalse(r['opened'])
+        r=self.scenario(parent_exit=True,malformed_child=True)
+        self.assertIsNotNone(r['error']) # current certified own parent still keeps unknown child identity strict
 
 
 if __name__=='__main__':unittest.main()

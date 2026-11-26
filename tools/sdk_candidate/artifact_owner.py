@@ -52,31 +52,51 @@ def resource_available(raw,policy,heavy):
 
 def observe_owned(domain,rows):
     """No foreign enumeration/open by name. Only certified generations/lineage."""
-    from kernel_job import key
+    from kernel_job import key, rank
     selected=[];owned=set()
     for _ in range(len(rows)+1):
-        certified=set(domain.certified);pids={k[0] for k in certified};selected=[]
+        certified=set(domain.certified);pids={k[0] for k in certified};selected=[];current=[];facts={}
+        def retained(generation):
+            if generation not in facts:
+                assert generation in domain.handles, 'unretained own generation conflict'
+                facts[generation]=domain.api.info(domain.handles[generation])
+                assert facts[generation][:2]==generation, 'retained own identity conflict'
+            return facts[generation]
+        # Resolve the current parent generations before looking at any child.
+        # In particular, foreign children must not inherit a historical PID alone.
+        for row in rows:
+            if type(row) is not dict:continue
+            pid=row.get('ProcessId')
+            if type(pid) is int and pid in pids:
+                generation=key(row) # unknown own generation remains a strict error
+                if generation not in certified:
+                    for old in (k for k in certified if k[0]==pid):
+                        actual=retained(old)
+                        assert actual[2] is not None and generation[1]>actual[2], 'live own PID/birth conflict'
+                    continue # proven later foreign PID reuse; never open/wait it
+                current.append(row)
+        current_pids={row['ProcessId'] for row in current}
         for row in rows:
             if type(row) is not dict:continue
             pid=row.get('ProcessId');parent=row.get('ParentProcessId')
-            if type(pid) is not int:
-                assert not (type(parent) is int and parent in pids), 'unknown own descendant PID'
+            if type(pid) is int and pid in pids:
+                if any(row is item for item in current):selected.append(row)
                 continue
-            if pid in pids:
-                generation=key(row) # unknown own generation remains a strict error
-                if generation not in certified:
-                    retained=[k for k in certified if k[0]==pid]
-                    for old in retained:
-                        assert old in domain.handles, 'unretained own generation conflict'
-                        actual=domain.api.info(domain.handles[old])
-                        assert actual[:2]==old, 'retained own identity conflict'
-                        assert actual[2] is not None and generation[1]>actual[2], 'live own PID/birth conflict'
-                    continue # proven later foreign PID reuse; never open/wait it
-                selected.append(row)
-            elif type(parent) is int and parent in pids:
-                # Core parent() verifies the certified parent's generation/lifetime.
-                candidates=[r for r in rows if type(r) is dict and type(r.get('ProcessId')) is int and r['ProcessId'] in pids]
-                if domain.parent(row,candidates):selected.append(row)
+            if type(parent) is not int or parent not in pids:continue
+            parents=[k for k in certified if k[0]==parent]
+            live_parent=parent in current_pids or any(k in domain.handles and retained(k)[2] is None for k in parents)
+            if not live_parent:
+                # An exited historical parent cannot authorize strict child parsing.
+                # Only a valid birth inside its retained lifetime can restore an edge.
+                try:birth=rank(row) if type(row.get('CreationDate')) is str and row['CreationDate'] else None
+                except (ValueError,TypeError,OverflowError,OSError):birth=None
+                if birth is None:continue
+                birth=round(birth*1000)
+                if not any(k in domain.handles and k[1]<=birth<=retained(k)[2] for k in parents):continue
+            assert type(pid) is int and pid>0, 'unknown own descendant PID'
+            # The core still validates the child's strict key and bounded ancestry.
+            # Foreign current generations are deliberately absent from this projection.
+            if domain.parent(row,current):selected.append(row)
         owned=domain.observe(selected,lambda row:False)
         assert all(key(row) in domain.certified for row in selected), 'own descendant outside certified Job'
         if domain.certified==certified:break
