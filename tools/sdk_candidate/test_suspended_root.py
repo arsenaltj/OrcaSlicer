@@ -20,6 +20,77 @@ import test_owner_preflight
 
 SUPPORT=Path('D:/Codex/artifacts/task-20261122-v102-api-upstream-integration/evidence/d3cc-validation-tools-v8/kernel_job.py')
 
+def assert_pre_resume_causality(record, rows):
+    """Sequence proves causality; a monotonic clock may return an equal tick."""
+    calls = record['apiCalls']
+    journal_calls = []
+    journal_positions = []
+    for seq, row in enumerate(rows):
+        payload = {k: row[k] for k in ('seq', 'kind', 'value')}
+        assert row['seq'] == seq, 'journal sequence differs'
+        assert hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest() == row['sha256'], 'journal checksum differs'
+        if row['kind'] == 'api':
+            journal_calls.append(row['value'])
+            journal_positions.append(seq)
+    assert journal_calls == calls, 'journal/API trace differs'
+    def unique(operation, status):
+        matches = [(i, event) for i, event in enumerate(calls)
+                   if event['operation'] == operation and event['status'] == status]
+        assert len(matches) == 1, 'missing/ambiguous causal event: ' + operation + '/' + status
+        return matches[0]
+    resume_index, resume = unique('ResumeThread', 'attempt')
+    outcome_index, outcome = unique('ResumeThread', 'outcome')
+    proof = record['rootPreResumeProof']
+    original = proof['originalPI']
+    assert (proof['handle'], proof['pid']) == (str(original['process']), original['pid']), 'proof PI mismatch'
+    assert resume['actualParameters']['threadHandle'] == str(original['thread']), 'different original thread'
+    assert resume.get('targetPID') == original['pid'], 'Resume belongs to another original PI'
+    assert resume_index < outcome_index and journal_positions[resume_index] < journal_positions[outcome_index], 'Resume event order differs'
+    summary_attempt, _ = unique('root.pre_resume_proof', 'attempt')
+    summary_index, summary = unique('root.pre_resume_proof', 'outcome')
+    assert summary_attempt < summary_index < resume_index, 'full proof summary not before native Resume attempt'
+    assert journal_positions[summary_attempt] < journal_positions[summary_index] < journal_positions[resume_index], 'journal summary/Resume order differs'
+    assert summary['result'] == repr(proof) and summary['handle'] == proof['handle'], 'incomplete/different proof summary'
+    required = {'GetProcessTimes', 'GetProcessId', 'IsProcessInJob', 'QueryFullProcessImageNameW'}
+    assert set(proof['directEvents']) == required, 'four direct proofs required'
+    for name in required:
+        attempt_index, _ = unique(name, 'attempt')
+        direct_index, event = unique(name, 'outcome')
+        assert event == proof['directEvents'][name], 'direct event not bound to complete proof'
+        assert event['actualParameters']['processHandle'] == proof['handle'], 'direct proof of different process'
+        assert event.get('result') not in ('0', 'False', 'None'), 'failed direct proof'
+        assert attempt_index < direct_index < summary_attempt, 'direct proof order differs'
+        assert journal_positions[attempt_index] < journal_positions[direct_index] < journal_positions[summary_attempt], 'journal direct proof order differs'
+        assert event['completedMonotonicNs'] <= outcome['invokedMonotonicNs'], 'proof clock went backwards before Resume'
+    assert proof['directEvents']['IsProcessInJob']['actualParameters']['jobHandle'] == proof['job'], 'different original Job'
+    assert proof['directEvents']['QueryFullProcessImageNameW']['actualParameters']['flags'] == 0, 'image flags differ'
+    for name, expected in (('api.info', (proof['pid'], proof['birth'], None)),
+                           ('api.member', True), ('api.image', proof['image'])):
+        index, event = unique(name, 'outcome')
+        assert ast.literal_eval(event['result']) == expected, 'incomplete direct proof output'
+        assert event['handle'] == proof['handle'] and index < summary_attempt, 'proof output not bound before summary'
+    # API call order can be nested. Attempt and completion timestamps are separate
+    # observable samples in the ordered trace, not globally ordered invocation IDs.
+    ticks = []
+    for event in calls[:outcome_index + 1]:
+        if event['status'] == 'attempt':
+            ticks.append(event['monotonicNs'])
+        else:
+            assert event['monotonicNs'] <= event['invokedMonotonicNs'] <= event['completedMonotonicNs'], 'API clock went backwards'
+            ticks.append(event['completedMonotonicNs'])
+    assert all(a <= b for a, b in zip(ticks, ticks[1:])), 'trace clock went backwards'
+
+
+def journal_with_calls(rows, calls):
+    """Reseal a deliberately reordered test trace so checksum is not its oracle."""
+    rows = copy.deepcopy(rows)
+    values = iter(copy.deepcopy(calls))
+    for row in rows:
+        if row['kind'] == 'api':row['value'] = next(values)
+        payload = {k: row[k] for k in ('seq', 'kind', 'value')}
+        row['sha256'] = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+    return rows
+
 class Held(BaseException):pass
 class Fn:
     def __init__(self,fn):self.fn=fn
@@ -34,6 +105,7 @@ class Fixture:
         with patch.dict('sys.modules',{'build_resources':resource}):spec.loader.exec_module(self.k)
         self.ctx=s.SuspendedContext(self.record,self.save,[],['C:/fixed/python.exe'],lambda:self.last,
             lambda n:setattr(self,'last',n),journal_path=root/'journal')
+        self.journal_stream = self.ctx.journal.stream
         api=self.api=self.k.Win64API.__new__(self.k.Win64API);api.launchCleanupErrors=[]
         api.ok=lambda v:v if v else self.fail('BOOL')
         api.createJob=lambda *a:9;api.query=self.query;api.init=self.init;api.update=lambda *a:1
@@ -51,6 +123,17 @@ class Fixture:
         self.life=api.suspended=s.Lifecycle(api,self.ctx,9,os.path.normcase('C:/fixed/python.exe'),lambda:variant=='cancel',self.hold)
         self.ctx.after_create=self.life.created
         for name in ('C','H','SZ','PROCESSINFO','STARTUPINFOEX','subprocess'):setattr(launch,name,getattr(self.k,name))
+    def __enter__(self):return self
+    def __exit__(self,kind,primary,tb):
+        # File custody only: never finish/qualify trace or close fake process handles.
+        cleanup = []
+        for stream in (self.ctx.journal.stream, self.journal_stream):
+            try:stream.close()
+            except BaseException as exc:cleanup.append(exc)
+        if cleanup:
+            if primary is None:raise cleanup[0]
+            primary.add_note('journal close errors: '+repr(cleanup))
+        return False
     def fail(self,msg):raise OSError(msg)
     def hold(self,status):self.events.append('hold');raise Held()
     def save(self):
@@ -99,9 +182,76 @@ class Fixture:
 
 class SuspendedTests(unittest.TestCase):
     def fixture(self,d,**kw):return Fixture(Path(d),**kw)
+    def test_equal_clock_complete_sequence_succeeds(self):
+        with tempfile.TemporaryDirectory() as d, self.fixture(d) as f, \
+             patch('api_context.time.monotonic_ns', return_value=1122058843000000):
+            f.run()
+            assert_pre_resume_causality(f.record, f.ctx.journal.rows)
+            f.ctx.finish()
+            self.assertTrue(f.record['apiJournal']['fullTraceEquivalent'])
+
+    def test_equal_clock_reordered_direct_or_summary_events_rejected(self):
+        with tempfile.TemporaryDirectory() as d, self.fixture(d) as f, \
+             patch('api_context.time.monotonic_ns', return_value=1122058843000000):
+            f.run()
+            for operation in ('GetProcessTimes', 'GetProcessId', 'IsProcessInJob',
+                              'QueryFullProcessImageNameW', 'root.pre_resume_proof'):
+                with self.subTest(operation=operation):
+                    record = copy.deepcopy(f.record)
+                    calls = record['apiCalls']
+                    event = next(e for e in calls if e['operation'] == operation and e['status'] == 'outcome')
+                    calls.remove(event)
+                    resume = next(i for i,e in enumerate(calls) if e['operation'] == 'ResumeThread' and e['status'] == 'attempt')
+                    calls.insert(resume + 1, event)
+                    rows = journal_with_calls(f.ctx.journal.rows, calls)
+                    with self.assertRaisesRegex(AssertionError, 'order|before'):
+                        assert_pre_resume_causality(record, rows)
+            f.ctx.finish()  # actual equal-clock trace remains unchanged and valid
+
+    def test_backward_clock_rejected_even_with_valid_sequence_and_checksums(self):
+        with tempfile.TemporaryDirectory() as d, self.fixture(d) as f, \
+             patch('api_context.time.monotonic_ns', return_value=1122058843000000):
+            f.run()
+            record = copy.deepcopy(f.record)
+            resume = next(e for e in record['apiCalls'] if e['operation'] == 'ResumeThread' and e['status'] == 'outcome')
+            resume['invokedMonotonicNs'] -= 1
+            rows = journal_with_calls(f.ctx.journal.rows, record['apiCalls'])
+            with self.assertRaisesRegex(AssertionError, 'clock'):
+                assert_pre_resume_causality(record, rows)
+            f.ctx.finish()
+
+    def test_primary_assertion_and_held_fixture_close_journal_before_temp_removal(self):
+        for held in (False, True):
+            with self.subTest(held=held):
+                with self.assertRaisesRegex(AssertionError, 'deliberate primary assertion'):
+                    with tempfile.TemporaryDirectory() as d, self.fixture(d, count=0 if held else 1) as f:
+                        directory = Path(d)
+                        if held:
+                            with self.assertRaises(Held):f.run()
+                        else:f.run()
+                        raise AssertionError('deliberate primary assertion')
+                self.assertTrue(f.journal_stream.closed)
+                self.assertFalse(directory.exists())
+                self.assertNotIn('apiJournal', f.record)  # file close is not verified trace
+                if held:
+                    self.assertEqual(f.life.status['cleanup'], 'CLEANUP_BLOCKED')
+                    self.assertNotIn(500, f.closed);self.assertNotIn(501, f.closed)
+
+    def test_wrapper_close_error_preserves_primary_assertion_and_closes_raw_file(self):
+        with self.assertRaisesRegex(AssertionError, 'deliberate primary assertion') as caught:
+            with tempfile.TemporaryDirectory() as d, self.fixture(d) as f:
+                directory = Path(d)
+                class BadClose:
+                    def close(self):raise OSError('injected journal wrapper close error')
+                f.ctx.journal.stream = BadClose()
+                raise AssertionError('deliberate primary assertion')
+        self.assertTrue(f.journal_stream.closed)
+        self.assertFalse(directory.exists())
+        self.assertIn('injected journal wrapper close error', str(caught.exception.__notes__))
+
     def test_complete_proof_before_resume_thread_lifetime_trace_and_error(self):
-        with tempfile.TemporaryDirectory() as d:
-            f=self.fixture(d);self.assertEqual(f.run(),(500,77))
+        with tempfile.TemporaryDirectory() as d, self.fixture(d) as f:
+            self.assertEqual(f.run(),(500,77))
             self.assertEqual(f.events[:5],[('create',s.FLAGS),'times','member','image',('resume',501)])
             self.assertIn(501,f.closed);self.assertNotIn(500,f.closed);self.assertEqual(f.last,5)
             proof=f.record['rootPreResumeProof'];self.assertEqual((proof['pid'],proof['birth'],proof['image']),(77,123,'C:/fixed/python.exe'))
@@ -110,12 +260,11 @@ class SuspendedTests(unittest.TestCase):
             self.assertEqual(f.events.count('times'),1);self.assertEqual(f.events.count('member'),1)
             resume=[e for e in f.record['apiCalls'] if e['operation']=='ResumeThread' and e['status']=='outcome'][0]
             self.assertEqual(resume['lastError'],31);self.assertEqual(resume['actualParameters'],{'threadHandle':'501'})
-            self.assertLess(proof['directEvents']['QueryFullProcessImageNameW']['completedMonotonicNs'],resume['invokedMonotonicNs'])
+            assert_pre_resume_causality(f.record, f.ctx.journal.rows)
             f.ctx.finish();self.assertTrue(f.record['apiJournal']['fullTraceEquivalent'])
     def test_never_resumed_proof_failures_precise_single_abort_and_firstfailure(self):
         for variant in ('image5','image31','pid','member','wrong-image','journal','save','cancel'):
-            with self.subTest(variant=variant),tempfile.TemporaryDirectory() as d:
-                f=self.fixture(d,variant=variant)
+            with self.subTest(variant=variant),tempfile.TemporaryDirectory() as d, self.fixture(d,variant=variant) as f:
                 with self.assertRaises((AssertionError,OSError)):f.run()
                 self.assertEqual([e for e in f.events if isinstance(e,tuple) and e[0]=='terminate'],[('terminate',500,74)])
                 self.assertFalse(f.life.resume_attempted);self.assertTrue(f.life.safe_to_release)
@@ -124,36 +273,33 @@ class SuspendedTests(unittest.TestCase):
                 self.assertIn('JOB_DOUBLE_ZERO',f.life.status['cleanup']);f.finish()
     def test_resume_bad_counts_exception_hold_no_abort_or_second_resume(self):
         for count in (0,2,0xffffffff,'exception'):
-            with self.subTest(count=count),tempfile.TemporaryDirectory() as d:
-                f=self.fixture(d,count=count)
+            with self.subTest(count=count),tempfile.TemporaryDirectory() as d, self.fixture(d,count=count) as f:
                 with self.assertRaises(Held):f.run()
                 self.assertEqual(f.events.count(('resume',501)),1)
                 self.assertFalse(f.life.terminate_attempted);self.assertNotIn(501,f.closed);self.assertNotIn(500,f.closed)
                 self.assertEqual(f.life.status['cleanup'],'CLEANUP_BLOCKED');f.finish()
     def test_partial_unknown_create_hold_without_abort(self):
         for variant in ('partial','unknown'):
-            with self.subTest(variant=variant),tempfile.TemporaryDirectory() as d:
-                f=self.fixture(d,variant=variant)
+            with self.subTest(variant=variant),tempfile.TemporaryDirectory() as d, self.fixture(d,variant=variant) as f:
                 with self.assertRaises(Held):f.run()
                 self.assertFalse(f.life.resume_attempted or f.life.terminate_attempted)
                 self.assertNotIn(501,f.closed);self.assertNotIn(500,f.closed);f.finish()
     def test_false_create_does_not_control_any_process(self):
-        with tempfile.TemporaryDirectory() as d:
-            f=self.fixture(d,variant='create-false')
+        with tempfile.TemporaryDirectory() as d, self.fixture(d,variant='create-false') as f:
             with self.assertRaises(OSError):f.run()
             self.assertFalse(f.life.resume_attempted or f.life.terminate_attempted);f.finish()
     def test_abort_failed_or_unknown_wait_job_hold_handles(self):
         for variant in ('terminate','terminate-exception','wait','job'):
-            with self.subTest(variant=variant),tempfile.TemporaryDirectory() as d:
-                f=self.fixture(d,variant=variant);f.life.cancel=lambda:True
+            with self.subTest(variant=variant),tempfile.TemporaryDirectory() as d, self.fixture(d,variant=variant) as f:
+                f.life.cancel=lambda:True
                 with self.assertRaises(Held):f.run()
                 self.assertEqual(f.events.count(('terminate',500,74)),1)
                 self.assertNotIn(501,f.closed);self.assertNotIn(500,f.closed)
                 self.assertEqual(f.life.status['cleanup'],'CLEANUP_BLOCKED');f.finish()
     def test_later_contradictions_and_close_reuse_permanently_taint(self):
         for kind in ('info','member','image','closed','birth','pid'):
-            with self.subTest(kind=kind),tempfile.TemporaryDirectory() as d:
-                f=self.fixture(d);f.run()
+            with self.subTest(kind=kind),tempfile.TemporaryDirectory() as d, self.fixture(d) as f:
+                f.run()
                 if kind=='closed':f.ctx.closed(500);f.ctx.handles['500']=(77,123,'root')
                 elif kind=='birth':f.ctx.handles['500']=(77,999,'root')
                 elif kind=='pid':f.ctx.handles['500']=(88,123,'root')
@@ -165,8 +311,8 @@ class SuspendedTests(unittest.TestCase):
                 f.finish()
     def test_journal_short_write_flush_fsync_after_create_never_resume(self):
         for kind in ('write','short','flush','fsync'):
-            with self.subTest(kind=kind),tempfile.TemporaryDirectory() as d:
-                f=self.fixture(d);original=f.create
+            with self.subTest(kind=kind),tempfile.TemporaryDirectory() as d, self.fixture(d) as f:
+                original=f.create
                 def create(*a):
                     # Change only after BOOL success, before native outcome is persisted.
                     stream=f.ctx.journal.stream
@@ -192,8 +338,8 @@ class SuspendedTests(unittest.TestCase):
                     f.finish()
                 self.assertFalse(f.life.resume_attempted);self.assertEqual(f.events.count(('terminate',500,74)),1)
     def test_resume_outcome_journal_failure_holds_without_abort(self):
-        with tempfile.TemporaryDirectory() as d:
-            f=self.fixture(d)
+        with tempfile.TemporaryDirectory() as d, self.fixture(d) as f:
+
             def resume(h):f.events.append(('resume',h));f.ctx.broken=True;return 1
             f.api.resume=f.ctx.native('ResumeThread',resume)
             with self.assertRaises(Held):f.run()
@@ -201,8 +347,8 @@ class SuspendedTests(unittest.TestCase):
     def test_actual_owner_optin_runtime_success_abort_and_original_monitor(self):
         import artifact_owner as owner
         for fail in (False, True):
-            with self.subTest(fail=fail),tempfile.TemporaryDirectory() as d:
-                f=self.fixture(d,variant='image5' if fail else None);f.path=legacy.PYTHON
+            with self.subTest(fail=fail),tempfile.TemporaryDirectory() as d, self.fixture(d,variant='image5' if fail else None) as f:
+                f.path=legacy.PYTHON
                 f.api.k=types.SimpleNamespace(ResumeThread=Fn(f.resume),TerminateProcess=Fn(f.terminate))
                 f.api.exit=f.ctx.native('GetExitCodeProcess',lambda h,out:setattr(out._obj,'value',74 if f.ctx.lifecycle.terminate_attempted else 0) or 1)
                 class Base(f.k.KernelDomain):
@@ -234,8 +380,8 @@ class SuspendedTests(unittest.TestCase):
                 self.assertTrue({500,501,9}.issubset(set(f.closed)))
                 self.assertEqual(f.events.count('times'),1)
     def test_resume_attempt_write_failure_aborts_before_native_resume(self):
-        with tempfile.TemporaryDirectory() as d:
-            f=self.fixture(d);original=f.ctx.journal.append
+        with tempfile.TemporaryDirectory() as d, self.fixture(d) as f:
+            original=f.ctx.journal.append
             def append(kind,value):
                 if kind=='api' and value['operation']=='ResumeThread' and value['status']=='attempt':
                     raise OSError('resume attempt short write')
@@ -244,8 +390,8 @@ class SuspendedTests(unittest.TestCase):
             with self.assertRaises(AssertionError):f.run()
             self.assertFalse(f.life.resume_attempted);self.assertEqual(f.events.count(('terminate',500,74)),1);f.finish()
     def test_thread_close_failure_holds_original_resources(self):
-        with tempfile.TemporaryDirectory() as d:
-            f=self.fixture(d)
+        with tempfile.TemporaryDirectory() as d, self.fixture(d) as f:
+
             def close(h):
                 if h==501:raise OSError('close failed')
                 f.closed.append(h);return 1
