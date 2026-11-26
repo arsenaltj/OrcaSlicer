@@ -418,6 +418,7 @@ public:
             DynamicPrintConfig saved;
             // By index: an import only inserts project-embedded presets, which a restore drops first.
             std::vector<bool> visible;
+            std::map<std::string, bool> visibility_by_name;
         };
         Collection                      prints, filaments, printers;
         std::vector<std::string>        filament_presets;
@@ -425,8 +426,8 @@ public:
         std::vector<std::map<int, int>> extruder_ams_counts;
     };
     // Nothing while project-embedded presets exist: a restore drops them, which would lose a loaded project's presets.
-    std::optional<Selection> selection() const;
-    void                     restore_selection(const Selection &selection);
+    std::optional<Selection> selection(bool retain_embedded = false) const;
+    void                     restore_selection(const Selection &selection, bool retain_embedded = false);
 
     //BBS: find printer model
     std::string get_texture_for_printer_model(std::string model_name);
@@ -434,7 +435,7 @@ public:
     std::string get_hotend_model_for_printer_model(std::string model_name);
 
     // Export selections (current print, current filaments, current printer) into config.ini
-    void            export_selections(AppConfig &config);
+    void            export_selections(AppConfig &config, bool remember_routes = false);
 
     // While one lives, export_selections() writes nothing, so a selection only shown for a while (the
     // settings of a G-code being previewed) is not remembered as the user's. It also covers the

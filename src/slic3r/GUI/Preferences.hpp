@@ -39,6 +39,12 @@ namespace Slic3r { namespace GUI {
 // The tabs other dialogs open Preferences on.
 enum class PreferencesTab { General, Files, Behaviour, Control, Graphics, Online };
 
+inline constexpr char next_startup_language_key[] = "language_on_next_start";
+
+struct PreferenceLanguage { wxString label; std::string canonical; };
+std::vector<PreferenceLanguage> available_preference_languages();
+int current_preference_language(const std::vector<PreferenceLanguage>& options, const std::string& canonical);
+
 class PreferencesDialog : public DPIDialog
 {
 private:

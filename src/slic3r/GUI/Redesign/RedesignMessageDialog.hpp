@@ -76,7 +76,7 @@ inline int redesign_dialog_default_result(long style)
 class RedesignMessageDialog : public DPIDialog
 {
 public:
-    enum class Appearance { Standard, Compact, GenerationConfirmation };
+    enum class Appearance { Standard, Compact, GenerationConfirmation, Settings };
     // Scrolling is shared by confirmation and details dialogs, but their
     // content implementations are intentionally separate.  Confirmation
     // dialogs keep the native wxStaticText layout; only the long details

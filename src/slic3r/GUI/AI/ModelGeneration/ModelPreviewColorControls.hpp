@@ -627,6 +627,13 @@ public:
     const HonorFilamentSuite* active_honor_suite() const {
         return find_honor_filament_suite(m_active_suite_id, m_active_suite_revision);
     }
+    const HonorFilamentSuite* selected_honor_suite_in_catalog() const {
+        if (!m_honor_suite_selector_open || !m_workbench_suite_choice ||
+            m_workbench_suite_choice->GetSelection() == wxNOT_FOUND ||
+            m_honor_suite_choice_index >= honor_filament_suites().size())
+            return nullptr;
+        return &honor_filament_suites()[m_honor_suite_choice_index];
+    }
     int automatic_count() const { return m_automatic_count; }
     void refresh_saved_color_packs() {
         // Keep existing source indices stable for history and 3MF state.

@@ -371,6 +371,12 @@
       "needle": "StartupSetupSnapshot StartupSetupService::snapshot() const"
     },
     {
+      "id": "printer_settings_switch",
+      "path": "src/slic3r/GUI/Redesign/PrinterSettingsService.cpp",
+      "needle": "Plan prepare(const PresetBundle& live, const AppConfig& config, const Choice& target,",
+      "detail": "Draft and confirmation stay in the settings dialog. Orca owns the active machine, per-preset memory and project references."
+    },
+    {
       "id": "model_workflow_shell",
       "path": "src/slic3r/GUI/Redesign/RedesignModelWorkflow.cpp",
       "needle": "void RedesignShell::build_model_workflow()"
@@ -1602,6 +1608,21 @@
       "group": "资产与工作区",
       "evidence": [
         "startup_setup"
+      ],
+      "modules": [
+        "desktop",
+        "adapter"
+      ],
+      "impact_scope": "evidence"
+    },
+    {
+      "id": "printer_settings_switch",
+      "label": "设置与打印机切换",
+      "detail": "设置页预览本地机型规格，通过原生预设和工程边界显式应用",
+      "boundary": "检查已用槽位和路由，保留原工程与工作台模型，按目标预设恢复耗材，旧匹配及切片按配置身份失效",
+      "group": "资产与工作区",
+      "evidence": [
+        "printer_settings_switch"
       ],
       "modules": [
         "desktop",

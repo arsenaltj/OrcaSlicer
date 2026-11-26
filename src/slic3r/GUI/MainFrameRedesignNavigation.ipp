@@ -1,4 +1,6 @@
     bool is_redesign_shell_active() const { return m_redesign_shell_active; }
+    bool settings_printer_switch_blocked() const;
+    void settings_printer_switch_applied();
     void SetTitle(const wxString& title) override;
     void show_redesign_shell(bool show);
     wxString selected_tab_id() const;

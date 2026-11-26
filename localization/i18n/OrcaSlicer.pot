@@ -9688,6 +9688,15 @@ msgstr ""
 msgid "Language selection"
 msgstr ""
 
+msgid "Language saved. It will take effect on the next launch."
+msgstr ""
+
+msgid "Save the selected language? It will take effect on the next launch."
+msgstr ""
+
+msgid "Could not save the language selection. Please try again."
+msgstr ""
+
 msgid "Asia-Pacific"
 msgstr ""
 

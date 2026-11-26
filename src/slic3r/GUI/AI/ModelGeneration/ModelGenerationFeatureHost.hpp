@@ -41,6 +41,8 @@ public:
     void set_creation_workflow_listener(std::function<void()> listener);
     void set_import_navigation_guard(std::function<std::function<bool()>()> capture);
     bool can_replace_asset() const;
+    bool settings_printer_switch_blocked() const;
+    void settings_printer_switch_applied();
     ~ModelGenerationFeatureHost();
 
     ModelGenerationFeatureHost(const ModelGenerationFeatureHost&) = delete;

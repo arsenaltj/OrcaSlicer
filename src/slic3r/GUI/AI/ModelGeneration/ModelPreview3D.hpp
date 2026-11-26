@@ -3086,6 +3086,9 @@ public:
     const HonorFilamentSuite* active_honor_filament_suite() const {
         return m_color_trial ? m_color_trial->active_honor_suite() : nullptr;
     }
+    const HonorFilamentSuite* selected_honor_filament_suite_in_catalog() const {
+        return m_color_trial ? m_color_trial->selected_honor_suite_in_catalog() : nullptr;
+    }
     bool honor_suite_v2_appearance_active() const {
         if (!m_color_blocks || !m_semantic_ready ||
             !m_native_portrait_partition ||

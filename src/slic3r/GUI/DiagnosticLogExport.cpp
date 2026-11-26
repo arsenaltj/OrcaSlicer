@@ -1,5 +1,6 @@
 #include "DiagnosticLogExport.hpp"
 #include "MsgDialog.hpp"
+#include "Redesign/RedesignMessageDialog.hpp"
 #include "Widgets/ProgressDialog.hpp"
 #include "GUI_App.hpp"
 #include "slic3r/Utils/DiagnosticLogs.hpp"
@@ -12,7 +13,7 @@
 #include <mutex>
 
 namespace Slic3r::GUI {
-void export_diagnostic_logs(wxWindow* parent) {
+void export_diagnostic_logs(wxWindow* parent, DiagnosticLogAppearance appearance) {
     Presentation::assert_gui_thread();
     // Keep the existing dialog style without a GUI-thread wait/yield loop.
     static bool exporting=false;if(exporting) return;
@@ -59,7 +60,7 @@ void export_diagnostic_logs(wxWindow* parent) {
             return Diagnostics::export_logs(data,target,
                 std::string(HONOR_PRODUCT_VERSION)+" (engine "+SLIC3R_VERSION+")",*state->canceled,
                 [state](const std::string& value) { std::lock_guard<std::mutex> lock(state->mutex); state->stage=value; });
-        }, [operation,owner](Presentation::TaskResult<Diagnostics::LogExportResult> outcome) {
+        }, [operation, owner, appearance](Presentation::TaskResult<Diagnostics::LogExportResult> outcome) {
             operation->timer->Stop();
             if (operation->progress) { operation->progress->Hide(); operation->progress->Destroy(); }
             auto result = outcome.value.value_or(Diagnostics::LogExportResult{});
@@ -67,15 +68,22 @@ void export_diagnostic_logs(wxWindow* parent) {
             if (outcome.error) result.error="日志导出失败，请重试。";
             exporting=false;
             if (!owner || wxGetApp().is_closing()) return;
-    if(result.cancelled) return;
-    std::string message=result.empty?"当前没有可导出的日志。":result.success?"日志导出成功。":result.error;
-    if(result.success && !result.omitted.empty()) {
-        message+="\n以下日志未能完整读取，已记录在 ZIP 清单中：";
-        for(std::size_t i=0;i<result.omitted.size() && i<5;++i) message+="\n"+result.omitted[i];
-        if(result.omitted.size()>5) message+="\n其余遗漏请查看 ZIP 内清单。";
-    }
-    MessageDialog(owner.get(),wxString::FromUTF8(message),wxString::FromUTF8("导出日志"),
-        wxOK|(result.success && result.omitted.empty()?wxICON_INFORMATION:wxICON_WARNING)).ShowModal();
+            if (result.cancelled) return;
+            std::string message = result.empty ? "当前没有可导出的日志。" :
+                result.success ? "日志导出成功。" : result.error;
+            if (result.success && !result.omitted.empty()) {
+                message += "\n以下日志未能完整读取，已记录在 ZIP 清单中：";
+                for (std::size_t i = 0; i < result.omitted.size() && i < 5; ++i)
+                    message += "\n" + result.omitted[i];
+                if (result.omitted.size() > 5) message += "\n其余遗漏请查看 ZIP 内清单。";
+            }
+            const auto caption = wxString::FromUTF8("导出日志");
+            const auto text = wxString::FromUTF8(message);
+            const auto style = wxOK | (result.success && result.omitted.empty() ? wxICON_INFORMATION : wxICON_WARNING);
+            if (appearance == DiagnosticLogAppearance::Settings)
+                RedesignMessageDialog(owner.get(), text, caption, style, RedesignMessageDialog::Appearance::Settings).ShowModal();
+            else
+                MessageDialog(owner.get(), text, caption, style).ShowModal();
         });
     if (!accepted) {
         operation->progress->Hide(); operation->progress->Destroy(); return;

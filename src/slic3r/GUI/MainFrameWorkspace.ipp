@@ -609,6 +609,17 @@ void MainFrame::update_layout()
     Layout();
 }
 
+bool MainFrame::settings_printer_switch_blocked() const
+{
+    return m_redesign_shell && m_redesign_shell->settings_printer_switch_blocked();
+}
+
+void MainFrame::settings_printer_switch_applied()
+{
+    if (m_redesign_shell)
+        m_redesign_shell->settings_printer_switch_applied();
+}
+
 void MainFrame::show_redesign_shell(bool show)
 {
     if (!show && m_redesign_shell_active) {

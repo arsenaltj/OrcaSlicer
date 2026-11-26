@@ -529,6 +529,8 @@ std::function<void()> ModelGenerationPanel::capture_model_context()
 BeautyCandidateSnapshot ModelGenerationPanel::capture_beauty_candidate() const
 {
     BeautyCandidateSnapshot snapshot;
+    if (wxGetApp().preset_bundle)
+        snapshot.project_printer = wxGetApp().preset_bundle->printers.get_selected_preset_name();
     snapshot.source = m_finishing_source.empty() ? m_displayed_model_path : m_finishing_source;
     snapshot.candidate = m_finishing_candidate;
     snapshot.model_sha256 = snapshot.candidate.empty()
@@ -656,6 +658,12 @@ bool ModelGenerationPanel::restore_beauty_candidate_prepared(const BeautyCandida
     const auto path = snapshot.candidate.empty() ? snapshot.source : snapshot.candidate;
     if (snapshot.model_sha256.empty() || preparation->model.path != path ||
         preparation->model.artifact_sha256 != snapshot.model_sha256) return false;
+    if (auto* bundle = wxGetApp().preset_bundle;
+        !snapshot.can_restore_project_config(bundle ? bundle->printers.get_selected_preset_name() : std::string())) {
+        m_workbench_operation_notice = "这条记录属于另一台打印机。切回原打印机后可恢复耗材。";
+        refresh_post_generation_workbench();
+        return false;
+    }
     if (snapshot.project_config && wxGetApp().plater()) {
         const size_t retained = snapshot.project_presets.size();
         for (const auto& plate : wxGetApp().plater()->model().plates_custom_gcodes)

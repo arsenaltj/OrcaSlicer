@@ -3811,6 +3811,20 @@ void RedesignShell::show_printer_media()
     navigate_to(Page::Print);
 }
 
+bool RedesignShell::settings_printer_switch_blocked() const
+{
+    return m_import_in_progress || m_import_awaiting_frame || m_slicing_state.orientation_running ||
+        workbench_slice_running(false, m_slicing_state.official.phase) ||
+        (m_model_generation_host && m_model_generation_host->settings_printer_switch_blocked());
+}
+
+void RedesignShell::settings_printer_switch_applied()
+{
+    if (m_model_generation_host) m_model_generation_host->settings_printer_switch_applied();
+    refresh_printer_state();
+    refresh_print_preparation_action();
+}
+
 void RedesignShell::refresh_printer_state()
 {
     if (m_print_page != nullptr)

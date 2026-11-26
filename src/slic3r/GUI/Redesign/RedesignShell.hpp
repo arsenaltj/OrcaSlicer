@@ -121,6 +121,8 @@ public:
     void present_restore_frame();
     void show_printer_media();
     void refresh_printer_state();
+    bool settings_printer_switch_blocked() const;
+    void settings_printer_switch_applied();
 
 private:
     enum class ImageState { Empty, Loading, Ready, Failed };

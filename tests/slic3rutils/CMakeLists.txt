@@ -139,6 +139,7 @@ add_executable(${_TEST_NAME}_tests
     test_account_avatar.cpp
     test_honor_browser_profile.cpp
     test_startup_setup.cpp
+    test_printer_settings.cpp
     test_vertex_color_region_editor.cpp
     test_surface_selection.cpp
     test_surface_selection_refinement.cpp

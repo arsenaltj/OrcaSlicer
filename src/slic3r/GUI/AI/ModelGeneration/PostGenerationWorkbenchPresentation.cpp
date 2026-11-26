@@ -868,10 +868,13 @@ void ModelGenerationPanel::apply_workbench_snapshot()
     }
     if (m_workbench_printer_filament_trial) {
         const auto* honor_suite = m_model_preview ? m_model_preview->active_honor_filament_suite() : nullptr;
+        const auto* catalog_choice = m_model_preview ? m_model_preview->selected_honor_filament_suite_in_catalog() : nullptr;
+        const auto* capacity_suite = catalog_choice ? catalog_choice : honor_suite;
         const auto* bundle = wxGetApp().preset_bundle;
-        const auto suite_compatibility = honor_suite && bundle
-            ? PrinterFilamentConfig::honor_suite_compatibility(*bundle, *honor_suite)
+        const auto suite_compatibility = capacity_suite && bundle
+            ? PrinterFilamentConfig::honor_suite_compatibility(*bundle, *capacity_suite)
             : PrinterFilamentConfig::HonorSuiteCompatibility{};
+        const bool capacity_blocked = !model_unavailable && suite_compatibility.needs_more_physical_nozzles;
         const auto card = m_model_preview
             ? m_model_preview->model_color_pack_for_filament_import() : std::nullopt;
         const bool has_card = card && card->valid_for_workbench_import();
@@ -879,17 +882,19 @@ void ModelGenerationPanel::apply_workbench_snapshot()
         const bool can_trial = workbench_printer_trial_action_allowed(
             m_printer_filament_trial_active, m_apply_filaments_saving,
             snapshot.can_edit_project_colors, has_card) &&
-            (m_printer_filament_trial_active || suite_allowed);
+            (m_printer_filament_trial_active || (suite_allowed && !capacity_blocked));
         set_workbench_enabled(m_workbench_printer_filament_trial, can_trial);
         layout_changed = set_workbench_label(m_workbench_printer_filament_trial,
             m_printer_filament_trial_active ? _L("退出打印机耗材试色") : _L("将模型配色导入到耗材")) || layout_changed;
-        const wxString disabled_reason = model_unavailable ? model_hint : honor_suite && !suite_allowed
+        wxString disabled_reason = model_unavailable ? model_hint : capacity_blocked || (honor_suite && !suite_allowed)
             ? wxString::FromUTF8(suite_compatibility.reason.empty()
                 ? "当前打印机不支持六实体色荣耀耗材套装" : suite_compatibility.reason)
             : !has_card
             ? _L("当前没有 1 至 32 色的有效色卡，请先生成 AI配色或完成试色。")
             : !snapshot.can_edit_project_colors
                 ? _L("模型处理中或存在未接受候选，请先完成当前操作。") : wxString{};
+        if (capacity_blocked)
+            disabled_reason += "\n" + _L("请在「设置 → 打印机」选择兼容机型。");
         set_workbench_tooltip(m_workbench_printer_filament_trial, m_printer_filament_trial_active
             ? _L("退出试色并恢复进入前的模型外观；已提交的耗材配置保留。")
             : can_trial ? honor_suite
@@ -897,8 +902,8 @@ void ModelGenerationPanel::apply_workbench_snapshot()
                 : _L("将模型配色直接生成实体耗材与叠色配方；成功后一次提交并进入试色。")
                         : disabled_reason);
         if (m_workbench_printer_filament_feedback) {
-            const wxString feedback = model_unavailable ? wxString{} : !m_workbench_printer_filament_notice.empty()
-                ? wxString::FromUTF8(m_workbench_printer_filament_notice) : disabled_reason;
+            const wxString feedback = model_unavailable ? wxString{} : capacity_blocked ? disabled_reason :
+                !m_workbench_printer_filament_notice.empty() ? wxString::FromUTF8(m_workbench_printer_filament_notice) : disabled_reason;
             const bool feedback_error = !m_workbench_printer_filament_notice.empty()
                 ? m_workbench_printer_filament_notice_error : false;
             const wxColour color = feedback_error ? wxColour(255, 150, 146) :

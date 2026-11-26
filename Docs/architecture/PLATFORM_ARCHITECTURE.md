@@ -138,6 +138,8 @@ DFX 按用户确认定义为**诊断、日志、故障定位、性能与可靠�
 | 账号 | `Redesign/PlatformAccountService*`、AccountWorkspace、`Utils/HonorAccount/{HonorSession,HonorClient,HonorStore,HonorServices}*` | 共享会话为账号页、模型库和原生账户接口提供同一身份。凭据保留在原生安全存储，异步结果遵循账号范围与取消状态 |
 | 模型库/资产 | `resources/web/model_library`、AssetsWorkspace、LibraryWorkspaceService、`Utils/PlatformLibrary`、ModelLibraryApplication、Repository/Loader | HTML只展示；C++管理查询、个人记录与下载，登记资产仍由本地库消费；用户目录保留原件与独立编辑成果 |
 | 打印/设备 | 原生 Print/GCode、PrinterWorkspace/OrcaPrinterAdapter、DeviceManager、SendJob/PrintJob、Honor Forge/Moonraker agent、`orca_mobile_device_sdk` | Honor Forge 使用独立 agent ID，mDNS/受控子网候选通过 Moonraker 探测后进入既有 DeviceManager；UI 只选择导出、仅上传或上传并打印，传输继续由既有 Job 和 agent 执行，raw G-code 与 3MF 能力按 agent 显式声明 |
+| 打印机配置 | Redesign 设置窗口、`PrinterSettingsService`、`PresetBundle`、`AppConfig`、`Plater` | 由主窗口齿轮进入「设置 → 打印机」。设置持有候选，原生持有当前预设和工程。应用前按盘验证实体、叠色及已用引用，成功后刷新工作台并使旧切片失效。工作台会话持有模型和配色，耗材区展示容量。 |
+| 设置语言 | Redesign 设置窗口、`AppConfig`、`GUI_App` | 设置只保存 `language_on_next_start`。当前会话继续使用已加载的语言。正常启动在创建主窗口前验证并加载所选语言，不可用时沿用上次语言。创作、工作台与工程继续沿用各自的会话和退出流程。 |
 | CAD/原生编辑 | `libslic3r/CAD`、`GUI/CAD`、Model/Geometry、GLCanvas3D | CAD 文档与求解结果回到原生模型；SLVS/OCCT 版本和构建选项是依赖契约 |
 
 下面是业务语义链路，实际代码通过交互图中的锚点核对：

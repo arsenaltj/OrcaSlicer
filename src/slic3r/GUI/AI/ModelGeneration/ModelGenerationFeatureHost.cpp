@@ -271,6 +271,17 @@ ModelGenerationFeatureHost::ModelGenerationFeatureHost(wxWindow* parent, Plater*
     : m_impl(std::make_unique<Impl>(parent, plater, std::move(navigate_after_import), std::move(retry_service)))
 {}
 
+bool ModelGenerationFeatureHost::settings_printer_switch_blocked() const
+{
+    return m_impl->workbench && m_impl->workbench->settings_printer_switch_blocked();
+}
+
+void ModelGenerationFeatureHost::settings_printer_switch_applied()
+{
+    if (m_impl->workbench)
+        m_impl->workbench->synchronize_workbench_project_palette(false, true);
+}
+
 bool ModelGenerationFeatureHost::can_replace_asset() const
 { return m_impl->workbench && m_impl->workbench->library_asset_switch_allowed(); }
 

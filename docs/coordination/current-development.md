@@ -1,3 +1,17 @@
+# 2026-11-26 当前 · 设置 UX 核心验收及本地提交
+
+**主线**　`UX/PRINTER-SETTINGS-20261125`。[本次整改与实窗证据](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#printer-settings-ux-polish-20261126)
+
+**本轮**　设置深色黄主题、文字页签、六槽滚动、语言及日志弹框通过实窗核对。工作台三项新增控件已撤掉。齿轮从四头换六头后回到同一模型，完成原生六色切片预览。定向 C++ 18/18。核对构建源码清单后按用户授权形成本地提交。
+
+**未结**　纯键盘焦点、高 DPI 组合及原 38 项专项的剩余分支按用户安排顺延。
+
+**下一步**　核心验收已收尾。后续补测按主计划恢复，优先覆盖原生导入、发送和真实 AI 任务联测。
+
+**计划变更**　原编号内登记本地提交、构建和实窗证据，保留前序专项结果和高级创作返回点。
+
+---
+
 # 2026-11-25 当前 · 高级创作两项高优先级修复已验收
 
 **主线**　`UX/ADVANCED-MULTIVIEW-20261107`。 [两项修复及 Windows 验收](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#advanced-creation-exit-model-gate-verified-20261125)

@@ -871,7 +871,7 @@ void ModelGenerationPanel::finish_printer_filament_application(bool success)
     else if (!success) m_beauty_entry_pending = false;
 }
 
-void ModelGenerationPanel::synchronize_workbench_project_palette(bool activate_preview)
+void ModelGenerationPanel::synchronize_workbench_project_palette(bool activate_preview, bool printer_switched)
 {
     if (m_shutdown || !m_workbench_project_colors) return;
     if (m_printer_filament_trial_active && m_model_preview &&
@@ -883,7 +883,11 @@ void ModelGenerationPanel::synchronize_workbench_project_palette(bool activate_p
     const auto snapshot = workbench_snapshot();
     const auto& state = snapshot.printer_filaments;
     const bool changed = state.signature != m_workbench_filament_signature;
-    if (m_model_preview_ready) m_model_preview->synchronize_project_colors(activate_preview);
+    if (changed && printer_switched && m_printer_filament_trial_active) {
+        exit_printer_filament_trial(_L("打印机已更换，请重新进行耗材试色。"));
+    } else if (m_model_preview_ready) {
+        m_model_preview->synchronize_project_colors(activate_preview);
+    }
     if (m_printer_filament_trial_active && m_model_preview) {
         const auto trial = m_model_preview->color_trial_state();
         if (trial.source != 1 || !m_model_preview->project_matching_valid()) {
@@ -1198,13 +1202,14 @@ void ModelGenerationPanel::synchronize_workbench_project_palette(bool activate_p
         m_workbench_settings_scroll->FitInside();
     }
     if (revalidate_beauty && !beauty_color_match_current()) {
-        m_beauty_color_gate_state = BeautyColorGateState::Checking;
-        m_beauty_color_gate_message = "耗材配置已变化，正在重新核对；新增编辑和保存已暂停。";
+        m_beauty_color_gate_state = printer_switched ? BeautyColorGateState::Blocked : BeautyColorGateState::Checking;
+        m_beauty_color_gate_message = printer_switched ? "打印机已更换，请重新匹配当前耗材。" :
+            "耗材配置已变化，正在重新核对；新增编辑和保存已暂停。";
         refresh_model_finishing();
     }
     refresh_post_generation_workbench();
     publish_workbench_state();
-    if (revalidate_beauty) {
+    if (revalidate_beauty && !printer_switched) {
         wxWeakRef<ModelGenerationPanel> weak(this);
         wxGetApp().CallAfter([weak] {
             if (weak && !weak->m_shutdown && weak->m_workbench_editing)

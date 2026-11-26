@@ -98,6 +98,10 @@ set(ORCA_REDESIGN_WORKFLOW_SOURCES
     GUI/Redesign/RedesignTheme.hpp
     GUI/Redesign/RedesignPaintPanel.hpp
     GUI/Redesign/RedesignRestorePixels.hpp
+    GUI/Redesign/PrinterSettingsService.cpp
+    GUI/Redesign/PrinterSettingsService.hpp
+    GUI/Redesign/RedesignSettingsDialog.cpp
+    GUI/Redesign/RedesignSettingsDialog.hpp
     GUI/Redesign/StartupSetupService.cpp
     GUI/Redesign/StartupSetupService.hpp
     GUI/Redesign/StartupSetupDialog.cpp
