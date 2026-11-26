@@ -43,6 +43,7 @@ public:
     const Avatar& avatar() const { return m_avatar; }
     std::uint64_t avatar_revision() const { return m_avatar_revision; }
     bool logout(bool clear_browser) {
+        ++m_logout_revision;
         const bool changed = m_session.logout(clear_browser);
         tick();
         return changed;
@@ -54,6 +55,7 @@ public:
     void subscribe(void* owner, std::function<void()> changed) { m_listeners[owner] = std::move(changed); }
     void unsubscribe(void* owner) { m_listeners.erase(owner); }
     std::uint64_t revision() const { return m_revision; }
+    std::uint64_t logout_revision() const { return m_logout_revision; }
 private:
     static Avatar placeholder(const char* filename) {
         auto image = AccountAvatar::read(wxString::FromUTF8(Slic3r::resources_dir() + "/images/" + filename));
@@ -132,6 +134,7 @@ private:
     std::map<void*, std::function<void()>> m_listeners;
     std::string m_signature;
     std::uint64_t m_revision {0};
+    std::uint64_t m_logout_revision {0};
     bool m_started {false};
 };
 }

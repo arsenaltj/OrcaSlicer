@@ -1,5 +1,7 @@
 #pragma once
 
+#include "slic3r/GUI/AI/Model/ModelFilePath.hpp"
+
 #include "slic3r/GUI/3DScene.hpp"
 #include "slic3r/GUI/Presentation/UiRuntime.hpp"
 #include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
@@ -22,6 +24,7 @@
 #include "slic3r/GUI/View3DNavigator.hpp"
 #include "BeautySourceSnapshot.hpp"
 #include "ModelHistoryMetadata.hpp"
+#include "ModelHistoryOpen.hpp"
 #include "ModelOriginalAppearance.hpp"
 #include "ModelOriginalSurfaceSampler.hpp"
 #include "ModelPreviewPalette.hpp"
@@ -129,8 +132,11 @@ public:
                 weak->m_canvas->Refresh(false);
             });
     }
-    explicit ModelPreview3D(wxWindow* parent, bool retain_surface_attributes = false)
-        : wxPanel(parent), m_retain_surface_attributes(retain_surface_attributes)
+    enum class InitialView { Automatic, WorkbenchFront };
+
+    explicit ModelPreview3D(wxWindow* parent, bool retain_surface_attributes = false,
+                            InitialView initial_view = InitialView::Automatic)
+        : wxPanel(parent), m_retain_surface_attributes(retain_surface_attributes), m_initial_view(initial_view)
     {
         Presentation::background_tasks().on_shutdown(this, [this] { begin_background_shutdown(); });
         wxString trace_value;
@@ -218,8 +224,16 @@ public:
             // while their slot identities are being removed.
             if (!m_project_color_sync_suspended) synchronize_project_colors();
         };
-        m_color_trial->on_native_automatic_basis = [this](size_t count) {
-            return native_workbench_automatic_basis(count);
+        m_color_trial->capture_native_palette_basis = [this]() -> WorkbenchNativePaletteBasis {
+            if (!m_native_portrait_partition) return {};
+            return [partition = m_native_portrait_partition, geometry = m_geometry_id,
+                    triangles = m_triangle_count](size_t count) {
+                return native_workbench_automatic_basis(*partition, geometry, triangles, count);
+            };
+        };
+        m_color_trial->workbench_printer_source = [this]() -> ModelPreviewColorControls::State* {
+            return m_printer_filament_restore && m_printer_filament_restore->geometry_id == m_geometry_id
+                ? &m_printer_filament_restore->color_trial : nullptr;
         };
         m_color_trial->on_changed = [this] {
             m_trial_toggle_started = std::chrono::steady_clock::now();
@@ -336,8 +350,9 @@ public:
             if (handle_navigator_mouse(event)) return;
             if (event.RightIsDown() && m_canvas->HasCapture()) {
                 const wxPoint current = event.GetPosition();
-                const double radius = std::max(0.001, 0.5 * m_bounds.size().norm());
-                const double scale = 2.0 * fitted_half_height(edit_view_width(), m_canvas->GetClientSize().y)
+                const auto bounds = preview_bounds();
+                const double radius = std::max(0.001, 0.5 * bounds.size().norm());
+                const double scale = 2.0 * fitted_half_height(bounds, edit_view_width(), m_canvas->GetClientSize().y)
                     / std::max(1, m_canvas->GetClientSize().y) / radius;
                 m_pan_x += (current.x - m_last_mouse.x) * scale;
                 m_pan_y -= (current.y - m_last_mouse.y) * scale;
@@ -487,6 +502,12 @@ public:
     // automatic/manual source can restore the exact editable preview.
     using PrinterFilamentRestoreSnapshot = Slic3r::GUI::PrinterFilamentRestoreSnapshot;
 
+    static bool model_prepare_timing_enabled()
+    {
+        const char* timing = std::getenv("ORCASLICER_MODEL_PREPARE_TIMING");
+        return timing && timing[0] == '1' && timing[1] == '\0';
+    }
+
     // CPU-only data: prepare on a worker, then adopt on the GUI thread. Neither
     // OBJ parsing nor per-triangle color/normal preparation needs an OpenGL context.
     struct PreparedModel {
@@ -519,6 +540,9 @@ public:
                 render_preparation = RenderPreparation::Unprepared;
             if (render_preparation != RenderPreparation::Unprepared)
                 throw std::runtime_error("模型预览准备结果已失效，请重新加载。");
+            const bool trace_prepare = model_prepare_timing_enabled();
+            const auto started = trace_prepare ? std::chrono::steady_clock::now() :
+                std::chrono::steady_clock::time_point{};
             render_preparation = RenderPreparation::Preparing;
             bool was_canceled = false, shared_geometry = false;
             const auto stopped = [&] {
@@ -581,6 +605,9 @@ public:
             surface_colors = std::move(colors);
             surface_attributes_ready = !share_exact_vertices;
             render_preparation = RenderPreparation::Ready;
+            if (trace_prepare)
+                BOOST_LOG_TRIVIAL(info) << "AI preview prepare stage: render_geometry elapsed_ms="
+                    << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
             } catch (...) {
                 if (frozen && !shared_geometry) geometry = std::move(*frozen).release_geometry();
                 if (current) current_appearance_geometry = std::move(*current).release_geometry();
@@ -618,6 +645,11 @@ public:
         FaceColorOverrides face_color_overrides;
         std::optional<SelectionState> selection;
         std::optional<ModelPreviewColorControls::State> color_trial;
+        std::vector<PreviewPalette::Color> discrete_colors;
+        std::optional<std::vector<PreviewPalette::Color>> history_colors;
+        std::shared_ptr<const ModelHistoryScene> history_scene;
+        bool reuse_history_scene {false};
+        bool external_texture_dependencies {false};
         std::optional<PrinterFilamentRestoreSnapshot> printer_filament_restore;
         std::shared_ptr<const PortraitColorBlocks::Result> color_blocks;
         std::shared_ptr<const NativePortrait::NativePortraitPartition> native_portrait_partition;
@@ -651,8 +683,7 @@ public:
     {
         if (history_metadata) history_metadata->clear();
         const auto started = std::chrono::steady_clock::now();
-        const char* timing_env = std::getenv("ORCASLICER_MODEL_PREPARE_TIMING");
-        const bool trace_prepare = timing_env && std::string(timing_env) == "1";
+        const bool trace_prepare = model_prepare_timing_enabled();
         auto trace_tick = started;
         const auto trace_stage = [&](const char* stage) {
             if (!trace_prepare) return;
@@ -698,8 +729,8 @@ public:
         if (record.empty())
             record = AI::beauty_metadata_path(path, original_appearance_library_root(path, {}));
         boost::system::error_code record_error;
-        const auto record_bytes = boost::filesystem::file_size(record, record_error);
-        boost::filesystem::ifstream record_stream(record);
+        const auto record_bytes = boost::filesystem::file_size(AI::model_io_path(record), record_error);
+        boost::filesystem::ifstream record_stream(AI::model_io_path(record));
         // Bound auxiliary state independently of the mesh, before JSON allocates.
         if (restore_saved_edits && record_stream && !record_error && record_bytes <= 128ULL * 1024 * 1024) {
             const bool frozen_history = history_metadata && history_metadata->read(record, canceled);
@@ -736,7 +767,7 @@ public:
                 if (metadata.contains("color_trial")) {
                     ModelPreviewColorControls::State trial;
                     if (AI::ColorTrialPersistence::decode(metadata["color_trial"], its.indices.size(), prepared.geometry_id, trial, state_error)) {
-                        AI::ColorTrialPersistence::normalize_for_persistence(trial);
+                        AI::ColorTrialPersistence::restore_workbench_palette_mode(metadata["color_trial"], trial);
                         trial.notice = _L("已恢复此版本保存的试色。");
                         prepared.color_trial = std::move(trial);
                     }
@@ -764,6 +795,7 @@ public:
                         AI::ColorTrialPersistence::decode(restore["color_trial"], its.indices.size(), prepared.geometry_id,
                             restore_trial, restore_error);
                     if (trial_ok) {
+                        AI::ColorTrialPersistence::restore_workbench_palette_mode(restore["color_trial"], restore_trial);
                         snapshot.color_trial = std::move(restore_trial);
                         if (restore.contains("face_color_intent") &&
                             !AI::SurfaceSelectionPersistence::decode_colors(restore["face_color_intent"],
@@ -823,7 +855,7 @@ public:
                 AI::SurfaceSelectionPersistence::detail::valid_fingerprint(current_hash) &&
                 AI::SurfaceSelectionPersistence::detail::valid_fingerprint(topology)) {
                 boost::system::error_code canonical_error;
-                const auto canonical = boost::filesystem::canonical(path, canonical_error);
+                const auto canonical = AI::canonical_model_path(path, canonical_error);
                 if (!canonical_error)
                     prepared.original_appearance = {canonical, current_hash, topology, canonical, current_hash};
             }
@@ -1088,6 +1120,7 @@ public:
         auto corner_normals = ModelPreviewNormals::corner_normals(its, 45.f, normal_trace);
         if (stop_if_canceled()) return false;
         trace_stage("normals");
+        std::chrono::steady_clock::duration texture_sampling_time{};
         const auto build_geometry = [&](const ObjInfo& appearance, bool collect_evidence,
                                         std::unordered_set<uint32_t>* observed) {
             GLModel::Geometry geometry;
@@ -1098,6 +1131,7 @@ public:
             const bool face_colors = appearance.face_colors.size() == its.indices.size();
             const bool texture_evidence = collect_evidence && prepared.semantic_source &&
                 prepared.semantic_source->sample_original && !prepared.texture_surface.images.empty();
+            const bool trace_sampling = trace_prepare && texture_evidence;
             std::vector<uint32_t> packed_vertex_colors;
             std::vector<uint8_t> counted_vertices;
             if (vertex_colors) {
@@ -1151,7 +1185,11 @@ public:
                 }
                 if (collect_evidence) {
                     if (prepared.semantic_source && prepared.semantic_source->sample_original) {
+                        const auto sample_started = trace_sampling ? std::chrono::steady_clock::now() :
+                            std::chrono::steady_clock::time_point{};
                         unit_color = prepared.semantic_source->sample_original(face_index, {1.f/3,1.f/3,1.f/3});
+                        if (trace_sampling)
+                            texture_sampling_time += std::chrono::steady_clock::now() - sample_started;
                         const uint32_t sampled=preview_rgb8(unit_color[0],unit_color[1],unit_color[2]);
                         // Texture samples replace the carrier's averaged
                         // vertex evidence instead of giving both equal weight.
@@ -1213,13 +1251,30 @@ public:
         }
         if (stop_if_canceled()) return false;
         trace_stage("packed_colors");
+        if (texture_sampling_time != std::chrono::steady_clock::duration::zero())
+            BOOST_LOG_TRIVIAL(info) << "AI preview prepare stage: texture_sampling elapsed_ms="
+                << std::chrono::duration<double, std::milli>(texture_sampling_time).count();
 
         if (stop_if_canceled()) return false;
         trace_stage("render");
         prepared.bounds = mesh.bounding_box();
+        prepared.external_texture_dependencies = (AI::model_artifact_format(path) == "obj" &&
+            (!prepared.current_appearance_texture_surface.images.empty() ||
+                (source_is_current && !prepared.texture_surface.images.empty()))) ||
+            (prepared.original_appearance.valid() &&
+                AI::model_artifact_format(prepared.original_appearance.origin_model) == "obj" &&
+                prepared.direct_original_source &&
+                !prepared.direct_original_source->origin_texture_surface().images.empty());
         prepared.triangles = its.indices.size();
         prepared.vertices = its.vertices.size();
         prepared.colors = observed_colors.size();
+        if (prepared.texture_surface.images.empty() && prepared.current_appearance_texture_surface.images.empty() &&
+            source_is_current && observed_colors.size() <= PreviewPalette::max_preview_colors) {
+            const std::set<uint32_t> sorted(observed_colors.begin(), observed_colors.end());
+            for (const auto rgb : sorted)
+                prepared.discrete_colors.push_back({float((rgb >> 16) & 255) / 255.f,
+                    float((rgb >> 8) & 255) / 255.f, float(rgb & 255) / 255.f});
+        }
         const auto palette_started = std::chrono::steady_clock::now();
         if (trial_histogram) {
             const size_t preview_color_count = std::clamp(prepared.colors, size_t(1), PreviewPalette::max_preview_colors);
@@ -1353,6 +1408,9 @@ public:
                 direct_original_model.reset();
             }
         }
+        const bool keep_workbench_view = m_initial_view == InitialView::WorkbenchFront &&
+            m_has_model && prepared.path == m_model_path && !m_model_sha256.empty() &&
+            prepared.artifact_sha256 == m_model_sha256;
         cache_current_preview();
         clear_current_preview(true);
         m_manual_color_model = std::move(manual_color_model);
@@ -1370,6 +1428,7 @@ public:
         m_original_comparison_error = std::move(prepared.direct_original_error);
         m_models.emplace_back(std::move(model));
         m_gpu_upload_pending = true;
+        m_gpu_upload_driver_ms = model_prepare_timing_enabled() ? std::optional<double>{0.} : std::nullopt;
         m_bounds = prepared.bounds;
         m_pending_mesh = std::move(prepared.mesh);
         m_pending_vertex_colors = std::move(prepared.vertex_colors);
@@ -1409,8 +1468,9 @@ public:
         m_palette = palette;
         m_has_model = true;
         m_restored_persisted_color_trial = prepared.color_trial.has_value();
+        m_history_colors = std::move(prepared.history_colors);
         m_color_trial->load(m_trial_histogram, m_trial_palette, m_geometry_id,
-            std::move(prepared.automatic_color_units), prepared.ai_source_color_count);
+            std::move(prepared.automatic_color_units), m_history_colors ? &*m_history_colors : nullptr);
         if (prepared.color_trial) {
             m_suppress_semantic_change = m_beauty_view || !prepared.saved_semantic_faces.empty() || !prepared.saved_semantic_subfaces.empty();
             m_color_trial->restore(*prepared.color_trial);
@@ -1442,17 +1502,46 @@ public:
         if(m_portrait_shapes && m_portrait_shapes->derived_boundary()) ensure_region_editor();
         m_paint_diagnostics_logged = false;
         m_render_diagnostics_logged = false;
-        default_view();
+        if (!keep_workbench_view) default_view();
         if (prepared.round_base_enabled && !set_round_base_preview(true, error)) return false;
+        m_history_scene = std::move(prepared.history_scene);
+        remember_initial_color_trial();
         m_pending_library_thumbnail_sha = std::move(prepared.artifact_sha256);
         notify_selection_changed();
         return true;
     }
 
     void retain_history_rollback(bool retain) {
-        if (!retain && m_history_rollback_retained && m_context && m_canvas && m_canvas->SetCurrent(*m_context))
-            m_cached_preview.reset();
+        if (!retain && m_history_rollback_retained) {
+            m_retained_history_palette.reset();
+            if (m_cached_preview && !m_cached_preview->history_scene &&
+                m_context && m_canvas && m_canvas->SetCurrent(*m_context))
+                m_cached_preview.reset();
+        }
         m_history_rollback_retained = retain;
+    }
+
+    std::vector<std::shared_ptr<const ModelHistoryScene>> reusable_history_scenes() const {
+        std::vector<std::shared_ptr<const ModelHistoryScene>> scenes;
+        if (history_scene_reusable()) scenes.push_back(m_history_scene);
+        if (m_cached_preview && m_cached_preview->history_scene) scenes.push_back(m_cached_preview->history_scene);
+        return scenes;
+    }
+
+    bool reuse_verified_history_scene(const std::shared_ptr<const ModelHistoryScene>& scene,
+        const std::vector<std::string>& palette, size_t& triangles, Vec3d& dimensions, size_t& colors)
+    {
+        if (!scene) return false;
+        if (m_history_scene == scene && history_scene_reusable()) {
+            m_retained_history_palette = m_color_trial->state();
+            restore_initial_color_trial_without_recognition();
+            triangles = m_triangle_count;
+            dimensions = m_model_dimensions;
+            colors = m_color_count;
+            return true;
+        }
+        if (!m_cached_preview || m_cached_preview->history_scene != scene) return false;
+        return try_load_cached_model(scene->model, palette, triangles, dimensions, colors, false, true);
     }
 
     bool restore_retained_history_model(const boost::filesystem::path& path,
@@ -1460,6 +1549,7 @@ public:
     {
         if (!m_history_rollback_retained) return false;
         if (m_has_model && m_model_path == path) {
+            if (m_retained_history_palette) restore_color_trial_without_recognition(*m_retained_history_palette);
             triangles = m_triangle_count;
             dimensions = m_model_dimensions;
             colors = m_color_count;
@@ -1470,18 +1560,18 @@ public:
 
     bool try_load_cached_model(const boost::filesystem::path& path, const std::vector<std::string>& palette,
                                size_t& triangle_count, Vec3d& dimensions, size_t& color_count,
-                               bool history_rollback = false)
+                               bool history_rollback = false, bool verified_history = false)
     {
         const bool retained = history_rollback && m_history_rollback_retained;
         if (!m_cached_preview || m_cached_preview->path != path ||
             (!retained && !same_stamp(m_cached_preview->stamp, file_stamp(path))) ||
             m_context == nullptr || !m_context->IsOK() || !m_canvas->SetCurrent(*m_context))
             return false;
-        if (!retained && (m_cached_preview->artifact_sha256.empty() ||
+        if (!retained && !verified_history && (m_cached_preview->artifact_sha256.empty() ||
             AI::model_artifact_sha256(path) != m_cached_preview->artifact_sha256))
             return false;
         const auto& appearance = m_cached_preview->original_appearance;
-        if (!retained && appearance.valid() &&
+        if (!retained && !verified_history && appearance.valid() &&
             (AI::model_artifact_sha256(appearance.carrier_model) != appearance.carrier_sha256 ||
              AI::model_artifact_sha256(appearance.origin_model) != appearance.origin_sha256))
             return false;
@@ -1542,16 +1632,22 @@ public:
         m_palette = palette;
         m_has_model = true;
         m_restored_persisted_color_trial = cached->restored_persisted_color_trial;
+        m_history_colors = std::move(cached->history_colors);
         m_color_trial->load(m_trial_histogram, m_trial_palette, m_geometry_id,
-            std::move(cached->automatic_color_units));
-        if (cached->color_trial) {
+            std::move(cached->automatic_color_units), m_history_colors ? &*m_history_colors : nullptr);
+        const bool restored_initial = m_color_trial->set_initial_trial_snapshot(cached->initial_trial);
+        const auto* trial = cached->color_trial ? &*cached->color_trial : nullptr;
+        if (verified_history && restored_initial) {
+            trial = &cached->initial_trial->trial;
+            restore_initial_color_trial_without_recognition();
+        } else if (trial && !trial->colors.empty()) {
             if (m_beauty_view || !saved_faces.empty() || !saved_subfaces.empty())
-                restore_color_trial_without_recognition(*cached->color_trial);
-            else m_color_trial->restore(*cached->color_trial);
+                restore_color_trial_without_recognition(*trial);
+            else m_color_trial->restore(*trial);
         }
         m_saved_semantic_faces = saved_faces;
         m_saved_semantic_subfaces = saved_subfaces;
-        if (cached->color_trial) synchronize_project_bound_semantics(*cached->color_trial, m_color_trial->state());
+        if (trial) synchronize_project_bound_semantics(*trial, m_color_trial->state());
         if (loaded_color_blocks) {
             if (active_honor_filament_suite() &&
                 loaded_color_blocks->strategy == PortraitColorBlocks::Strategy::ColorRegionMajorityV2 &&
@@ -1565,6 +1661,9 @@ public:
         }
         m_paint_diagnostics_logged = false;
         m_render_diagnostics_logged = false;
+        m_history_scene = std::move(cached->history_scene);
+        if (!restored_initial) remember_initial_color_trial();
+        if (verified_history) m_pending_library_thumbnail_sha = m_model_sha256;
         default_view();
         notify_selection_changed();
         BOOST_LOG_TRIVIAL(info) << "AI model preview cache hit: triangles=" << triangle_count;
@@ -1616,6 +1715,7 @@ private:
         if (m_navigator) m_navigator->reset();
         if (!preserve_frame) m_resize_frame_valid = false;
         m_gpu_upload_pending = m_gpu_upload_failed = false;
+        m_gpu_upload_driver_ms.reset();
         m_installation_frame_completion.cancel();
         ++m_after_preview_sequence;
         m_after_preview_frame = {};
@@ -1685,6 +1785,7 @@ private:
         m_beauty_pick = {};
         m_selection_model.reset();
         m_protection_model.reset();
+        m_workbench_issue_model.reset();
         m_region_editor = std::make_shared<AI::VertexColorRegionEditor>();
         m_pending_mesh = indexed_triangle_set {};
         m_pending_vertex_colors = std::vector<RGBA> {};
@@ -1706,6 +1807,8 @@ private:
         m_selection_enabled = false;
         m_model_path.clear();
         m_pending_library_thumbnail_sha.clear();
+        m_history_colors.reset();
+        m_history_scene.reset();
         m_model_stamp = FileStamp {};
         if (m_canvas != nullptr)
             m_canvas->SetCursor(wxCursor(wxCURSOR_ARROW));
@@ -1752,20 +1855,21 @@ public:
     // The portrait front camera sees the Y-Z projection. Thin X-Z / X-Y
     // assets would collapse to a line, so their initial view uses the existing
     // Z-up three-dimensional angle. Explicit front-view actions stay literal.
-    static std::pair<double, double> initial_view_angles(const Vec3d& dimensions)
+    static std::pair<double, double> initial_view_angles(const Vec3d& dimensions,
+                                                         InitialView initial_view = InitialView::Automatic)
     {
         const double extent = dimensions.maxCoeff();
-        if (extent > 0.0 &&
+        if (initial_view == InitialView::Automatic && extent > 0.0 &&
             std::min(dimensions.y(), dimensions.z()) < extent * 0.02)
             return {-0.65, -1.05};
-        return {-1.5707963267948966, -1.5707963267948966};
+        return ModelPreviewCameraRotation::front_angles;
     }
 
     void default_view()
     {
         set_auto_rotation(false);
         m_pan_x = m_pan_y = 0.0;
-        const auto angles = initial_view_angles(m_bounds.size().cast<double>());
+        const auto angles = initial_view_angles(m_bounds.size().cast<double>(), m_initial_view);
         m_camera_rotation.reset(angles.first, angles.second);
         if (m_navigator) m_navigator->reset();
         m_zoom = 1.0;
@@ -1780,7 +1884,8 @@ public:
         // Generated portrait OBJ files are Z-up and face +X. Rotate +X toward
         // the orthographic camera so identity can be compared without asking
         // the user to find a precise angle by dragging a two-million-face mesh.
-        m_camera_rotation.reset(-1.5707963267948966, -1.5707963267948966);
+        const auto angles = ModelPreviewCameraRotation::front_angles;
+        m_camera_rotation.reset(angles.first, angles.second);
         if (m_navigator) m_navigator->reset();
         m_zoom = 1.0;
         if (m_canvas != nullptr)
@@ -2642,6 +2747,7 @@ public:
     size_t triangle_count() const { return m_triangle_count; }
     size_t vertex_count() const { return m_vertex_count; }
     const Vec3d& model_dimensions() const { return m_model_dimensions; }
+    Vec3d workbench_display_dimensions() const { return preview_bounds().size(); }
     // Select an already recognized material region for Beauty editing. This
     // only consumes the cached analysis; it never starts recognition. Existing
     // protected faces remain protected so the user can add or subtract detail
@@ -3019,12 +3125,15 @@ public:
         BoundingBoxf3 bounds;
         for (size_t i = 0; i < selected.size(); ++i) if (selected[i])
             for (int k = 0; k < 3; ++k) bounds.merge(mesh.vertices[mesh.indices[i][k]].cast<double>());
+        const auto base = m_round_base_preview.layout(m_geometry_id, m_bounds);
+        const auto& visible_bounds = base ? base->bounds : m_bounds;
+        if (base) bounds.translate(base->body_transform.translation());
         const auto rotation = view_rotation();
-        const Vec3d offset = rotation.linear() * (bounds.center() - m_bounds.center()).cast<double>();
-        const double radius = std::max(0.001, 0.5 * m_bounds.size().norm());
+        const Vec3d offset = rotation.linear() * (bounds.center() - visible_bounds.center());
+        const double radius = std::max(0.001, 0.5 * visible_bounds.size().norm());
         m_pan_x = -offset.x() / radius; m_pan_y = -offset.y() / radius;
         const double aspect = double(std::max(1, m_canvas->GetClientSize().x)) / std::max(1, m_canvas->GetClientSize().y);
-        const Vec3d full = rotation.linear().cwiseAbs() * (0.5 * m_bounds.size().cast<double>());
+        const Vec3d full = rotation.linear().cwiseAbs() * (0.5 * visible_bounds.size());
         const Vec3d patch = rotation.linear().cwiseAbs() * (0.5 * bounds.size().cast<double>());
         m_zoom = std::clamp(std::max(full.y(), full.x() / aspect) /
             std::max(0.001, 1.25 * std::max(patch.y(), patch.x() / aspect)), 0.45, 12.0);
@@ -3035,39 +3144,47 @@ public:
     const boost::filesystem::path& model_path() const { return m_model_path; }
     const std::string& model_sha256() const { return m_model_sha256; }
     ModelPreviewColorControls::State color_trial_state() const { return m_color_trial->state(); }
+    void remember_initial_color_trial(bool default_ai_palette = false) {
+        m_color_trial->remember_initial_trial(default_ai_palette);
+    }
+    std::shared_ptr<const ModelPreviewInitialColorState> initial_color_trial_snapshot() const {
+        return m_color_trial->initial_trial_snapshot();
+    }
+    void restore_initial_color_trial_snapshot(const std::shared_ptr<const ModelPreviewInitialColorState>& initial) {
+        m_color_trial->set_initial_trial_snapshot(initial);
+    }
+    size_t workbench_palette_color_count() const { return m_color_trial->workbench_palette_colors().size(); }
+    bool keeps_original_history_colors() const { return m_history_colors.has_value(); }
     const PreviewPalette::AutomaticColorBasis& automatic_color_basis() const {
         static const PreviewPalette::AutomaticColorBasis empty;
         return m_color_trial ? m_color_trial->automatic_color_basis() : empty;
     }
-    std::optional<PreviewPalette::AutomaticColorBasis>
-    native_workbench_automatic_basis(size_t requested_count) const {
-        if (!m_native_portrait_partition || !m_native_portrait_partition->valid() ||
-            m_native_portrait_partition->geometry_id != m_geometry_id ||
+    static std::optional<PreviewPalette::AutomaticColorBasis>
+    native_workbench_automatic_basis(const NativePortrait::NativePortraitPartition& partition,
+        const std::string& geometry, size_t triangles, size_t requested_count) {
+        if (!partition.valid() || partition.geometry_id != geometry ||
             requested_count < NativePortrait::minimum_color_count ||
             requested_count > NativePortrait::maximum_color_count)
             return std::nullopt;
-        const auto reduction = NativePortrait::reduce_native_workbench_partition(
-            *m_native_portrait_partition, requested_count);
+        const auto reduction = NativePortrait::reduce_native_workbench_partition(partition, requested_count);
         PreviewPalette::AutomaticColorBasis basis;
-        basis.geometry_id = m_geometry_id;
-        basis.source_color_signature = m_native_portrait_partition->partition_digest + ":" +
-            reduction.mapping_digest;
+        basis.geometry_id = geometry;
+        basis.source_color_signature = partition.partition_digest + ":" + reduction.mapping_digest;
         basis.requested_count = requested_count;
         basis.source_palette.reserve(reduction.group_cluster_ids.size());
         for (size_t cluster : reduction.group_cluster_ids) {
-            const auto& color = m_native_portrait_partition->painted.cluster_colors[cluster];
+            const auto& color = partition.painted.cluster_colors[cluster];
             basis.source_palette.push_back({float(color[0]) / 255.f, float(color[1]) / 255.f,
                 float(color[2]) / 255.f});
         }
-        basis.unit_source_slots.resize(m_triangle_count);
-        basis.unit_area.resize(m_triangle_count);
+        basis.unit_source_slots.resize(triangles);
+        basis.unit_area.resize(triangles);
         basis.source_area.assign(reduction.actual_color_count, 0.);
-        for (size_t region = 0; region < m_native_portrait_partition->region_members.size(); ++region) {
+        for (size_t region = 0; region < partition.region_members.size(); ++region) {
             const size_t group = reduction.region_color_groups[region];
-            const auto& members = m_native_portrait_partition->region_members[region];
-            const double face_area = m_native_portrait_partition->region_areas[region] /
-                double(members.size());
-            basis.source_area[group] += m_native_portrait_partition->region_areas[region];
+            const auto& members = partition.region_members[region];
+            const double face_area = partition.region_areas[region] / double(members.size());
+            basis.source_area[group] += partition.region_areas[region];
             for (uint32_t face : members) {
                 basis.unit_source_slots[face] = group;
                 basis.unit_area[face] = face_area;
@@ -3238,6 +3355,7 @@ public:
         if (m_workbench_input_locked == locked) return;
         m_workbench_input_locked = locked;
         if (locked) {
+            close_workbench_palette_details();
             if (m_navigator) m_navigator->reset();
             set_auto_rotation(false);
             if (m_canvas && m_canvas->HasCapture()) m_canvas->ReleaseMouse();
@@ -3293,45 +3411,26 @@ public:
         rebuild_semantic_preview_from_cached_result();
     }
     void set_workbench_palette_editable(bool editable) { m_color_trial->set_workbench_editable(editable); }
+    bool workbench_palette_details_available() const {
+        return m_has_model && m_color_trial->workbench_palette_details_available();
+    }
+    void set_workbench_palette_details_button(wxWindow* button) {
+        m_color_trial->set_workbench_palette_details_button(button);
+    }
     void show_workbench_palette_details() {
-        m_color_trial->refresh_saved_color_packs();
-        if (!m_has_model) return;
-        set_color_controls_visible(false);
-        wxDialog dialog(this, wxID_ANY, _L("色卡详情"), wxDefaultPosition, FromDIP(wxSize(620, 560)),
-                        wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER);
-        dialog.SetBackgroundColour(wxColour(32, 32, 35));
-        dialog.SetName("ai_content_color");
-        dialog.SetFont(GetFont());
-        auto* root = new wxBoxSizer(wxVERTICAL);
-        auto* scroll = new WorkbenchScrolledWindow(&dialog, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
-        scroll->SetBackgroundColour(wxColour(32, 32, 35));
-        scroll->SetScrollRate(0, FromDIP(12));
-        auto* controls = new wxBoxSizer(wxVERTICAL);
-        m_controls_scroll->GetSizer()->Detach(m_color_trial);
-        m_color_trial->Reparent(scroll);
-        WorkbenchAppearanceScope appearance(m_color_trial);
-        m_color_trial->set_workbench_detail_choices(true);
-        controls->Add(m_color_trial, 0, wxEXPAND);
-        scroll->SetSizer(controls);
-        m_color_trial->Show();
-        root->Add(scroll, 1, wxEXPAND | wxALL, FromDIP(12));
-        auto* close = workbench_button(&dialog, _L("完成"));
-        close->Bind(wxEVT_BUTTON, [&dialog](wxCommandEvent&) { dialog.EndModal(wxID_OK); });
-        root->Add(close, 0, wxALIGN_RIGHT | wxALL, FromDIP(12));
-        dialog.SetSizer(root);
-        scroll->FitInside();
-        dialog.CenterOnParent();
-        dialog.ShowModal();
-        m_color_trial->set_workbench_detail_choices(false);
-        controls->Detach(m_color_trial);
-        m_color_trial->Reparent(m_controls_scroll);
-        m_controls_scroll->GetSizer()->Add(m_color_trial, 0, wxEXPAND);
-        m_color_trial->Hide();
+        if (!m_workbench_input_locked && workbench_palette_details_available())
+            m_color_trial->show_workbench_palette_details(this);
+    }
+    void present_workbench_palette_details() {
+        if (m_color_trial) m_color_trial->present_workbench_palette_details();
+    }
+    void close_workbench_palette_details() {
+        if (m_color_trial) m_color_trial->close_workbench_palette_details();
     }
     nlohmann::json color_trial_metadata() const {
-        AI::ColorTrialPersistence::State saved = m_color_trial->state();
-        AI::ColorTrialPersistence::normalize_for_persistence(saved);
-        return AI::ColorTrialPersistence::encode(saved, m_triangle_count, m_geometry_id);
+        const auto saved = m_color_trial->state();
+        return saved.colors.empty() ? nlohmann::json{} :
+            AI::ColorTrialPersistence::encode_workbench_trial(saved, m_triangle_count, m_geometry_id);
     }
     void restore_color_trial(const ModelPreviewColorControls::State& state) { m_color_trial->restore(state); }
     void restore_color_trial_without_recognition(const ModelPreviewColorControls::State& state) {
@@ -3509,6 +3608,27 @@ public:
         return localized;
     }
 
+    void show_workbench_issue_faces(const std::vector<size_t>& face_indices)
+    {
+        if (!m_has_model || !m_context || !m_canvas->SetCurrent(*m_context)) return;
+        const auto& canonical = m_leaf_editing ? m_leaf_editing->canonical_editor : m_region_editor;
+        const auto& mesh = canonical->ready() ? canonical->mesh()
+            : current_region_preparation() ? m_region_preparation->mesh : m_pending_mesh;
+        GLModel::Geometry geometry;
+        geometry.format = {GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3N3};
+        const std::set<size_t> unique_faces(face_indices.begin(), face_indices.end());
+        for (size_t face_index : unique_faces)
+            if (face_index < mesh.indices.size())
+                append_mask_triangle(geometry, mesh, face_index);
+        m_workbench_issue_model.reset();
+        if (!geometry.is_empty()) {
+            m_workbench_issue_model = std::make_unique<GLModel>();
+            m_workbench_issue_model->init_from(std::move(geometry));
+            m_workbench_issue_model->set_color(ColorRGBA(1.f, .7f, .1f, 1.f));
+        }
+        m_canvas->Refresh(false);
+    }
+
 private:
     struct CachedPreview {
         std::vector<std::unique_ptr<GLModel>> models;
@@ -3536,6 +3656,9 @@ private:
         FaceColorOverrides face_color_overrides;
         std::optional<SelectionState> selection;
         std::optional<ModelPreviewColorControls::State> color_trial;
+        std::optional<std::vector<PreviewPalette::Color>> history_colors;
+        std::shared_ptr<const ModelHistoryScene> history_scene;
+        std::shared_ptr<const ModelPreviewInitialColorState> initial_trial;
         std::optional<PrinterFilamentRestoreSnapshot> printer_filament_restore;
         std::shared_ptr<const PortraitColorBlocks::Result> color_blocks;
         std::shared_ptr<const NativePortrait::NativePortraitPartition> native_portrait_partition;
@@ -3578,6 +3701,21 @@ private:
     static bool same_stamp(const FileStamp& first, const FileStamp& second)
     {
         return first.valid && second.valid && first.bytes == second.bytes && first.modified == second.modified;
+    }
+
+    bool history_scene_reusable() const
+    {
+        return m_history_scene && m_color_trial->initial_trial_snapshot() && !m_retain_surface_attributes &&
+            !m_gpu_upload_pending && !m_gpu_upload_failed && !m_leaf_editing &&
+            !m_color_blocks && !m_printer_filament_restore && !m_semantic_model && !m_semantic_ready &&
+            m_face_color_overrides.empty() && !round_base_preview_enabled() &&
+            m_saved_semantic_faces.empty() && m_saved_semantic_subfaces.empty();
+    }
+
+    void restore_initial_color_trial_without_recognition() {
+        const bool suppressed = std::exchange(m_suppress_semantic_change, true);
+        m_color_trial->restore_initial_trial();
+        m_suppress_semantic_change = suppressed;
     }
 
     void cache_current_preview()
@@ -3629,6 +3767,10 @@ private:
         m_cached_preview->direct_original_sha256 = m_direct_original_sha256;
         m_cached_preview->direct_original_geometry_id = m_direct_original_geometry_id;
         m_cached_preview->restored_persisted_color_trial = m_restored_persisted_color_trial;
+        m_cached_preview->history_colors = m_history_colors;
+        m_cached_preview->initial_trial = initial_color_trial_snapshot();
+        if (bytes <= cache_limit && history_scene_reusable())
+            m_cached_preview->history_scene = m_history_scene;
         m_cached_preview->round_base_enabled = round_base_preview_enabled();
         m_cached_preview->face_color_overrides = m_face_color_overrides;
         m_cached_preview->printer_filament_restore = m_printer_filament_restore;
@@ -3910,11 +4052,13 @@ private:
         }
         const int width = edit_view_width();
         const int height = std::max(1, m_canvas->GetClientSize().y);
-        const double radius = std::max(0.001, 0.5 * m_bounds.size().norm());
-        const double half_height = fitted_half_height(width, height);
+        const auto base = m_round_base_preview.layout(m_geometry_id, m_bounds);
+        const auto& bounds = base ? base->bounds : m_bounds;
+        const double radius = std::max(0.001, 0.5 * bounds.size().norm());
+        const double half_height = fitted_half_height(bounds, width, height);
         Transform3d view = Geometry::translation_transform(Vec3d(m_pan_x * radius, m_pan_y * radius, -3.0 * radius)) *
-            view_rotation() * Geometry::translation_transform(-m_bounds.center().cast<double>());
-        if (const auto base = m_round_base_preview.layout(m_geometry_id, m_bounds))
+            view_rotation() * Geometry::translation_transform(-bounds.center());
+        if (base)
             view = view * base->body_transform;
         auto request = [this, stroke = selection_outline(), gesture = m_selection_gesture,
                         brush_radius = m_brush_radius, view, half_height, width, height] {
@@ -4052,18 +4196,19 @@ private:
         width = edit_view_width();
         if (width <= 0 || height <= 0)
             return;
-        const Vec3d size = m_bounds.size().cast<double>();
-        const double radius = std::max(0.001, 0.5 * size.norm());
-        const double half_height = fitted_half_height(width, height);
+        const auto base = m_round_base_preview.layout(m_geometry_id, m_bounds);
+        const auto& bounds = base ? base->bounds : m_bounds;
+        const double radius = std::max(0.001, 0.5 * bounds.size().norm());
+        const double half_height = fitted_half_height(bounds, width, height);
         const double half_width = half_height * double(width) / double(height);
         const double screen_x = 2.0 * double(point.x) / double(width) - 1.0;
         const double screen_y = 1.0 - 2.0 * double(point.y) / double(height);
-        const Vec3d center = m_bounds.center().cast<double>();
+        const Vec3d center = bounds.center();
         Transform3d view_model =
             Geometry::translation_transform(Vec3d(m_pan_x * radius, m_pan_y * radius, -3.0 * radius)) *
             view_rotation() *
             Geometry::translation_transform(-center);
-        if (const auto base = m_round_base_preview.layout(m_geometry_id, m_bounds))
+        if (base)
             view_model = view_model * base->body_transform;
         const Transform3d inverse = view_model.inverse();
         const Vec3d origin = inverse * Vec3d(screen_x * half_width, screen_y * half_height, 0.0);
@@ -4133,30 +4278,33 @@ private:
         build_mask_model(m_protected_faces, ColorRGBA(0.3f, 0.5f, 0.95f, 1.0f), m_protection_model);
     }
 
+    static void append_mask_triangle(GLModel::Geometry& geometry, const indexed_triangle_set& mesh, size_t face_index)
+    {
+        const auto& face = mesh.indices[face_index];
+        const Vec3f& first = mesh.vertices[face[0]];
+        const Vec3f& second = mesh.vertices[face[1]];
+        const Vec3f& third = mesh.vertices[face[2]];
+        Vec3f normal = (second - first).cross(third - first);
+        if (normal.squaredNorm() > 1e-12f)
+            normal.normalize();
+        else
+            normal = Vec3f::UnitZ();
+        const auto vertex_offset = static_cast<unsigned int>(geometry.vertices_count());
+        geometry.add_vertex(first, normal);
+        geometry.add_vertex(second, normal);
+        geometry.add_vertex(third, normal);
+        geometry.add_triangle(vertex_offset, vertex_offset + 1, vertex_offset + 2);
+    }
+
     void build_mask_model(const std::vector<uint8_t>& selected, const ColorRGBA& color, std::unique_ptr<GLModel>& target)
     {
         if (selected.size() != m_region_editor->mesh().indices.size()) return;
         GLModel::Geometry geometry;
         geometry.format = {GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3N3};
         const indexed_triangle_set& mesh = m_region_editor->mesh();
-        for (size_t face_index = 0; face_index < mesh.indices.size(); ++face_index) {
-            if (!selected[face_index])
-                continue;
-            const stl_triangle_vertex_indices& face = mesh.indices[face_index];
-            const Vec3f& a = mesh.vertices[face[0]];
-            const Vec3f& b = mesh.vertices[face[1]];
-            const Vec3f& c = mesh.vertices[face[2]];
-            Vec3f normal = (b - a).cross(c - a);
-            if (normal.squaredNorm() > 1e-12f)
-                normal.normalize();
-            else
-                normal = Vec3f::UnitZ();
-            const unsigned int base = static_cast<unsigned int>(geometry.vertices_count());
-            geometry.add_vertex(a, normal);
-            geometry.add_vertex(b, normal);
-            geometry.add_vertex(c, normal);
-            geometry.add_triangle(base, base + 1, base + 2);
-        }
+        for (size_t face_index = 0; face_index < mesh.indices.size(); ++face_index)
+            if (selected[face_index])
+                append_mask_triangle(geometry, mesh, face_index);
         if (!geometry.is_empty()) {
             target = std::make_unique<GLModel>();
             target->init_from(std::move(geometry));
@@ -4347,6 +4495,13 @@ private:
             }
             const double elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now()-started).count();
             if (elapsed > 50.) BOOST_LOG_TRIVIAL(info) << "[UiUpload] slow_driver_step_ms=" << elapsed;
+            if (m_gpu_upload_driver_ms && !m_gpu_upload_failed) {
+                *m_gpu_upload_driver_ms += elapsed;
+                if (!m_gpu_upload_pending) {
+                    BOOST_LOG_TRIVIAL(info) << "[UiUpload] completed driver_ms=" << *m_gpu_upload_driver_ms;
+                    m_gpu_upload_driver_ms.reset();
+                }
+            }
             if (m_gpu_upload_pending) {
                 present_resize_frame();
                 if (!m_gpu_upload_failed) m_canvas->Refresh(false);
@@ -4423,17 +4578,17 @@ private:
             if (shader != nullptr) {
                 glsafe(::glEnable(GL_DEPTH_TEST));
                 glsafe(::glDisable(GL_CULL_FACE));
-                const Vec3d size = m_bounds.size().cast<double>();
-                const double radius = std::max(0.001, 0.5 * size.norm());
+                const auto round_base = m_round_base_preview.layout(m_geometry_id, m_bounds);
+                const auto& bounds = round_base ? round_base->bounds : m_bounds;
+                const double radius = std::max(0.001, 0.5 * bounds.size().norm());
                 const double near_z = 0.01 * radius;
                 const double far_z = 8.0 * radius;
-                const Vec3d center = m_bounds.center().cast<double>();
+                const Vec3d center = bounds.center();
                 const Transform3d view_model =
                     Geometry::translation_transform(Vec3d(m_pan_x * radius, m_pan_y * radius, -3.0 * radius)) *
                     view_rotation() *
                     Geometry::translation_transform(-center);
                 const Matrix3d normal_matrix = view_model.matrix().block(0, 0, 3, 3).inverse().transpose();
-                const auto round_base = m_round_base_preview.layout(m_geometry_id, m_bounds);
                 if (round_base && m_round_base_model) {
                     auto color = !m_trial_palette.empty()
                         ? m_trial_palette.front() : PreviewPalette::Color {0.72f, 0.72f, 0.74f};
@@ -4448,8 +4603,9 @@ private:
                     if (!m_workbench_grid || m_workbench_grid_geometry != m_geometry_id) {
                         GLModel::Geometry grid;
                         grid.format = {GLModel::Geometry::EPrimitiveType::Lines, GLModel::Geometry::EVertexLayout::P3N3};
-                        const float extent = float(radius * 1.8);
-                        const float z = m_bounds.min.z() - float(radius * 0.01);
+                        const double grid_radius = std::max(0.001, 0.5 * m_bounds.size().norm());
+                        const float extent = float(grid_radius * 1.8);
+                        const float z = m_bounds.min.z() - float(grid_radius * 0.01);
                         for (unsigned int i = 0; i <= 18; ++i) {
                             const float offset = -extent + 2.f * extent * float(i) / 18.f;
                             const unsigned int base = unsigned(grid.vertices_count());
@@ -4471,7 +4627,7 @@ private:
                 const int source_width = std::max(1, width - current_width);
                 const auto projection_for = [&](int viewport_width) {
                     const double aspect = double(std::max(1, viewport_width)) / double(height);
-                    const double half_height = fitted_half_height(viewport_width, height);
+                    const double half_height = fitted_half_height(bounds, viewport_width, height);
                     const double half_width = half_height * aspect;
                     Transform3d projection = Transform3d::Identity();
                     projection.matrix().setZero();
@@ -4603,6 +4759,17 @@ private:
                         shader->set_uniform("preview_lighting", false);
                         m_partition_model->render(shader);
                     }
+                    if (!source_view && m_workbench_issue_model) {
+                        shader->set_uniform("gray_view", false);
+                        shader->set_uniform("use_uniform_color", true);
+                        shader->set_uniform("preview_color_count", 0);
+                        shader->set_uniform("preview_texture_enabled", false);
+                        shader->set_uniform("preview_unlit_overlay", true);
+                        glsafe(::glEnable(GL_POLYGON_OFFSET_FILL));
+                        glsafe(::glPolygonOffset(-1.0f, -1.0f));
+                        m_workbench_issue_model->render(shader);
+                        glsafe(::glDisable(GL_POLYGON_OFFSET_FILL));
+                    }
                 };
 
                 shader->start_using();
@@ -4710,13 +4877,6 @@ private:
         }
         const bool frame_submitted = m_canvas->SwapBuffers();
         m_resize_frame_valid = frame_submitted && resize_frame_captured;
-        if (frame_submitted && m_has_model && m_color_shader != nullptr && !m_pending_library_thumbnail_sha.empty()) {
-            // The first visible frame initializes the GL drawing state. Capture once
-            // afterwards, rather than before the newly loaded model has been drawn.
-            auto artifact_sha = std::move(m_pending_library_thumbnail_sha);
-            m_pending_library_thumbnail_sha.clear();
-            cache_library_model_thumbnail(artifact_sha);
-        }
         // Reuse the complete GPU frame beneath the navigation surface. Native
         // GL children are opaque, so clearing that surface alone masks a zoomed
         // model with a rectangle even when the navigator itself is transparent.
@@ -4789,6 +4949,18 @@ private:
                 observer();
             });
         }
+        if (frame_submitted && navigation_submitted && m_has_model && m_color_shader &&
+            !m_gpu_upload_pending && !m_gpu_upload_failed && !m_pending_library_thumbnail_sha.empty()) {
+            // The page commit and first-frame observers run before this work.
+            auto sha = std::exchange(m_pending_library_thumbnail_sha, {});
+            wxWeakRef<ModelPreview3D> weak(this);
+            CallAfter([weak, sha = std::move(sha), path = m_model_path] {
+                if (!weak || weak->m_model_path != path || weak->m_model_sha256 != sha ||
+                    !weak->m_canvas->IsShownOnScreen() || weak->m_gpu_upload_pending ||
+                    !weak->m_context || !weak->m_canvas->SetCurrent(*weak->m_context)) return;
+                weak->cache_library_model_thumbnail(sha);
+            });
+        }
         if (navigation_animating || !navigation_submitted) m_canvas->Refresh(false);
         if (frame_submitted && m_after_preview_frame) {
             const auto sequence = m_after_preview_sequence;
@@ -4822,6 +4994,7 @@ private:
     ModelPreviewFrameState m_preview_frame;
     unsigned int m_resize_frame_texture {0};
     bool m_gpu_upload_pending {false}, m_gpu_upload_failed {false};
+    std::optional<double> m_gpu_upload_driver_ms;
     std::array<unsigned int, 2> m_resize_frame_size {0, 0};
     bool m_resize_frame_valid {false};
     std::uint64_t m_after_preview_sequence {0};
@@ -4836,6 +5009,7 @@ private:
     wxSizerItem* m_overlay_top {nullptr};
     wxSizerItem* m_overlay_bottom {nullptr};
     bool m_retain_surface_attributes {false};
+    const InitialView m_initial_view;
     bool m_history_rollback_retained {false};
     bool m_exact_surface_display {false};
     std::vector<float> m_surface_vertices;
@@ -4936,6 +5110,7 @@ private:
     std::unique_ptr<ModelPreviewTexture> m_direct_original_texture_model;
     bool m_direct_original_reuses_current {false};
     std::unique_ptr<GLModel> m_selection_model;
+    std::unique_ptr<GLModel> m_workbench_issue_model;
     std::unique_ptr<GLModel> m_manual_color_model;
     std::vector<Vec3f> m_manual_corner_normals;
     std::function<void(const std::vector<size_t>&)> m_paint_commit;
@@ -4962,6 +5137,9 @@ private:
     size_t m_vertex_count {0};
     size_t m_color_count {0};
     bool m_restored_persisted_color_trial {false};
+    std::optional<std::vector<PreviewPalette::Color>> m_history_colors;
+    std::shared_ptr<const ModelHistoryScene> m_history_scene;
+    std::optional<ModelPreviewColorControls::State> m_retained_history_palette;
     OriginalAppearanceReference m_original_appearance;
     std::string m_original_appearance_error;
     std::string m_original_comparison_error;
@@ -5012,10 +5190,16 @@ private:
         return m_camera_rotation.transform();
     }
 
-    double fitted_half_height(int width, int height) const
+    BoundingBoxf3 preview_bounds() const
+    {
+        const auto base = m_round_base_preview.layout(m_geometry_id, m_bounds);
+        return base ? base->bounds : m_bounds;
+    }
+
+    double fitted_half_height(const BoundingBoxf3& bounds, int width, int height) const
     {
         const double aspect = double(std::max(1, width)) / double(std::max(1, height));
-        const Vec3d half_extents = 0.5 * m_bounds.size().cast<double>();
+        const Vec3d half_extents = 0.5 * bounds.size();
         const Vec3d view_extents = view_rotation().linear().cwiseAbs() * half_extents;
         constexpr double fit_margin = 1.08;
         return std::max(0.001, std::max(view_extents.y(), view_extents.x() / aspect) * fit_margin / m_zoom);

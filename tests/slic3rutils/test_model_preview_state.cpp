@@ -2197,6 +2197,27 @@ TEST_CASE("Thin planar assets remain visible before their thickness reaches zero
     CHECK(std::abs(facing.z()) > 0.25);
 }
 
+TEST_CASE("The workbench opens on its navigator front with the model front upright",
+          "[ModelPreviewState][ModelPreviewCamera]")
+{
+    using namespace Slic3r;
+    const auto dimensions = GENERATE(Vec3d(52., 54., 100.), Vec3d(90., .01, 30.));
+    const auto angles = ModelPreview3D::initial_view_angles(dimensions, ModelPreview3D::InitialView::WorkbenchFront);
+    GUI::ModelPreviewCameraRotation camera;
+    camera.reset(angles.first, angles.second);
+    const auto basis = GUI::workbench_model_display_basis();
+    CHECK((camera.transform().linear() * Vec3d::UnitX()).isApprox(Vec3d::UnitZ()));
+    CHECK((camera.transform().linear() * Vec3d::UnitZ()).isApprox(Vec3d::UnitY()));
+    const Transform3d navigator_front = camera.transform() * basis.inverse(Eigen::Isometry);
+    CHECK((navigator_front.linear() * -Vec3d::UnitY()).isApprox(Vec3d::UnitZ()));
+    CHECK((navigator_front.linear() * Vec3d::UnitZ()).isApprox(Vec3d::UnitY()));
+    const auto navigator_right = Geometry::rotation_transform(
+        GUI::ModelPreviewCameraRotation::front_angles.second * Vec3d::UnitX()) * basis;
+    const Transform3d model_right = navigator_right * basis;
+    CHECK((model_right.linear() * Vec3d::UnitY()).isApprox(Vec3d::UnitZ()));
+    CHECK((model_right.linear() * Vec3d::UnitZ()).isApprox(Vec3d::UnitY()));
+}
+
 TEST_CASE("Saved color blocks validate normal palette and discard only stale candidates", "[PortraitColorBlocks][ModelPreviewState]")
 {
     namespace PC=Slic3r::GUI::PortraitColorBlocks;namespace SC=Slic3r::AI::SemanticColoring;

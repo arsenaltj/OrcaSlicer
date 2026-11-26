@@ -31,9 +31,16 @@ public:
         const auto request = value["requestGeneration"].get<std::uint64_t>();
         if (request <= m_request) return Acceptance::Rejected;
         m_request = request;
-        m_pending.erase(std::remove_if(m_pending.begin(),m_pending.end(),[](const Json& item) {
-            return item.value("type",std::string()) != "account";
+        const auto command = value.value("command",std::string());
+        const bool leaving_detail = command == "query" || command == "detail" || command == "back";
+        m_pending.erase(std::remove_if(m_pending.begin(),m_pending.end(),[&](const Json& item) {
+            const auto type = item.value("type",std::string());
+            return type != "account" && (leaving_detail || (type != "downloadState" && type != "fileActions"));
         }),m_pending.end());
+        // These snapshots still belong to the same detail. Download progress also
+        // carries its original download request and an increasing update number.
+        for (auto& item : m_pending)
+            if (item.value("type",std::string()) != "account") item["requestGeneration"] = request;
         return Acceptance::Command;
     }
     void push(Json value) {
@@ -52,6 +59,7 @@ public:
         // A minimized WebView may defer presentation for a long time. Retain
         // only the latest snapshots/progress, never duplicate thumbnail bytes.
         const bool snapshot = type == "account" || type == "local" || type == "loading" ||
+            type == "downloadState" || type == "fileActions" ||
             type == "statistics" || type == "taxonomy";
         if (snapshot || type == "image") {
             const auto key = value.value("key",std::string());

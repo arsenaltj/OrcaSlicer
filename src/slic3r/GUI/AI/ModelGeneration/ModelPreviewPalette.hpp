@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -28,6 +29,14 @@ struct ColorTrialMapping {
     std::vector<Color> mapping_colors;
     std::vector<Color> target_colors;
 };
+
+inline bool replace_trial_target_color(std::vector<Color>& targets, const std::vector<Color>& mapping,
+                                       size_t slot, const Color& replacement)
+{
+    if (targets.size() != mapping.size() || slot >= targets.size()) return false;
+    targets[slot] = replacement;
+    return true;
+}
 
 // The automatic palette is the only source of model-region membership.  A
 // color card may replace the displayed colors, but it never changes these
@@ -193,6 +202,43 @@ inline size_t nearest_lab_index(Color lab, const std::vector<Color>& centers)
         if (d < best) { best = d; nearest = i; }
     }
     return nearest;
+}
+
+using RetainedRows = std::array<bool, max_preview_colors>;
+
+inline std::vector<std::optional<size_t>> retained_row_positions(size_t count, const std::vector<size_t>& retained)
+{
+    std::vector<std::optional<size_t>> positions(count);
+    // Place later rows first, leaving room for every earlier retained row.
+    size_t end = count;
+    for (auto row = retained.rbegin(); row != retained.rend() && end > 0; ++row) {
+        end = std::min(*row, end - 1);
+        positions[end] = *row;
+    }
+    return positions;
+}
+
+inline void place_retained_colors(std::vector<Color>& recommended, const std::vector<Color>& previous,
+                                  RetainedRows& retained)
+{
+    const auto count = recommended.size();
+    std::vector<size_t> locked;
+    std::vector<Color> unlocked = std::move(recommended);
+    for (size_t row = 0; row < std::min(previous.size(), retained.size()); ++row) {
+        if (!retained[row]) continue;
+        auto color = std::find(unlocked.begin(), unlocked.end(), previous[row]);
+        if (color == unlocked.end()) continue;
+        locked.push_back(row);
+        unlocked.erase(color);
+    }
+    const auto positions = retained_row_positions(count, locked);
+    retained.fill(false);
+    auto next_unlocked = unlocked.begin();
+    recommended.clear();
+    for (size_t row = 0; row < count; ++row) {
+        retained[row] = positions[row].has_value();
+        recommended.push_back(positions[row] ? previous[*positions[row]] : *next_unlocked++);
+    }
 }
 
 // Preview only. Area weights avoid dependence on tessellation density. A bounded

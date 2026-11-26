@@ -113,9 +113,14 @@ AI::ModelImportResult Plater::import_workbench_model(const AI::ModelImportReques
         detached.texture_mesh.reset();
         if (source_hash != AI::model_artifact_sha256(path) || !workspace_unchanged())
             return fail("The model, materials or project changed during confirmation. Reopen color matching.");
+        LocalPrintModelImport::PlacementSnapshot placement;
+        std::unique_ptr<Model> prepared;
         size_t index = 0;
-        if (!adopt_local_print_model(object, staged.get(), index, result.error,
-            request.apply_round_base_preparation, request.base_binding)) return fail(result.error);
+        if (!capture_local_print_placement(placement, result.error) ||
+            !placement.prepare_model(object, prepared, result.error, request.apply_round_base_preparation,
+                request.base_binding, LocalPrintModelImport::workbench_front_yaw) ||
+            !commit_local_print_model(*prepared->objects.front(), staged.get(), index, result.error))
+            return fail(result.error);
         result.outcome = AI::ModelImportOutcome::Imported;
         return result;
     } catch (const std::exception& exception) { return fail(exception.what()); }

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "slic3r/GUI/AI/Model/ModelFilePath.hpp"
+
 #include "WorkbenchArtifactValidation.hpp"
 #include "PortraitNativeCheckpoint.hpp"
 #include "slic3r/GUI/AI/Model/BeautyMetadata.hpp"
@@ -44,9 +46,9 @@ inline WorkbenchHistoryEvidenceLocation workbench_history_evidence_location(
             for (const auto& part : path.relative_path()) {
                 if (part == "..") return false;
                 prefix /= part;
-                if (boost::filesystem::is_symlink(prefix, error) || error) return false;
+                if (boost::filesystem::is_symlink(AI::model_io_path(prefix), error) || error) return false;
             }
-            return boost::filesystem::is_regular_file(path, error) && !error;
+            return boost::filesystem::is_regular_file(AI::model_io_path(path), error) && !error;
         };
         if (!safe(model) || !safe(record) || !safe(published_model) || !safe(published_record) ||
             !WorkbenchArtifacts::same_model_path(boost::nowide::narrow(
@@ -55,11 +57,11 @@ inline WorkbenchHistoryEvidenceLocation workbench_history_evidence_location(
         const auto record_hash = AI::model_artifact_sha256(record);
         const auto model_hash = metadata.at("model_sha256").get<std::string>();
         if (!WorkbenchArtifacts::valid_sha256(model_hash) || record_hash.empty() ||
-            boost::filesystem::file_size(record) > 128ULL * 1024 * 1024 ||
+            boost::filesystem::file_size(AI::model_io_path(record)) > 128ULL * 1024 * 1024 ||
             AI::model_artifact_sha256(published_record) != record_hash ||
             AI::model_artifact_sha256(model) != model_hash ||
             AI::model_artifact_sha256(published_model) != model_hash) return current;
-        boost::filesystem::ifstream input(record, std::ios::binary);
+        boost::filesystem::ifstream input(AI::model_io_path(record), std::ios::binary);
         if (nlohmann::json::parse(input) != metadata) return current;
         checkpoint();
         if (AI::model_artifact_sha256(record) != record_hash ||
@@ -83,11 +85,11 @@ inline bool read_validated_workbench_history_check(
     try {
         if ((canceled && canceled()) || !PP::valid_sha256(model_hash)) return false;
         boost::system::error_code error;
-        const auto bytes = boost::filesystem::file_size(metadata_path, error);
+        const auto bytes = boost::filesystem::file_size(AI::model_io_path(metadata_path), error);
         if (error || !bytes || bytes > 128ULL * 1024 * 1024 ||
-            boost::filesystem::is_symlink(metadata_path, error) || error) return false;
+            boost::filesystem::is_symlink(AI::model_io_path(metadata_path), error) || error) return false;
         const auto record_hash = AI::model_artifact_sha256(metadata_path);
-        boost::filesystem::ifstream input(metadata_path, std::ios::binary);
+        boost::filesystem::ifstream input(AI::model_io_path(metadata_path), std::ios::binary);
         const auto metadata = nlohmann::json::parse(input);
         if (!metadata.is_object() || (canceled && canceled()) || record_hash.empty() ||
             AI::model_artifact_sha256(metadata_path) != record_hash ||

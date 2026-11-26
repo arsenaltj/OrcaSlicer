@@ -415,7 +415,7 @@
       "id": "workbench_check",
       "path": "src/slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchCheck.cpp",
       "needle": "bool ModelGenerationPanel::request_check_workbench(bool automatic)",
-      "detail": "Checks reuse content-bound saved results; first-import partitioning excludes native geometry and existing coloring. Ordinary saves verify the final artifact and bind the complete editing metadata."
+      "detail": "Checks reuse content-bound saved results. Ordinary and native color repairs write short private scratch paths and publish verified outputs into the model library. The workbench session owns candidates through acceptance, with Windows path conversion at file I/O."
     },
     {
       "id": "workbench_beauty",
@@ -823,7 +823,7 @@
       "id": "workbench_page_presentation",
       "path": "src/slic3r/GUI/Redesign/RedesignWorkbenchPresentation.cpp",
       "needle": "bool RedesignShell::begin_workbench_presentation(bool history_loading)",
-      "detail": "The existing page-transition token retains the completed source page for result entry and direct history entry, including in-workbench model changes. Layout and current model frames gate reveal; checks run only afterwards. History notifications are generation/asset bound and ordinary state publication cannot reroute preparation. Failure, cancellation and timeout restore the previous model, route and AI settings before uncovering. The retained source includes settings and content but excludes fixed navigation; target settings visibility and final width precede frame validation."
+      "detail": "The existing page-transition token retains the completed source page for result entry and direct history entry, including in-workbench model changes. Layout and current model frames gate reveal; checks run only afterwards. History notifications are generation/asset bound and ordinary state publication cannot reroute preparation. Failure, cancellation and timeout restore the previous model, route and AI settings before uncovering. The retained source includes settings and content but excludes fixed navigation; target settings visibility and final width precede frame validation. The loading card uses the source viewport captured at operation start and follows main window movement and resizing."
     },
     {
       "id": "shared_view_navigator",
@@ -859,6 +859,12 @@
       "id": "platform_library_download",
       "path": "src/slic3r/Utils/PlatformLibrary/LibraryClient.cpp",
       "needle": "std::string StagedDownload::commit"
+    },
+    {
+      "id": "platform_library_native_import",
+      "path": "src/slic3r/GUI/PlaterFileImport.ipp",
+      "needle": "bool Plater::import_library_model",
+      "detail": "模型库原生几何导入复用读取及摆放；详情提供进度和读入阶段取消，进入发布阶段后记录撤销快照。"
     },
     {
       "id": "platform_account_service",
@@ -1648,8 +1654,8 @@
     {
       "id": "workbench_beauty",
       "label": "美颜与版本",
-      "detail": "选区、保护、改色、候选对比、接受、放弃、保存及撤销重做",
-      "boundary": "候选或未保存编辑锁定资产更换与正式导入",
+      "detail": "美颜编辑暂时冻结，已保存版本继续走普通资产查看和导入",
+      "boundary": "保留编辑实现、草稿和历史；普通工作台的问题定位仅显示高亮",
       "group": "资产与工作区",
       "evidence": [
         "workbench_beauty"
@@ -2168,7 +2174,7 @@
         ],
         "state_owner": "HTML展示投影；业务由LibraryWorkspaceService管理",
         "contract": "浏览、载入、导出不隐式生成或切片",
-        "note": "Figma1445/1447本地资源；受限桥仅传注册身份，详情留在客户端；WebView不可用时保留原本地列表。 网页资源resources/web/model_library与tests/web/test_model_library.cjs由Node回归覆盖；现有符号图只统计C++/Python，不将网页写成已索引源码。",
+        "note": "Figma 桌面模型库 1.1–1.4。列表滚动锚点、详情面板及预览由安装页展示。受限桥仅传注册身份和评论正文。WebView 不可用时使用原生本地列表。网页资源由 Node 回归覆盖。",
         "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"
       },
       {
@@ -2319,6 +2325,8 @@
           "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryLoader*",
           "src/slic3r/GUI/AI/ModelGeneration/ModelWorkspaceFeatureHost*",
           "src/slic3r/GUI/AI/ModelGeneration/LibraryWorkspaceService*",
+          "src/slic3r/GUI/AI/ModelGeneration/LibraryDownloadRequest.hpp",
+          "src/slic3r/GUI/PlaterFileImport.ipp",
           "src/slic3r/Utils/PlatformLibrary"
         ],
         "evidence": [
@@ -2326,14 +2334,15 @@
           "minimal_model_gui",
           "library_workspace_service",
           "platform_library_download",
+          "platform_library_native_import",
           "platform_owned_catalog"
         ],
         "tests": [
           "tests/slic3rutils/test_model_library*",
           "tests/slic3rutils/test_platform_library.cpp"
         ],
-        "state_owner": "LibraryWorkspaceService管理目录、个人记录和下载代次；ModelLibraryApplication管理本地资产身份",
-        "contract": "请求绑定页面代次、账号及版本；后台暂存校验后原子登记，现有工作台仍验证检查凭证；本人100条分页完整归一化后筛选，来源独立失败，缓存隔离账号代次",
+        "state_owner": "LibraryWorkspaceService 管理目录、个人记录、详情互动及下载代次。ModelLibraryApplication 管理本地资产身份。",
+        "contract": "下载绑定账号、模型、版本、文件及请求。暂存写入与文件清单提供字节进度，校验后原子登记。同账号续期保留详情，传输用新凭证重试一次，本地登记等待扫描。本人100条分页完整归一化后筛选，来源独立失败。",
         "note": "网站原件仅在内容摘要验证后与账号记录关联；原生格式走既有工程/几何导入。UI立即确认；ModelLibraryDeletion在现有TaskRunner执行依赖扫描和文件事务。删除记录独立于精确凭证，先提交后清理；被引用或不确定资源保留但历史项不重现。删除受理以共享内存投影立即更新，原始选择／最终解析资产共同约束当前工作台；自动检查和拓扑修复延续原选择，精确路径仅识别显示／登记别名，显式保存独立。提交时完整卸载，旧扫描和旧安装不能恢复删除项。隐藏来源仍供修复索引验证，外观载体不注册为历史卡片。",
         "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"
       },

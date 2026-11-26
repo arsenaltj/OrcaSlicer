@@ -1448,6 +1448,18 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ", has_scarf_joint_seam:" << has_scarf_joint_seam;
     }
 
+    // The engine derives config even when the input cannot be sliced. Keep that
+    // derivation in bounds while retaining the caller's map for validation.
+    const auto *nozzle_diameters = new_full_config.option<ConfigOptionFloats>("nozzle_diameter");
+    const size_t nozzle_count = nozzle_diameters ? std::max(size_t(1), nozzle_diameters->size()) : 1;
+    const auto *input_map = input_filament_mapping.option<ConfigOptionInts>("filament_map");
+    const bool invalid_filament_map = input_map && filament_map_has_invalid_nozzle(input_map->values, nozzle_count);
+    if (auto *working_map = new_full_config.option<ConfigOptionInts>("filament_map")) {
+        for (int &nozzle : working_map->values)
+            if (nozzle < 1 || static_cast<size_t>(nozzle) > nozzle_count)
+                nozzle = 1;
+    }
+
     //apply extruder related values
     std::vector<int> print_variant_index;
     std::vector<std::vector<NozzleVolumeType>> nozzle_volume_types;
@@ -1659,8 +1671,15 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", got print_diff %1%, object_diff %2%, region_diff %3%, set status to APPLY_STATUS_CHANGED")%print_diff.size() %object_diff.size() %region_diff.size();
     }
 
+    const bool filament_map_validity_changed = invalid_filament_map != has_invalid_input_filament_map();
+
     // Grab the lock for the Print / PrintObject milestones.
 	std::scoped_lock<std::mutex> lock(this->state_mutex());
+
+    // A valid map can have the same working values as an invalid input. Force
+    // revalidation and discard any old export when the validity changes.
+    if (filament_map_validity_changed)
+        update_apply_status(this->invalidate_all_steps());
 
     // The device-owned AMS inventory only feeds filament grouping, so a changed payload invalidates
     // the grouping steps.

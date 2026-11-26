@@ -1,3 +1,4 @@
+#include "slic3r/GUI/AI/Model/ModelFilePath.hpp"
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "ModelPreview3D.hpp"
@@ -233,7 +234,7 @@ void ModelGenerationPanel::accept_model_finishing(std::optional<AI::ModelMatched
             m_workbench_check_result.candidate_status = RepairCandidateStatus::Failed;
             discard_model_finishing_async([weak, message, finish](bool restored) {
                 if (!weak || weak->m_shutdown) return;
-                weak->fail_workbench_check(into_u8(message));
+                weak->fail_workbench_check(into_u8(message), WorkbenchCheckIssue::SaveFailed);
                 finish(restored);
             });
         } else finish(true);
@@ -319,9 +320,9 @@ void ModelGenerationPanel::accept_model_finishing(std::optional<AI::ModelMatched
         auto expected_carrier = candidate;
         expected_carrier.replace_extension(".source-appearance.obj");
         boost::system::error_code equivalent_error;
-        if (after->original_appearance.valid() && boost::filesystem::is_regular_file(expected_carrier) &&
-            boost::filesystem::equivalent(expected_carrier,
-                after->original_appearance.carrier_model, equivalent_error) && !equivalent_error)
+        if (after->original_appearance.valid() && boost::filesystem::is_regular_file(AI::model_io_path(expected_carrier)) &&
+            boost::filesystem::equivalent(AI::model_io_path(expected_carrier),
+                AI::model_io_path(after->original_appearance.carrier_model), equivalent_error) && !equivalent_error)
             topology_publication_artifacts.push_back(expected_carrier);
     }
     const auto source_hash = before && before->source == source
@@ -369,7 +370,8 @@ void ModelGenerationPanel::accept_model_finishing(std::optional<AI::ModelMatched
         metadata["baked_portrait_appearance"]=m_finishing_candidate_baked_appearance;
     const auto leaf_edits=m_model_preview->leaf_edit_metadata();
     if (!leaf_edits.is_null() && !leaf_edits.empty()) metadata["beauty_leaf_edit"]=leaf_edits;
-    metadata["color_trial"] = m_model_preview->color_trial_metadata();
+    const auto color_trial = m_model_preview->color_trial_metadata();
+    if (!color_trial.is_null()) metadata["color_trial"] = color_trial;
     const auto printer_restore = m_model_preview->printer_filament_restore_metadata();
     if (!printer_restore.empty()) metadata["printer_filament_restore"] = printer_restore;
     if (filament_application && m_apply_filaments_staged) {
@@ -501,6 +503,7 @@ void ModelGenerationPanel::accept_model_finishing(std::optional<AI::ModelMatched
                     topology_candidate ? &verified_check : nullptr,
                     [canceled] { return canceled->load(); },
                     native_proof ? &*native_proof : nullptr);
+                if (topology_candidate) final_check.source = verified_check.source;
 
                 if (after->shape_details && after->shape_details->compatible(after->geometry_id, after->result.faces_after)) {
                     auto shapes = PortraitShapeCache::save(*after->shape_details, cache_root);
@@ -578,7 +581,7 @@ void ModelGenerationPanel::accept_model_finishing(std::optional<AI::ModelMatched
                 if (topology_candidate) {
                     boost::system::error_code ignored;
                     for (const auto& artifact : topology_publication_artifacts)
-                        boost::filesystem::remove(artifact, ignored);
+                        boost::filesystem::remove(AI::model_io_path(artifact), ignored);
                 }
             }
             wxGetApp().CallAfter([weak, revision, session_revision, canceled, committed, candidate, before, after,
@@ -617,6 +620,8 @@ void ModelGenerationPanel::accept_model_finishing(std::optional<AI::ModelMatched
                             self->m_workbench_check_result.model_sha256 = hash;
                             self->m_workbench_check_result.source_sha256 = hash;
                             self->m_workbench_check_result.candidate_status = RepairCandidateStatus::Failed;
+                            self->m_workbench_check_result.issue = save_canceled
+                                ? WorkbenchCheckIssue::Canceled : WorkbenchCheckIssue::SaveFailed;
                             self->m_workbench_check_result.summary = save_canceled
                                 ? "已取消保存，修复候选和原始外观载体已回滚。"
                                 : "修复版本保存失败，候选和原始外观载体已回滚。";
@@ -643,9 +648,9 @@ void ModelGenerationPanel::accept_model_finishing(std::optional<AI::ModelMatched
                     // These records were created by this publication only. The
                     // original model and all pre-existing history stay intact.
                     boost::system::error_code ignored;
-                    boost::filesystem::remove(metadata_path, ignored);
+                    boost::filesystem::remove(AI::model_io_path(metadata_path), ignored);
                     auto index = metadata_path; index.replace_extension(".history.json");
-                    boost::filesystem::remove(index, ignored);
+                    boost::filesystem::remove(AI::model_io_path(index), ignored);
                     self->m_workbench_operation_notice = commit_error;
                     if (self->m_beauty_transactions) self->m_beauty_transactions->finish(false, false, commit_error);
                     self->finish_printer_filament_application(false);
@@ -764,16 +769,18 @@ void ModelGenerationPanel::accept_model_finishing(std::optional<AI::ModelMatched
             m_workbench_check_result.candidate_status = RepairCandidateStatus::Failed;
             const std::string message = error.what();
             wxWeakRef<ModelGenerationPanel> weak(this);
-            discard_model_finishing_async([weak, hash, source, message](bool restored) {
+            discard_model_finishing_async([weak, hash, source, message, check_source = verified_check.source](bool restored) {
                 if (!weak || weak->m_shutdown) return;
                 auto* self = weak.get();
                 if (!restored) BOOST_LOG_TRIVIAL(error) << "Repair start rollback failed; draft retained";
                 self->m_workbench_check_result = {};
+                self->m_workbench_check_result.source = check_source;
                 self->m_workbench_check_result.status = WorkbenchCheckStatus::Failed;
                 self->m_workbench_check_result.phase = WorkbenchCheckPhase::Idle;
                 self->m_workbench_check_result.model_sha256 = hash;
                 self->m_workbench_check_result.source_sha256 = hash;
                 self->m_workbench_check_result.candidate_status = RepairCandidateStatus::Failed;
+                self->m_workbench_check_result.issue = WorkbenchCheckIssue::SaveFailed;
                 self->m_workbench_check_result.summary = "无法启动修复版本保存，候选和原始外观载体已回滚。";
                 self->m_workbench_check_result.repair_reason = self->m_workbench_check_result.summary + " " + message;
                 self->m_workbench_check_path = source.string();
@@ -829,7 +836,7 @@ void ModelGenerationPanel::discard_model_finishing_async(std::function<void(bool
             if (!restored) { finished(false); return; }
             weak->clear_unaccepted_beauty_candidates();
             boost::system::error_code ignored;
-            boost::filesystem::remove(discarded, ignored);
+            boost::filesystem::remove(AI::model_io_path(discarded), ignored);
             finished(true);
         });
     }
@@ -907,7 +914,7 @@ void ModelGenerationPanel::stop_model_finishing()
 
     if (!m_finishing_candidate.empty() && m_finishing_candidate != m_finishing_accepted_path) {
 
-        boost::system::error_code ignored; boost::filesystem::remove(m_finishing_candidate, ignored);
+        boost::system::error_code ignored; boost::filesystem::remove(AI::model_io_path(m_finishing_candidate), ignored);
 
     }
 

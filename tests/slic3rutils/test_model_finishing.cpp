@@ -1,12 +1,18 @@
 #include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchModelInspection.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchRepairStaging.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelLibraryRepository.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelOriginalAppearance.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/VerifiedModelFiles.hpp"
+#include "slic3r/GUI/AI/Orca/WorkbenchModelDecode.hpp"
 #include "libslic3r/Point.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
+#include <boost/nowide/filesystem.hpp>
 #include <algorithm>
 #include <sstream>
 #include <set>
@@ -72,13 +78,44 @@ bool has_recolor_stage(const boost::filesystem::path& directory) {
         if (entry.path().filename().string().find(".recolor-") == 0) return true;
     return false;
 }
+
+struct DeepRepairLibrary {
+    boost::filesystem::path directory;
+    boost::filesystem::path root, downloads;
+    explicit DeepRepairLibrary(const boost::filesystem::path& volume_directory)
+        : directory(volume_directory / boost::filesystem::unique_path("orca-repair-%%%%%%%%")),
+          root(directory / u8"模型库" / std::string(106, 'p') / std::string(107, 'q') / std::string(45, 'r')),
+          downloads(root / "downloads")
+    {
+        boost::filesystem::create_directories(model_io_path(downloads));
+    }
+    ~DeepRepairLibrary()
+    {
+        boost::system::error_code error;
+        boost::filesystem::remove_all(Slic3r::extended_path(directory), error);
+    }
+};
 }
 
 TEST_CASE("safe mesh repair is rechecked without mutating the original asset", "[ModelFinishing][PostGenerationWorkbench]")
 {
     Fixture f;
+    if (GENERATE(false, true)) {
+        const std::string asset = "web-11111111-1111-1111-1111-111111111111-"
+            "22222222-2222-2222-2222-222222222222-33333333-3333-3333-3333-333333333333";
+        auto root = f.directory / "models";
+        // Include the path depth of a desktop profile with a downloaded model.
+        const auto source_directory_length = (root / "website" / asset).native().size();
+        if (source_directory_length < 210)
+            root /= std::string(210 - source_directory_length, 'p');
+        f.source = root / "website" / asset / "model.obj";
+        f.output = root / "downloads" / "orcaslicer-ai-finish-44444444-4444-4444-4444-444444444444.obj";
+        REQUIRE(boost::filesystem::create_directories(f.source.parent_path()));
+    }
     f.write(std::string(tetrahedron) + "f 1/1/1 3/3/1 2/2/1\nf 1 1 2\n");
     const auto original = read(f.source);
+    const auto original_hash = model_artifact_sha256(f.source);
+    CAPTURE(f.source, f.output);
     const auto before = GUI::inspect_workbench_model(f.source);
     CHECK(before.status == GUI::WorkbenchCheckStatus::Invalid);
     CHECK(before.degenerate_faces == 1);
@@ -87,6 +124,7 @@ TEST_CASE("safe mesh repair is rechecked without mutating the original asset", "
     options.smooth_surface = false;
     options.repair_mesh = true;
     const auto repaired = finish_model_artifact(f.source, f.output, options);
+    INFO(repaired.error);
     REQUIRE(repaired.success);
     REQUIRE(repaired.changed());
     CHECK(repaired.repair_strategy.rfind("strict-", 0) == 0);
@@ -100,6 +138,11 @@ TEST_CASE("safe mesh repair is rechecked without mutating the original asset", "
     CHECK(inspected.status == GUI::WorkbenchCheckStatus::Normal);
     CHECK(inspected.boundary_edges == 0);
     CHECK(inspected.nonmanifold_edges == 0);
+    CHECK(repaired.source_sha256 == original_hash);
+    CHECK(model_artifact_sha256(f.source) == original_hash);
+    auto partial = f.output;
+    partial += ".partial";
+    CHECK_FALSE(boost::filesystem::exists(partial));
     CHECK(read(f.source) == original);
 }
 
@@ -116,6 +159,155 @@ TEST_CASE("unrepairable planar geometry preserves the original and creates no pr
     CHECK_FALSE(result.error.empty());
     CHECK_FALSE(boost::filesystem::exists(f.output));
     CHECK(read(f.source) == original);
+}
+
+TEST_CASE("workbench repair publishes a short staged candidate into a deep library", "[ModelFinishing][PostGenerationWorkbench]")
+{
+    namespace fs = boost::filesystem;
+    const auto volume = GENERATE(false, true);
+    const auto glb = GENERATE(false, true);
+    const auto previous_locale = boost::nowide::nowide_filesystem();
+    struct RestoreLocale {
+        std::locale locale;
+        ~RestoreLocale() { fs::path::imbue(locale); }
+    } restore_locale{previous_locale};
+    DeepRepairLibrary library(volume ? fs::current_path() : fs::temp_directory_path());
+    const auto source = library.root / (glb ? "source.glb" : "source.obj");
+    const auto candidate = library.downloads / "orcaslicer-ai-finish-long-test.obj";
+    const auto record = library.downloads / "orcaslicer-ai-finish-long-test.json";
+    const auto appearance = library.downloads / "orcaslicer-ai-finish-long-test.source-appearance.obj";
+    REQUIRE(source.native().size() > 260);
+    REQUIRE(candidate.native().size() > 260);
+
+    indexed_triangle_set mesh;
+    mesh.vertices = {{0, 0, 0}, {10, 0, 0}, {0, 10, 0}, {0, 0, 10}};
+    mesh.indices = {{0, 2, 1}, {0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
+    const std::vector<RGBA> colors(mesh.vertices.size(), {0.2f, 0.5f, 0.7f, 1.0f});
+    std::string error;
+    REQUIRE(write_model_artifact(source, mesh, colors, error));
+    const auto original_hash = model_artifact_sha256(source);
+    REQUIRE_FALSE(original_hash.empty());
+
+    fs::path scratch;
+    std::string repaired_hash;
+    {
+        GUI::WorkbenchRepairStaging staging;
+        scratch = staging.model().parent_path();
+        CHECK(scratch.filename().native().size() == 34);
+        CHECK(staging.model().filename() == "m.obj");
+        CHECK(staging.appearance().filename() == "a.obj");
+        CHECK(staging.model().native().size() < source.native().size());
+        ModelFinishingOptions options;
+        options.smooth_surface = false;
+        options.repair_mesh = true;
+        const auto repair = finish_model_artifact(source, staging.model(), options);
+        INFO(repair.error);
+        REQUIRE(repair.success);
+        CHECK(repair.source_sha256 == original_hash);
+        const auto rechecked = repair.repair_evidence && repair.repair_evidence->acceptance == MeshRepairAcceptance::OrcaNative
+            ? GUI::inspect_native_repair_candidate(staging.model(), repair)
+            : GUI::inspect_workbench_model(staging.model());
+        INFO(rechecked.summary);
+        REQUIRE(rechecked.status == GUI::WorkbenchCheckStatus::Normal);
+        repaired_hash = repair.output_sha256;
+        fs::copy_file(staging.model(), staging.appearance());
+        staging.publish(staging.appearance(), appearance, repaired_hash, {});
+        CHECK_THROWS(staging.publish(staging.model(), candidate, repaired_hash, [] { return true; }));
+        CHECK_FALSE(fs::exists(model_io_path(candidate)));
+        staging.publish(staging.model(), candidate, repaired_hash, {});
+
+        // A failed save cannot overwrite a previous version or leave a
+        // candidate discoverable as a saved history item.
+        nlohmann::json metadata {{ "source_sha256", original_hash }, { "model_sha256", repaired_hash }};
+        {
+            fs::ofstream occupied(model_io_path(record));
+            occupied << "existing record";
+        }
+        const auto occupied_hash = model_artifact_sha256(record);
+        CHECK_THROWS(publish_beauty_version_record(record, candidate, source, metadata));
+        CHECK(model_artifact_sha256(record) == occupied_hash);
+    }
+    CHECK_FALSE(fs::exists(model_io_path(appearance)));
+    CHECK_FALSE(fs::exists(model_io_path(candidate)));
+    CHECK_FALSE(fs::exists(model_io_path(scratch)));
+    CHECK(fs::is_regular_file(model_io_path(record)));
+
+    REQUIRE(fs::remove(model_io_path(record)));
+    {
+        GUI::WorkbenchRepairStaging retry;
+        ModelFinishingOptions options;
+        options.smooth_surface = false;
+        options.repair_mesh = true;
+        const auto repair = finish_model_artifact(source, retry.model(), options);
+        INFO(repair.error);
+        REQUIRE(repair.success);
+        repaired_hash = repair.output_sha256;
+        retry.publish(retry.model(), candidate, repaired_hash, {});
+        const nlohmann::json metadata {
+            { "job_id", "finish-long-test" }, { "source", "local_finishing" },
+            { "model_path", candidate.lexically_relative(library.root).generic_string() },
+            { "source_model", source.lexically_relative(library.root).generic_string() },
+            { "source_sha256", original_hash }, { "model_sha256", repaired_hash }
+        };
+        publish_beauty_version_record(record, candidate, source, metadata);
+        retry.keep_published();
+    }
+    GUI::VerifiedModelFiles reopened;
+    CHECK(reopened.verify(source, original_hash));
+    CHECK(reopened.verify(candidate, repaired_hash));
+    CHECK(reopened.current());
+    CHECK(GUI::inspect_workbench_model(candidate).status == GUI::WorkbenchCheckStatus::Normal);
+    CHECK(model_artifact_sha256(source) == original_hash);
+    const auto entries = GUI::ModelLibraryRepository::read(library.root, std::atomic<bool>{false}, false, "finish-long-test");
+    REQUIRE(entries.size() == 1);
+    CHECK(entries.front().model_path == candidate);
+    CHECK(canonical_model_path(candidate) == candidate);
+
+    namespace NP = GUI::NativePortrait;
+    GUI::DecodedWorkbenchModel decoded;
+    REQUIRE(GUI::decode_workbench_model(source, decoded, error));
+    REQUIRE(GUI::normalize_decoded_workbench_model_to_millimeters(decoded, error));
+    REQUIRE(decoded.texture);
+    NP::NativePortraitPartitionBuildReport report;
+    const auto partition = NP::build_native_workbench_partition(*decoded.texture,
+        NP::native_mesh_repair_callback(&report.strict_repair, &decoded.mesh.its), {}, &report);
+    REQUIRE(partition.valid());
+    const auto native_carrier = library.downloads / "orcaslicer-ai-native-workbench-partition-v12-fixture.obj";
+    const auto native_appearance = library.downloads / "orcaslicer-ai-native-workbench-partition-v12-fixture.source-appearance.obj";
+    const auto native_record = library.downloads / "orcaslicer-ai-native-workbench-partition-v12-fixture.json";
+    const auto cache = library.root / "cache";
+    const auto reference = NP::save_native_portrait_partition_cache(partition, cache);
+    std::string native_hash;
+    {
+        GUI::WorkbenchRepairStaging native;
+        const auto bounds = NP::native_workbench_bounds(partition);
+        REQUIRE(NP::write_native_portrait_carrier(native.model(), partition, bounds, native_hash, error));
+        TriangleMesh source_mesh;
+        ObjInfo source_colors;
+        REQUIRE(load_model_artifact(source, source_mesh, source_colors, error));
+        const GUI::OriginalAppearanceReference original {source, original_hash,
+            SurfaceSelectionPersistence::topology_fingerprint(source_mesh.its), source, original_hash};
+        GUI::OriginalAppearanceReference mapped;
+        REQUIRE(GUI::prepare_original_appearance_for_candidate(source, native.model(), original_hash,
+            original, native_appearance, library.root, mapped, error, {}, true, &native));
+        native.publish(native.model(), native_carrier, native_hash, {});
+        CHECK(GUI::ModelLibraryRepository::read(library.root, std::atomic<bool>{false}, false,
+            "native-workbench-partition-v12-fixture").empty());
+        const nlohmann::json metadata {
+            { "schema", "orca.native-workbench-partition-commit/v1" }, { "transaction_status", "committed" },
+            { "source", "native_workbench_partition" }, { "model_sha256", native_hash },
+            { "source_sha256", original_hash }, { "original_appearance", mapped.encode(library.root) }
+        };
+        REQUIRE(NP::publish_native_portrait_partition_commit(native_record, native_carrier, source, metadata) == metadata);
+        native.keep_published();
+    }
+    TriangleMesh reloaded;
+    ObjInfo reloaded_colors;
+    REQUIRE(load_model_artifact(native_carrier, reloaded, reloaded_colors, error));
+    CHECK(model_artifact_sha256(native_carrier) == native_hash);
+    NP::NativePortraitPartitionIdentity identity;
+    REQUIRE(NP::load_native_portrait_partition_cache(reference, cache, identity, error, &reloaded));
+    CHECK(identity.geometry_id == partition.geometry_id);
 }
 
 TEST_CASE("Topology repair never removes an existing destination or its source", "[ModelFinishing][WorkbenchTopology]")

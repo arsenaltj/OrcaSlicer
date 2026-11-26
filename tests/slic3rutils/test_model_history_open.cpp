@@ -201,6 +201,57 @@ struct HistoryFixture {
 };
 }
 
+TEST_CASE("History reuses a scene only while the version record still matches", "[ModelHistoryOpen][ModelPreviewLoad]")
+{
+    wxInitializer init;
+    REQUIRE(init.IsOk());
+    HistoryFixture fixture;
+    const auto selected = fixture.model("reusable", nullptr, false, false);
+    auto cold = fixture.open(selected);
+    auto metadata = std::make_shared<ModelHistoryMetadata>();
+    auto initial = prepare_model_preview_load(selected.model_path, fixture.record(selected), metadata,
+        cold, [] { return false; }, false);
+    INFO(initial.error);
+    REQUIRE(initial.error.empty());
+    REQUIRE(initial.prepared->history_scene);
+    REQUIRE(initial.prepared->history_colors);
+    CHECK(initial.prepared->history_colors->size() == 1);
+    cold->verified_files.reset();
+
+    auto warm = fixture.open(selected);
+    warm->cached_scenes.push_back(initial.prepared->history_scene);
+    auto hit = prepare_model_preview_load(selected.model_path, fixture.record(selected), metadata,
+        warm, [] { return false; }, false);
+    INFO(hit.error);
+    REQUIRE(hit.error.empty());
+    CHECK(hit.prepared->reuse_history_scene);
+    REQUIRE(warm->verified_files);
+    CHECK(warm->verified_files->current());
+    warm->verified_files.reset();
+    hit.prepared->installation_files.reset();
+
+    auto record = fixture.read(selected);
+    AI::ColorTrialPersistence::State palette;
+    palette.count = palette.automatic_count = 2;
+    palette.colors = palette.mapping_colors = {{1, 0, 0}, {0, 1, 0}};
+    palette.locks[1] = true;
+    record["color_trial"] = AI::ColorTrialPersistence::encode_workbench_trial(
+        palette, initial.prepared->triangles, initial.prepared->geometry_id);
+    fixture.write(selected, record);
+    auto updated = fixture.open(selected);
+    updated->cached_scenes.push_back(initial.prepared->history_scene);
+    auto miss = prepare_model_preview_load(selected.model_path, fixture.record(selected), metadata,
+        updated, [] { return false; }, false);
+    INFO(miss.error);
+    REQUIRE(miss.error.empty());
+    CHECK_FALSE(miss.prepared->reuse_history_scene);
+    REQUIRE(miss.prepared->color_trial);
+    CHECK(miss.prepared->color_trial->source == 0);
+    CHECK(miss.prepared->color_trial->count == 2);
+    CHECK(miss.prepared->color_trial->colors == palette.colors);
+    CHECK(miss.prepared->color_trial->locks[1]);
+}
+
 TEST_CASE("A frozen preview keeps its geometry and surface attributes across duplicate completion", "[ModelHistoryOpen][ModelPreviewLoad][PreviewFreeze]")
 {
     wxInitializer init;

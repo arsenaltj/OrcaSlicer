@@ -1092,6 +1092,18 @@ public:
         paint_now();
     }
 
+    void paint_first_frame()
+    {
+#ifdef __WXMSW__
+        if (m_buffer && GetHandle()) {
+            clip_siblings();
+            ::RedrawWindow(GetHandle(), nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+            return;
+        }
+#endif
+        paint_now();
+    }
+
     void paint_now()
     {
 #ifdef __WXMSW__
@@ -4442,14 +4454,11 @@ bool GUI_App::on_init_inner()
     mainframe->topbar()->SaveNormalRect();
 #endif
     if (scrn) { scrn->SetText(_L("Showing main window") + dots, 95); wxYield(); }
-    mainframe->Show(true);
-    log_startup_timing("main_window_shown");
-    // Paint the native loading content before handing off from the splash.
-    // This also applies when the user has disabled the splash preference.
-    m_startup_loading->Raise();
-    m_startup_loading->SetFocus();
-    mainframe->Update();
-    static_cast<StartupLoadingPanel*>(m_startup_loading.get())->paint_now();
+    auto* loading = static_cast<StartupLoadingPanel*>(m_startup_loading.get());
+    mainframe->show_startup_loading(*loading, [this, loading] {
+        log_startup_timing("main_window_shown");
+        loading->paint_first_frame();
+    });
     log_startup_timing("loading_content_painted");
     if (scrn) { scrn->Destroy(); scrn = nullptr; }
     BOOST_LOG_TRIVIAL(info) << "main frame firstly shown";

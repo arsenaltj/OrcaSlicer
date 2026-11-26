@@ -2,10 +2,12 @@
 #include "ModelPreview3D.hpp"
 #include "BeautyWorkbenchControls.hpp"
 #include "WorkbenchModelInspection.hpp"
+#include "WorkbenchRepairStaging.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include <boost/filesystem.hpp>
+#include <boost/log/trivial.hpp>
 #include <wx/stattext.h>
 #include <wx/weakref.h>
 
@@ -32,7 +34,8 @@ bool ModelGenerationPanel::apply_pending_workbench_ai_palette(const boost::files
         return true;
     clear_pending_workbench_ai_palette();
     if (m_workbench_check_result.status != WorkbenchCheckStatus::Failed)
-        fail_workbench_check("无法完成原生原子分区检查与修复，原模型保留；可重新检查。");
+        fail_workbench_check("无法完成原生原子分区检查与修复，原模型保留；可重新检查。",
+            WorkbenchCheckIssue::RepairFailed);
     return false;
 }
 
@@ -65,10 +68,11 @@ void ModelGenerationPanel::queue_workbench_check()
     });
 }
 
-void ModelGenerationPanel::fail_workbench_check(const std::string& message)
+void ModelGenerationPanel::fail_workbench_check(const std::string& message, WorkbenchCheckIssue issue)
 {
     m_workbench_check_result = {};
     m_workbench_check_result.status = WorkbenchCheckStatus::Failed;
+    m_workbench_check_result.issue = issue;
     m_workbench_check_result.summary = message;
     m_workbench_check_result.model_sha256 = (m_model_preview ? m_model_preview->model_sha256() : std::string());
     m_workbench_check_result.source_sha256 = m_workbench_check_result.model_sha256;
@@ -108,10 +112,9 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
     const auto revision = m_sequence;
     const auto asset = m_displayed_model_job_id;
     const auto id = "finish-" + ModelGenerationPresentation::new_request_id();
-    // Candidates are deliberately written beside the source and never replace
-    // it.  GLB repairs are exported as a colour-carrying OBJ because topology
-    // changes cannot be represented by the texture-preserving GLB editor.
-    const auto destination = source.parent_path() / ("orcaslicer-ai-" + id + ".obj");
+    // This is the eventual library path. The repair worker writes and checks
+    // a candidate in its private scratch directory first.
+    const auto destination = ModelGenerationPresentation::temp_path(id, "obj");
     auto appearance_carrier = destination;
     appearance_carrier.replace_extension(".source-appearance.obj");
     const auto appearance_root = ModelGenerationPresentation::generated_models_root();
@@ -126,7 +129,8 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
     const bool saved_appearance = m_model_preview->restored_persisted_color_trial() || bound_edits;
     const auto check_purpose = portrait_recheck ? WorkbenchCheckPurpose::PortraitPostColorReadOnly :
         saved_appearance ? WorkbenchCheckPurpose::SavedModelReadOnly : WorkbenchCheckPurpose::GeneralImport;
-    const bool native_partition_requested = workbench_initial_partition_requested(
+    const bool native_partition_requested = !m_model_preview->keeps_original_history_colors() &&
+        workbench_initial_partition_requested(
         automatic, source_appearance.valid(), portrait_recheck,
         m_model_preview->restored_persisted_color_trial(), bound_edits);
     // Shared v11 partitioning owns automatic repair before clustering. Checks
@@ -139,6 +143,8 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
     const auto canceled = m_workbench_check_cancel = std::make_shared<std::atomic<bool>>(false);
     const auto attempts = m_workbench_repair_attempts;
     const auto previous_result = m_workbench_check_result;
+    const auto history_colors = m_model_preview->keeps_original_history_colors()
+        ? std::optional{m_model_preview->color_trial_state().colors} : std::nullopt;
     m_workbench_auto_repair = false;
     if (native_partition_requested) {
         m_workbench_auto_palette_pending = true;
@@ -164,7 +170,7 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
     try {
         m_workbench_check_worker = std::thread([weak, source, destination, revision, asset, id, canceled,
             attempts, previous_result, repair_allowed, bound_edits, automatic, appearance_carrier,
-            appearance_root, source_appearance, source_appearance_error,
+            appearance_root, source_appearance, source_appearance_error, history_colors,
             check_source = m_workbench_check_source, check_purpose] {
             auto result = inspect_workbench_model(source, [canceled] { return canceled->load(); });
             result.source = check_source;
@@ -186,22 +192,33 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                         source != weak->m_displayed_model_path || weak->m_workbench_check_cancel != canceled) return;
                     weak->m_workbench_check_result.phase = phase;
                     weak->m_workbench_check_result.summary = text;
+                    weak->m_status->SetLabel(wxString::FromUTF8(text));
                     if (phase == WorkbenchCheckPhase::Repairing || phase == WorkbenchCheckPhase::Rechecking)
                         weak->m_workbench_check_card_visible = true;
                     weak->refresh_post_generation_workbench();
                 });
             };
+            const auto stopped = [canceled] { return canceled->load(); };
+            std::shared_ptr<WorkbenchRepairStaging> staging;
             result.source_sha256 = source_hash;
             result.candidate_status = attempted ? RepairCandidateStatus::Generating : RepairCandidateStatus::None;
             if (attempted) {
-                progress(WorkbenchCheckPhase::Repairing, "正在执行安全修复；原始模型保留……");
-                repair = AI::finish_model_artifact(source, destination, options, [canceled] { return canceled->load(); });
+                progress(WorkbenchCheckPhase::Repairing, workbench_repair_progress);
+                try {
+                    staging = std::make_shared<WorkbenchRepairStaging>();
+                    const auto scratch_model = staging->model();
+                    BOOST_LOG_TRIVIAL(info) << "[WorkbenchRepair] temporary OBJ path length="
+                        << scratch_model.native().size() + sizeof(".partial") - 1;
+                    repair = AI::finish_model_artifact(source, scratch_model, options, stopped);
+                } catch (const std::exception& failure) {
+                    repair.error = failure.what();
+                }
                 if (repair.success && (repair.changed() || repair.repair_native_compatible) && !canceled->load()) {
                     progress(WorkbenchCheckPhase::Rechecking, "正在复检安全修复后的模型……");
                     const auto before_faces = result.before_faces, before_vertices = result.before_vertices;
                     result = repair.repair_evidence && repair.repair_evidence->acceptance == MeshRepairAcceptance::OrcaNative
-                        ? inspect_native_repair_candidate(destination, repair, [canceled] { return canceled->load(); })
-                        : inspect_workbench_model(destination, [canceled] { return canceled->load(); });
+                        ? inspect_native_repair_candidate(staging->model(), repair, stopped)
+                        : inspect_workbench_model(staging->model(), stopped);
                     result.source = check_source;
                     result.purpose = check_purpose;
                     const auto after_faces = result.before_faces, after_vertices = result.before_vertices;
@@ -232,6 +249,7 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                         result.after_faces = after_faces;
                         result.after_vertices = after_vertices;
                         result.candidate_status = RepairCandidateStatus::Failed;
+                        result.issue = WorkbenchCheckIssue::RecheckFailed;
                         result.candidate_path.clear();
                         result.candidate_sha256.clear();
                         result.repair_reason = "修复候选复检未通过，原模型保留。候选检查：" + candidate_summary;
@@ -245,11 +263,10 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                     result.repair_reason += " 修复前 " + std::to_string(before_faces) + " 面/" +
                         std::to_string(before_vertices) + " 点，修复后 " + std::to_string(after_faces) +
                         " 面/" + std::to_string(after_vertices) + " 点。";
-                    result.repair_reason += "\n策略：" + repair.repair_strategy +
-                        "；双向采样偏差 " + std::to_string(repair.repair_sampled_deviation) +
+                    result.repair_reason += "\n双向采样偏差 " + std::to_string(repair.repair_sampled_deviation) +
                         "，表面积变化 " + std::to_string(repair.repair_area_change_ratio * 100.) + "%";
                     if (repair.repair_native_compatible)
-                        result.repair_reason += "；已按 Orca 原生修复接收必要几何变化，原模型保留。";
+                        result.repair_reason += "；已验证必要的几何变化，原模型保留。";
                     else if (!repair.repair_geometry_verified)
                         result.repair_reason += "；几何变化超出安全保存范围。";
                 } else if (!repair.success && !canceled->load()) {
@@ -279,55 +296,63 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
             std::string error;
             OriginalAppearanceReference candidate_appearance = source_appearance;
             if (repair.success && (repair.changed() || repair.repair_native_compatible) && result.candidate_status == RepairCandidateStatus::Ready && !canceled->load()) {
-                if (source_appearance.valid() && !prepare_original_appearance_for_candidate(
-                        source, destination, repair.source_sha256, source_appearance, appearance_carrier,
-                        appearance_root, candidate_appearance, error,
-                        [canceled] { return canceled->load(); })) {
-                    result.appearance_mapped = false;
-                    result.appearance_confidence = 0.0;
-                    result.appearance_reason = error;
-                } else try {
-                    const std::optional<OriginalAppearanceReference> appearance_override =
-                        candidate_appearance.valid() || !source_appearance_error.empty()
-                            ? std::optional<OriginalAppearanceReference>(candidate_appearance) : std::nullopt;
-                    ModelPreview3D::prepare_model(destination, *prepared, error, {}, {}, true,
-                        [canceled] { return canceled->load(); }, nullptr, appearance_override);
-                    if (!source_appearance_error.empty() && !prepared->has_source_appearance)
-                        prepared->original_appearance_error = source_appearance_error;
-                    if (source_appearance.valid()) {
-                        result.appearance_mapped = prepared->has_source_appearance && !bound_edits;
-                        result.appearance_confidence = result.appearance_mapped ? 1.0 : 0.0;
-                        if (!result.appearance_mapped && result.appearance_reason.empty())
-                            result.appearance_reason = prepared->original_appearance_error;
-                    }
-                    if ((source_appearance.valid() || !source_appearance_error.empty()) && !prepared->has_source_appearance) {
+                try {
+                    if (source_appearance.valid() && !prepare_original_appearance_for_candidate(
+                            source, staging->model(), repair.source_sha256, source_appearance, appearance_carrier,
+                            appearance_root, candidate_appearance, error, stopped, false, staging.get())) {
                         result.appearance_mapped = false;
                         result.appearance_confidence = 0.0;
-                        result.appearance_reason = prepared->original_appearance_error.empty()
-                            ? "原始配色证据不可用，未保存修复版本。"
-                            : prepared->original_appearance_error;
+                        result.appearance_reason = error;
+                    } else {
+                        staging->publish(staging->model(), destination, result.candidate_sha256, stopped);
+                        const std::optional<OriginalAppearanceReference> appearance_override =
+                            candidate_appearance.valid() || !source_appearance_error.empty()
+                                ? std::optional<OriginalAppearanceReference>(candidate_appearance) : std::nullopt;
+                        ModelPreview3D::prepare_model(destination, *prepared, error, {}, {}, true,
+                            stopped, nullptr, appearance_override);
+                        prepared->history_colors = history_colors;
+                        if (!source_appearance_error.empty() && !prepared->has_source_appearance)
+                            prepared->original_appearance_error = source_appearance_error;
+                        if (source_appearance.valid()) {
+                            result.appearance_mapped = prepared->has_source_appearance && !bound_edits;
+                            result.appearance_confidence = result.appearance_mapped ? 1.0 : 0.0;
+                            if (!result.appearance_mapped && result.appearance_reason.empty())
+                                result.appearance_reason = prepared->original_appearance_error;
+                        }
+                        if ((source_appearance.valid() || !source_appearance_error.empty()) && !prepared->has_source_appearance) {
+                            result.appearance_mapped = false;
+                            result.appearance_confidence = 0.0;
+                            result.appearance_reason = prepared->original_appearance_error.empty()
+                                ? "原始配色证据不可用，未保存修复版本。"
+                                : prepared->original_appearance_error;
+                        }
                     }
-                }
-                catch (const std::exception& e) { error = e.what(); }
-            }
-            if (canceled->load()) {
-                boost::system::error_code ec;
-                boost::filesystem::remove(destination, ec);
-                boost::filesystem::remove(appearance_carrier, ec);
+                } catch (const std::exception& e) { error = e.what(); }
             }
             auto source_proof = std::make_shared<VerifiedModelFiles>();
             if (!canceled->load()) source_proof->verify(source, source_hash);
             wxGetApp().CallAfter([weak, source, destination, revision, asset, id, canceled, attempted, key, source_hash, source_proof,
-                automatic, check_source, check_purpose, appearance_carrier,
-                result = std::move(result), repair, options, prepared, error] () mutable {
-                auto cleanup = [&destination, &appearance_carrier] {
-                    boost::system::error_code ec;
-                    boost::filesystem::remove(destination, ec);
-                    boost::filesystem::remove(appearance_carrier, ec);
+                automatic, check_source, check_purpose, appearance_carrier, source_check,
+                result = std::move(result), repair, options, staging, prepared, error] () mutable {
+                auto cleanup = [&] {
+                    prepared.reset();
+                    staging.reset();
                 };
                 if (!weak || weak->m_shutdown || revision != weak->m_sequence || source != weak->m_displayed_model_path ||
                     weak->m_workbench_check_cancel != canceled) { cleanup(); return; }
                 auto* self = weak.get();
+                const auto restore_source_measurements = [&](WorkbenchCheckResult& failed) {
+                    // The candidate was checked on different geometry. Report
+                    // the source measurement while retaining repair diagnostics.
+                    auto original = source_check;
+                    original.source_sha256 = source_hash;
+                    original.after_faces = failed.after_faces;
+                    original.after_vertices = failed.after_vertices;
+                    original.removed_faces = failed.removed_faces;
+                    original.reversed_faces = failed.reversed_faces;
+                    original.appearance_reason = std::move(failed.appearance_reason);
+                    failed = std::move(original);
+                };
                 Presentation::background_tasks().retire(self->m_workbench_check_worker);
                 self->m_workbench_check_running = false;
                 result.phase = WorkbenchCheckPhase::Idle;
@@ -336,6 +361,7 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                 if (canceled->load()) {
                     cleanup();
                     result.status = WorkbenchCheckStatus::Failed;
+                    result.issue = WorkbenchCheckIssue::Canceled;
                     result.candidate_status = RepairCandidateStatus::Failed;
                     result.candidate_path.clear();
                     result.summary = "已取消检查与修复，当前模型保持不变。";
@@ -347,6 +373,7 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                     self->clear_pending_workbench_ai_palette();
                     self->m_workbench_check_result = {};
                     self->m_workbench_check_result.status = WorkbenchCheckStatus::Failed;
+                    self->m_workbench_check_result.issue = WorkbenchCheckIssue::SourceChanged;
                     self->m_workbench_check_result.source = check_source;
                     self->m_workbench_check_result.purpose = check_purpose;
                     self->m_workbench_check_result.summary = "模型文件在检查期间已变化，已丢弃结果，请重新加载。";
@@ -358,7 +385,9 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                     result.candidate_status == RepairCandidateStatus::Ready &&
                     !workbench_repair_publication_allowed(result, repair.repair_geometry_verified, repair.repair_native_compatible)) {
                     cleanup();
+                    restore_source_measurements(result);
                     result.status = WorkbenchCheckStatus::Failed;
+                    result.issue = WorkbenchCheckIssue::RecheckFailed;
                     result.candidate_status = RepairCandidateStatus::Failed;
                     result.candidate_path.clear();
                     result.candidate_sha256.clear();
@@ -388,8 +417,10 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                         self->m_finishing_candidate_original_appearance_error.clear();
                         self->m_beauty_session->clear_draft();
                         cleanup();
+                        restore_source_measurements(self->m_workbench_check_result);
                         self->m_workbench_check_result.status = WorkbenchCheckStatus::Failed;
                         self->m_workbench_check_result.candidate_status = RepairCandidateStatus::Failed;
+                        self->m_workbench_check_result.issue = WorkbenchCheckIssue::PreviewFailed;
                         self->m_workbench_check_result.candidate_path.clear();
                         self->m_workbench_check_result.candidate_sha256.clear();
                         self->m_workbench_check_result.summary = "安全修复版本加载失败，原模型保留：" + load_error;
@@ -401,8 +432,10 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                         self->m_finishing_candidate_original_appearance_error =
                             self->m_model_preview->original_appearance_error();
                         self->m_beauty_session->track_candidate(destination);
-                        if (boost::filesystem::is_regular_file(appearance_carrier))
+                        if (boost::filesystem::is_regular_file(AI::model_io_path(appearance_carrier)))
                             self->m_beauty_session->track_candidate(appearance_carrier);
+                        staging->keep_published();
+                        staging.reset();
                         if (self->m_beauty_transactions) self->m_beauty_transactions->mark_preview_ready();
                         self->m_workbench_repair_attempts.insert(id + "|" + repair.output_sha256);
                         // A fully rechecked topology candidate with no bound
@@ -430,8 +463,10 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                 } else {
                     cleanup();
                     if (!error.empty()) {
+                        restore_source_measurements(self->m_workbench_check_result);
                         self->m_workbench_check_result.status = WorkbenchCheckStatus::Failed;
                         self->m_workbench_check_result.candidate_status = RepairCandidateStatus::Failed;
+                        self->m_workbench_check_result.issue = WorkbenchCheckIssue::PreviewFailed;
                         self->m_workbench_check_result.candidate_path.clear();
                         self->m_workbench_check_result.candidate_sha256.clear();
                         self->m_workbench_check_result.summary = "安全修复预览失败，原模型保留：" + error;

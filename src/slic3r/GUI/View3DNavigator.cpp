@@ -1,5 +1,6 @@
 #include <glad/gl.h>
 #include "View3DNavigator.hpp"
+#include "AI/ModelGeneration/ModelPreviewCamera.hpp"
 #include "GUI_App.hpp"
 #include "I18N.hpp"
 #include "ImGuiWrapper.hpp"
@@ -10,7 +11,6 @@
 #include <wx/dcclient.h>
 #include <wx/glcanvas.h>
 #include <wx/weakref.h>
-#include <wx/control.h>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -162,8 +162,11 @@ bool WorkbenchViewNavigator::begin(Transform3d& rotation, const wxSize& size, do
     self.frame_open = true;
     if (self.surface && self.preview)
         draw_view_navigator_backdrop(self.preview_texture, self.preview->GetScreenRect(), self.surface->GetScreenRect());
-    const auto result = draw_view_navigator(rotation, ImVec2(float(self.bounds.x), float(self.bounds.y)),
+    const auto basis = workbench_model_display_basis();
+    Transform3d navigator_rotation = rotation * basis.inverse(Eigen::Isometry);
+    const auto result = draw_view_navigator(navigator_rotation, ImVec2(float(self.bounds.x), float(self.bounds.y)),
         float(side), dark, self.state, enabled);
+    if (result.changed) rotation = navigator_rotation * basis;
     return result.changed || self.state.interpolation_frames > 0 || self.input.pending();
 }
 
@@ -245,19 +248,11 @@ void WorkbenchViewNavigator::show_surface(bool visible)
     auto* parent = self.surface->GetParent();
     const wxRect viewport(parent->ScreenToClient(self.preview->ClientToScreen(wxPoint())), self.preview->GetClientSize());
     const wxRect footer(parent->ScreenToClient(self.bottom_anchor->ClientToScreen(wxPoint())), self.bottom_anchor->GetClientSize());
-    std::vector<wxRect> tools;
-    const auto collect_tools = [&](const auto& collect, wxWindow* window) -> void {
-        for (auto* child : window->GetChildren()) {
-            if (!child->IsShownOnScreen()) continue;
-            if (dynamic_cast<wxControl*>(child)) tools.emplace_back(parent->ScreenToClient(child->ClientToScreen(wxPoint())), child->GetClientSize());
-            else collect(collect, child);
-        }
-    };
-    collect_tools(collect_tools, self.bottom_anchor.get());
-    const auto bounds = workbench_navigator_bounds(viewport, footer, parent->GetClientRect(), side, tools);
+    const auto bounds = workbench_navigator_bounds(viewport, footer, parent->GetClientRect(), side);
     self.layout_suppressed = !bounds;
     if (!bounds || !self.preview->IsShownOnScreen()) { reset(); self.surface->Hide(); return; }
-    if (self.surface->GetRect() != *bounds) {
+    const bool bounds_changed = self.surface->GetRect() != *bounds;
+    if (bounds_changed) {
         const auto previous = self.surface->GetRect();
         self.surface->SetSize(*bounds);
         const auto exposed = wxRect(previous).Intersect(parent->GetClientRect());
@@ -267,7 +262,9 @@ void WorkbenchViewNavigator::show_surface(bool visible)
             self.preview->RefreshRect(wxRect(preview_exposed.GetPosition() - viewport.GetPosition(),
                 preview_exposed.GetSize()), false);
     }
-    if (!self.surface->IsShown()) { self.surface->Show(); self.surface->Raise(); }
+    const bool showing = !self.surface->IsShown();
+    if (showing) self.surface->Show();
+    if (showing || bounds_changed) self.surface->Raise();
 }
 
 bool WorkbenchViewNavigator::present_surface(bool visible, bool enabled)

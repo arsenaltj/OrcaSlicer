@@ -39,6 +39,7 @@ struct BeautyCandidateSnapshot {
     AI::ModelFinishingOptions options;
     AI::SurfaceSelectionPersistence::SelectionState selection;
     ModelPreviewColorState color_trial;
+    std::shared_ptr<const ModelPreviewInitialColorState> initial_color_trial;
     std::vector<std::pair<size_t, std::array<float, 3>>> face_overrides;
     AI::SemanticColoring::FaceColors semantic_faces;
     AI::SemanticColoring::SubfaceColors semantic_subfaces;

@@ -1711,7 +1711,8 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     for (auto*& color : m_region_color_buttons)
         color = new wxToggleButton(m_local_recolor_controls, wxID_ANY, wxEmptyString);
     m_local_recolor_panel->Hide();
-    m_model_preview = new ModelPreview3D(model_card);
+    m_model_preview = new ModelPreview3D(model_card, false, m_role == Role::WorkbenchAssets
+        ? ModelPreview3D::InitialView::WorkbenchFront : ModelPreview3D::InitialView::Automatic);
     {
         wxWeakRef<ModelGenerationPanel> weak(this);
         m_model_preview->set_library_thumbnail_published_callback([weak] {
@@ -1739,7 +1740,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         event.Skip();
     });
     model_sizer->Add(comparison_panel, 1, wxEXPAND | wxALL, FromDIP(12));
-    auto* finishing_shortcut = m_finishing_shortcut = new wxButton(panel, wxID_ANY, _L("3D 美颜工作台"));
+    auto* finishing_shortcut = m_finishing_shortcut = new wxButton(panel, wxID_ANY, _L("进入工作台"));
     header->Add(finishing_shortcut, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(6));
     finishing_shortcut->Bind(wxEVT_BUTTON, [this, model_page](wxCommandEvent&) {
         if (!m_finishing_workbench && !m_model_preview_ready &&

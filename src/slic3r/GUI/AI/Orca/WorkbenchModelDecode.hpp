@@ -6,6 +6,7 @@
 #include "libslic3r/MeshResourceBudget.hpp"
 #include "libslic3r/TexturePainting.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
+#include "slic3r/GUI/AI/Model/ModelFilePath.hpp"
 #include <algorithm>
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/filesystem/path.hpp>
@@ -104,7 +105,7 @@ inline bool decode_workbench_model(const boost::filesystem::path& path, DecodedW
     } else if (boost::algorithm::iequals(path.extension().string(), ".glb")) {
         decoded.coordinate_unit = WorkbenchCoordinateUnit::Meters;
         auto texture = std::make_shared<TexturedMesh>();
-        if (!load_assimp_textured_model(path.string(), *texture, &error) || stopped()) return false;
+        if (!load_assimp_textured_model(AI::model_io_string(path), *texture, &error) || stopped()) return false;
         indexed_triangle_set its;
         its.vertices.reserve(texture->vertices.size());
         its.indices.reserve(texture->indices.size());

@@ -52,6 +52,8 @@
 
 #include <wx/dnd.h>
 #include <wx/button.h>
+#include <wx/clipbrd.h>
+#include <wx/evtloop.h>
 #include <wx/wupdlock.h>
 #include <wx/filedlg.h>
 #include <wx/filedlgcustomize.h>
@@ -1586,13 +1588,13 @@ void RedesignShell::disconnect_model_generation_host()
         m_preview_transition_cover = nullptr;
     }
     m_import_in_progress = false;
-    m_import_awaiting_frame = false;
     m_slice_camera_loading_pending = false;
     m_slice_camera_waiting_for_frame = false;
     if (m_import_session) m_import_session->invalidate();
     rollback_import_target_view();
     if (m_import_transition) m_page_coordinator.transition().rollback(*m_import_transition);
     m_import_transition.reset();
+    release_import_source_page();
     if (m_import_loading) {
         if (m_import_activity) m_import_activity->Stop();
         m_import_loading->Hide();
@@ -1719,6 +1721,7 @@ void RedesignShell::build_image_workspace()
     m_sizer->Add(workspace, 1, wxEXPAND | wxALL, FromDIP(16));
 
     auto* navigation = new RoundedPanel(this, wxDefaultSize, wxColour(33, 33, 35), background_colour(), 12);
+    m_navigation_rail = navigation;
     navigation->SetMinSize(wxSize(FromDIP(60), -1));
     auto* navigation_sizer = new wxBoxSizer(wxVERTICAL);
     navigation->SetSizer(navigation_sizer);
@@ -2370,13 +2373,40 @@ void RedesignShell::connect_model_generation_host()
                 if(!ec) wxLaunchDefaultApplication(from_path(root)+wxFileName::GetPathSeparator());
             },
             [this] {save_print_project();},
-            [this,library](const boost::filesystem::path& path) {
-                if(!m_plater || !library->can_replace()) return false;
-                wxArrayString files;files.Add(from_path(path));
-                if(!m_plater->load_files(files)) return false;
+            [this](const boost::filesystem::path& path, const std::function<bool(int)>& progress) {
+                if (!m_plater || m_presentation_stopping) return false;
+                // The native loader can select Prepare before returning.
+                const bool was_fitted = m_slice_camera_fitted;
+                request_initial_slicing_camera();
+                auto next_yield = std::chrono::steady_clock::time_point{};
+                // WebView receives its Cancel click while the reader is running. Keep the frame
+                // alive until the native import leaves the loader.
+                wxEventBlocker block_close(wxGetTopLevelParent(this), wxEVT_CLOSE_WINDOW);
+                if (!m_plater->import_library_model(path, [&](int percent) {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (percent >= 99 || now >= next_yield) {
+                        if (auto* loop = wxEventLoopBase::GetActive(); loop && !loop->IsYielding())
+                            loop->YieldFor(wxEVT_CATEGORY_UI | wxEVT_CATEGORY_USER_INPUT);
+                        next_yield = now + std::chrono::milliseconds(25);
+                    }
+                    return progress(percent);
+                })) {
+                    request_initial_slicing_camera();
+                    m_slice_camera_fitted = was_fitted;
+                    refresh_workflow_layout();
+                    return false;
+                }
                 return show_model_view(ModelView::Slicing);
+            },
+            [] {return wxLaunchDefaultBrowser("https://forge.cutelion.top/files");},
+            [](const std::string& model) {
+                wxClipboardLocker lock;
+                if (!lock) return false;
+                return wxTheClipboard->SetData(new wxTextDataObject("https://forge.cutelion.top/models/" + wxString::FromUTF8(model)));
             }});
-    m_assets_workspace->attach(m_asset_service,library);
+    m_assets_workspace->attach(m_asset_service,library,[weak](bool detail) {
+        if (weak && weak->m_navigation_rail && weak->m_navigation_rail->Show(!detail)) weak->Layout();
+    });
     m_model_generation_host->set_smart_creation_presentation(m_smart_creation);
     m_model_generation_host->set_creation_workflow_listener([weak] {
         if (weak && !weak->m_presentation_stopping) weak->refresh_creation_workflow();
@@ -3762,6 +3792,8 @@ bool RedesignShell::navigate_to_tab(const wxString& id)
     if (id.empty())
         return true;
     if (owns_model_workflow() && (id == TAB_ID_PREPARE || id == TAB_ID_PREVIEW)) {
+        if (id == TAB_ID_PREPARE && m_plater->is_loading_project() && !m_plater->model().objects.empty())
+            request_initial_slicing_camera();
         return show_model_view(id == TAB_ID_PREVIEW ? ModelView::Preview : ModelView::Slicing);
     }
 

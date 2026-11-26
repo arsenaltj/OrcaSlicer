@@ -121,20 +121,45 @@ void RedesignShell::release_navigation_waits()
     }
     if (m_import_in_progress && !m_import_navigation_detached) {
         m_import_navigation_detached = true;
+        if (m_import_session && m_import_session->phase() == WorkbenchImportPhase::CheckingFilaments)
+            m_import_session->cancel();
+        rollback_import_target_view();
         if (m_import_transition) m_page_coordinator.transition().rollback(*m_import_transition);
-        restore_import_source_page();
-        m_import_target_staged = false;
-        m_import_target_presenting = false;
-        m_import_awaiting_frame = false;
         if (m_import_loading) m_import_loading->Hide();
-        if (m_import_transition_cover) m_import_transition_cover->Hide();
+        release_import_source_page();
         if (m_import_project_committed) finish_import_loading(true);
     }
+}
+
+void RedesignShell::retain_import_source_page()
+{
+    auto* owner = wxDynamicCast(wxGetTopLevelParent(this), wxTopLevelWindow);
+    if (!m_import_transition_cover) {
+        m_import_transition_cover = new RetainedWorkbenchPageFrame(owner);
+        m_import_transition_cover->SetName("workbench-import-transition");
+        m_import_transition_cover->Bind(wxEVT_CLOSE_WINDOW, [](wxCloseEvent& event) { event.Veto(); });
+    }
+    auto* cover = static_cast<RetainedWorkbenchPageFrame*>(m_import_transition_cover);
+    m_import_source_retained = owner && owner->IsActive() && m_workbench_page->IsShownOnScreen() &&
+        cover->retain(workbench_transition_bounds());
+    m_import_input_filter = std::make_unique<RetainedPageInputFilter>(m_content_host, m_workbench_page, m_import_loading);
+    layout_import_transition_cover();
+}
+
+void RedesignShell::release_import_source_page()
+{
+    if (m_import_transition_cover) {
+        m_import_transition_cover->Hide();
+        static_cast<RetainedWorkbenchPageFrame*>(m_import_transition_cover)->release();
+    }
+    m_import_source_retained = false;
+    m_import_input_filter.reset();
 }
 
 bool RedesignShell::begin_workbench_presentation(bool history_loading)
 {
     if (m_workbench_transition) return true;
+    if (history_loading) m_history_started = std::chrono::steady_clock::now();
     if (m_generation_toast) m_generation_toast->dismiss();
     auto* source = active_page_focus_root();
     auto* content = m_content_host ? m_content_host->GetSizer() : nullptr;
@@ -174,6 +199,13 @@ bool RedesignShell::begin_workbench_presentation(bool history_loading)
         m_workbench_transition.reset();
         return false;
     }
+    if (history_loading) {
+        const auto* owner = wxGetTopLevelParent(this);
+        const wxRect owner_bounds(owner->ClientToScreen(wxPoint()), owner->GetClientSize());
+        auto* viewport = source == m_workbench_page ? m_model_generation_host->workbench_import_viewport() : nullptr;
+        const auto viewport_bounds = viewport && viewport->IsShownOnScreen() ? viewport->GetScreenRect() : wxRect{};
+        m_history_loading_anchor = WorkbenchLoadingCardAnchor(viewport_bounds, source_bounds, owner_bounds);
+    }
     // Present the completed source pixels before native reparenting can expose
     // an empty backing surface. The real page remains retained for rollback.
     m_workbench_transition_cover->SetSize(source_bounds);
@@ -197,7 +229,6 @@ bool RedesignShell::begin_workbench_presentation(bool history_loading)
     m_workbench_prepared_size = wxSize();
     m_workbench_history_loading = history_loading;
     if (history_loading) {
-        m_history_started = std::chrono::steady_clock::now();
         m_history_elapsed->SetLabel(_L("已用时 0.0 秒"));
         m_history_cancel->Enable();
         update_history_loading(ModelHistoryOpenEvent::Stage::Reading);
@@ -325,10 +356,7 @@ void RedesignShell::layout_history_loading()
         std::chrono::duration<double>(std::chrono::steady_clock::now() - m_history_started).count());
     if (m_history_elapsed->GetLabel() != elapsed) m_history_elapsed->SetLabel(elapsed);
     const wxRect owner_bounds(owner->ClientToScreen(wxPoint()), owner->GetClientSize());
-    auto* viewport = m_model_generation_host->workbench_import_viewport();
-    const auto viewport_bounds = viewport && viewport->IsShownOnScreen()
-        ? wxRect(viewport->ClientToScreen(wxPoint()), viewport->GetClientSize()) : workbench_transition_bounds();
-    const auto bounds = workbench_import_card_bounds(viewport_bounds, owner_bounds, m_history_loading->GetBestSize());
+    const auto bounds = m_history_loading_anchor.bounds(owner_bounds, m_history_loading->GetBestSize());
     if (bounds.IsEmpty()) { m_history_loading->Hide(); return; }
     if (m_history_loading->GetRect() != bounds) {
         m_history_loading->SetSize(bounds);
@@ -379,6 +407,7 @@ void RedesignShell::finish_workbench_presentation(bool ready, bool report_failur
     }
     const auto token = *m_workbench_transition;
     const bool detached = m_workbench_presentation_detached;
+    const auto history_request = m_history_open_request;
     auto* owner = wxDynamicCast(wxGetTopLevelParent(this), wxTopLevelWindow);
     if (ready && !detached && (!owner || owner->IsIconized() || !IsShownOnScreen())) return;
     if (ready && !detached && m_workbench_prepared_size != m_content_host->GetClientSize()) {
@@ -430,6 +459,10 @@ void RedesignShell::finish_workbench_presentation(bool ready, bool report_failur
     restore_active_page_focus();
     present_active_page(!ready);
     m_workbench_transition_cover->Hide();
+    if (ready && !detached && history_request)
+        BOOST_LOG_TRIVIAL(info) << "[ModelHistoryOpen] visible request=" << history_request << " elapsed_ms="
+            << std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - m_history_started).count();
     finish_history_loading();
     static_cast<RetainedWorkbenchPageFrame*>(m_workbench_transition_cover)->release();
     refresh_creation_workflow();

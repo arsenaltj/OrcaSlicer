@@ -819,6 +819,60 @@ TEST_CASE("Redesign page transitions reject overlap and ignore late readiness ca
     CHECK_FALSE(transition.current(*second));
 }
 
+TEST_CASE("Workbench import reveals only a new frame at the fitted layout",
+          "[UiRedesign][WorkbenchNavigation][WorkbenchImportPresentation]")
+{
+    using Status = WorkbenchImportFrameGate::Status;
+    WorkbenchImportFrameGate gate;
+    Presentation::PresentationStamp layout {4, 1, 3, 1000, 700, 192};
+    gate.reset(20);
+    CHECK(gate.observe(layout, true, 20) == Status::Waiting);
+    CHECK(gate.observe(layout, false, 21) == Status::Waiting);
+    REQUIRE(gate.observe(layout, true, 22) == Status::FitCamera);
+    gate.camera_fitted(layout, 22);
+    CHECK(gate.observe(layout, true, 22) == Status::Waiting);
+
+    SECTION("the viewport resizes") { ++layout.width; }
+    SECTION("the scale changes at the same size") { layout.dpi = 120; }
+    SECTION("the window is restored at the same size and DPI") { ++layout.layout; }
+
+    CHECK(gate.observe(layout, true, 23) == Status::Waiting);
+    CHECK(gate.observe(layout, true, 23) == Status::Waiting);
+    REQUIRE(gate.observe(layout, true, 24) == Status::FitCamera);
+    gate.camera_fitted(layout, 24);
+    CHECK(gate.observe(layout, true, 24) == Status::Waiting);
+    CHECK(gate.observe(layout, true, 25) == Status::Ready);
+}
+
+TEST_CASE("Leaving an import blocks late presentation and a view retry needs new frames",
+          "[UiRedesign][WorkbenchNavigation][WorkbenchImportPresentation]")
+{
+    using Status = WorkbenchImportFrameGate::Status;
+    RedesignPageTransition route;
+    WorkbenchImportFrameGate gate;
+    const auto initial = route.begin({2, 0}, {2, 1});
+    REQUIRE(initial);
+    CHECK_FALSE(route.begin({2, 0}, {2, 1}));
+    const Presentation::PresentationStamp initial_layout {4, *initial, 3, 1000, 700, 192};
+    gate.reset(10);
+    REQUIRE(gate.observe(initial_layout, true, 11) == Status::FitCamera);
+    gate.camera_fitted(initial_layout, 11);
+    REQUIRE(route.rollback(*initial));
+
+    const auto retry = route.begin({2, 0}, {2, 1});
+    REQUIRE(retry);
+    CHECK_FALSE(route.mark_ready(*initial));
+    CHECK_FALSE(route.commit(*initial));
+    const Presentation::PresentationStamp retry_layout {6, *retry, 3, 1000, 700, 192};
+    gate.reset(12);
+    CHECK(gate.observe(retry_layout, true, 12) == Status::Waiting);
+    REQUIRE(gate.observe(retry_layout, true, 13) == Status::FitCamera);
+    gate.camera_fitted(retry_layout, 13);
+    REQUIRE(gate.observe(retry_layout, true, 14) == Status::Ready);
+    REQUIRE(route.mark_ready(*retry));
+    CHECK(route.commit(*retry));
+}
+
 TEST_CASE("Model and printer pages share workbench navigation without taking the account route",
           "[UiRedesign][WorkbenchNavigation]")
 {

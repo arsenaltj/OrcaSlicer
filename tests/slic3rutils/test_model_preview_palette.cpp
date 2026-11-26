@@ -2,6 +2,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/PortraitPaletteRoles.hpp"
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include "slic3r/GUI/AI/ModelGeneration/ModelPreviewPalette.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchPaletteCount.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PortraitColorPackMapping.hpp"
 #include "slic3r/GUI/AI/Orca/FilamentColorPack.hpp"
 #include "test_utils.hpp"
@@ -10,12 +11,323 @@
 #include <limits>
 
 using namespace Slic3r::GUI::PreviewPalette;
+using Slic3r::GUI::WorkbenchPaletteCountRequests;
+using Slic3r::GUI::WorkbenchPaletteCountSeed;
+using Slic3r::GUI::prepare_workbench_palette_count;
+using Slic3r::GUI::prepare_workbench_palette_reset;
+
+TEST_CASE("Live palette count keeps the latest drag target and coalesces the release events", "[ModelPreviewPalette]")
+{
+    using namespace std::chrono_literals;
+    WorkbenchPaletteCountRequests requests;
+    const auto start = WorkbenchPaletteCountRequests::Clock::time_point{};
+    requests.request(4, false);
+    const auto first = requests.start(start);
+    REQUIRE(first);
+
+    requests.request(5, false);
+    requests.request(8, false);
+    CHECK_FALSE(requests.start(start + 20ms));
+    CHECK_FALSE(requests.complete(*first));
+    CHECK(requests.wait(start + 30ms) == 70ms);
+    CHECK_FALSE(requests.start(start + 99ms));
+
+    requests.request(8, true);
+    const auto final = requests.start(start + 99ms);
+    REQUIRE(final);
+    CHECK(final->count == 8);
+    CHECK(final->final);
+    requests.request(8, true);
+    CHECK(requests.complete(*final));
+    CHECK_FALSE(requests.pending());
+    CHECK_FALSE(requests.tracking());
+    CHECK_FALSE(requests.start(start + 200ms));
+}
+
+TEST_CASE("Live palette count can finish a tracked value and rejects results from a replaced model", "[ModelPreviewPalette]")
+{
+    using namespace std::chrono_literals;
+    WorkbenchPaletteCountRequests requests;
+    const auto start = WorkbenchPaletteCountRequests::Clock::time_point{};
+    requests.request(3, false);
+    const auto tracked = requests.start(start);
+    REQUIRE(tracked);
+    CHECK(requests.complete(*tracked));
+    CHECK(requests.tracking());
+    requests.request(3, true);
+    CHECK_FALSE(requests.start(start + 100ms));
+
+    requests.request(6, false);
+    const auto outdated = requests.start(start + 100ms);
+    REQUIRE(outdated);
+    requests.invalidate();
+    CHECK_FALSE(requests.pending());
+    requests.request(6, true);
+    CHECK_FALSE(requests.start(start + 200ms));
+    CHECK_FALSE(requests.complete(*outdated));
+
+    const auto replacement = requests.start(start + 200ms);
+    REQUIRE(replacement);
+    CHECK_FALSE(requests.complete(*outdated));
+    CHECK(requests.complete(*replacement));
+    CHECK_FALSE(requests.pending());
+}
+
+TEST_CASE("Live manual color trial recovers colors and assignments when the drag reverses", "[ModelPreviewPalette]")
+{
+    const Color red {1, 0, 0}, green {0, 1, 0}, blue {0, 0, 1};
+    Histogram histogram;
+    histogram.add(0x00ff00, 1.);
+    WorkbenchPaletteCountSeed seed;
+    seed.colors = {red, green, blue};
+    seed.mapping = {blue, red, green};
+    seed.semantic_colors = seed.colors;
+    seed.semantic_mapping = seed.mapping;
+    seed.locks[1] = true;
+
+    const auto lower = prepare_workbench_palette_count(seed, 1, histogram, nullptr);
+    REQUIRE(lower.palette.colors.size() == 1);
+    CHECK(lower.palette.colors[0] == green);
+    CHECK(lower.palette.mapping[0] == red);
+    CHECK(lower.palette.locks[0]);
+    const auto restored = prepare_workbench_palette_count(seed, 3, histogram, nullptr);
+    CHECK(restored.palette.colors == seed.colors);
+    CHECK(restored.palette.mapping == seed.mapping);
+    CHECK(restored.palette.semantic_mapping == seed.semantic_mapping);
+    CHECK(restored.palette.locks == seed.locks);
+}
+
+TEST_CASE("Manual trial moves the retained last row with its color and mapping",
+          "[ModelPreviewPalette]")
+{
+    const Color red {1, 0, 0}, green {0, 1, 0}, blue {0, 0, 1}, cyan {0, 1, 1};
+    Histogram histogram;
+    WorkbenchPaletteCountSeed seed;
+    seed.colors = {red, green, blue, cyan, green, cyan};
+    seed.mapping = {green, red, cyan, blue, blue, red};
+    seed.semantic_colors = {red, green, blue, cyan, red, green};
+    seed.semantic_mapping = {blue, cyan, red, blue, green, cyan};
+    seed.locks[5] = true;
+
+    const auto reduced = prepare_workbench_palette_count(seed, 4, histogram, nullptr);
+    CHECK(reduced.palette.colors == (std::vector<Color>{red, green, blue, cyan}));
+    CHECK(reduced.palette.mapping == (std::vector<Color>{green, red, cyan, red}));
+    CHECK(reduced.palette.semantic_colors.back() == seed.semantic_colors[5]);
+    CHECK(reduced.palette.semantic_mapping.back() == seed.semantic_mapping[5]);
+    CHECK(reduced.palette.locks[3]);
+    CHECK_FALSE(reduced.palette.locks[5]);
+    CHECK_FALSE(reduced.limited_by_locks);
+}
+
+TEST_CASE("Equal retained manual colors keep separate source assignments and set the color limit",
+          "[ModelPreviewPalette]")
+{
+    const Color red {1, 0, 0}, green {0, 1, 0}, blue {0, 0, 1};
+    Histogram histogram;
+    WorkbenchPaletteCountSeed seed;
+    seed.colors = {red, green, red, blue, red};
+    seed.mapping = {red, green, blue, red, green};
+    seed.locks[2] = true;
+    seed.locks[4] = true;
+
+    const auto reduced = prepare_workbench_palette_count(seed, 1, histogram, nullptr);
+    CHECK(reduced.limited_by_locks);
+    CHECK(reduced.palette.colors == (std::vector<Color>{red, red}));
+    CHECK(reduced.palette.mapping == (std::vector<Color>{blue, green}));
+    CHECK(reduced.palette.locks[0]);
+    CHECK(reduced.palette.locks[1]);
+
+    seed.locks[4] = false;
+    const auto unlocked = prepare_workbench_palette_count(seed, 1, histogram, nullptr);
+    CHECK_FALSE(unlocked.limited_by_locks);
+    CHECK(unlocked.palette.mapping == (std::vector<Color>{blue}));
+    CHECK(unlocked.palette.locks[0]);
+}
+
+TEST_CASE("Manual trial retains legacy colors by the displayed card slot",
+          "[ModelPreviewPalette]")
+{
+    const Color red {1, 0, 0}, green {0, 1, 0}, blue {0, 0, 1};
+    Histogram histogram;
+    const ColorCardRemap card {"saved", {red, green, blue}, {10, 11, 12}, {2, 0}, 0.0};
+    WorkbenchPaletteCountSeed seed;
+    seed.colors = {blue, red};
+    seed.mapping = {red, blue};
+    seed.locks[2] = true;
+    Slic3r::GUI::use_workbench_card_rows(seed, card);
+    CHECK(seed.mapping == (std::vector<Color>{blue, green, red}));
+
+    const auto reduced = prepare_workbench_palette_count(seed, 2, histogram, nullptr);
+    CHECK(reduced.palette.colors == (std::vector<Color>{red, blue}));
+    CHECK(reduced.palette.mapping == (std::vector<Color>{blue, red}));
+    CHECK_FALSE(reduced.palette.locks[0]);
+    CHECK(reduced.palette.locks[1]);
+}
+
+TEST_CASE("Resetting the trial drops a pending palette result even when the same count is requested again",
+          "[ModelPreviewPalette]")
+{
+    using namespace std::chrono_literals;
+    WorkbenchPaletteCountRequests requests;
+    const auto now = WorkbenchPaletteCountRequests::Clock::time_point{};
+    requests.request(6, false);
+    const auto before_reset = requests.start(now);
+    REQUIRE(before_reset);
+    requests.request(7, true);
+
+    requests.invalidate();
+    CHECK_FALSE(requests.pending());
+    CHECK_FALSE(requests.tracking());
+    CHECK_FALSE(requests.start(now + 20ms));
+
+    requests.request(6, true, WorkbenchPaletteCountRequests::Kind::Reset);
+    CHECK_FALSE(requests.complete(*before_reset));
+    const auto after_reset = requests.start(now + 20ms);
+    REQUIRE(after_reset);
+    CHECK(after_reset->count == 6);
+    CHECK(after_reset->kind == WorkbenchPaletteCountRequests::Kind::Reset);
+    CHECK(requests.complete(*after_reset));
+}
+
+TEST_CASE("Replacing a trial color keeps duplicate targets and source region assignments distinct",
+          "[ModelPreviewPalette]")
+{
+    const Color red {1, 0, 0}, green {0, 1, 0}, blue {0, 0, 1};
+    const std::vector<Color> mapping {red, green, blue};
+    ColorTrialMapping trial {true, mapping, {red, red, green}};
+
+    REQUIRE(replace_trial_target_color(trial.target_colors, trial.mapping_colors, 1, blue));
+    CHECK(trial.target_colors == (std::vector<Color>{red, blue, green}));
+    CHECK(trial.mapping_colors == mapping);
+    CHECK_FALSE(replace_trial_target_color(trial.target_colors, trial.mapping_colors, 3, red));
+    CHECK(trial.target_colors == (std::vector<Color>{red, blue, green}));
+}
+
+TEST_CASE("Default palette reset applies all available colors when the model has fewer than six",
+          "[ModelPreviewPalette]")
+{
+    Histogram histogram;
+    histogram.add(0xff0000, 1.);
+    histogram.add(0x00ff00, 1.);
+
+    const auto reset = prepare_workbench_palette_reset("model", histogram, nullptr);
+    REQUIRE(reset.basis.valid());
+    CHECK(reset.requested_count == 6);
+    CHECK(reset.palette.automatic);
+    CHECK(reset.palette.colors.size() == 2);
+    CHECK(reset.palette.mapping == reset.palette.colors);
+    CHECK(reset.palette.mapping == histogram.trial_palette(6, {}, true));
+    CHECK(reset.palette.locks == RetainedRows{});
+}
+
+TEST_CASE("Default palette reset reuses a matching initial palette and validates native fallback",
+          "[ModelPreviewPalette]")
+{
+    Histogram histogram;
+    histogram.add(0xff0000, 1.);
+    const Color blue {0, 0, 1}, green {0, 1, 0};
+    const auto initial = Slic3r::GUI::workbench_basis_for_palette(histogram, nullptr, "model", 6, {blue});
+    const auto native = Slic3r::GUI::workbench_basis_for_palette(histogram, nullptr, "model", 6, {green});
+    bool queried_native = false;
+    const auto match_native = [&](size_t count) -> std::optional<AutomaticColorBasis> {
+        queried_native = true;
+        CHECK(count == 6);
+        return native;
+    };
+    const auto reuse = prepare_workbench_palette_reset("model", histogram, nullptr, match_native, &initial);
+    CHECK_FALSE(queried_native);
+    CHECK(reuse.palette.colors == initial.source_palette);
+    CHECK(reuse.basis.basis_signature == initial.basis_signature);
+
+    const auto other = Slic3r::GUI::workbench_basis_for_palette(histogram, nullptr, "another-model", 6, {blue});
+    const auto reuse_native = prepare_workbench_palette_reset("model", histogram, nullptr, match_native, &other);
+    CHECK(queried_native);
+    CHECK(reuse_native.palette.colors == native.source_palette);
+    CHECK(reuse_native.palette.semantic_mapping == native.source_palette);
+}
+
+TEST_CASE("Live automatic color count preserves locked colors and reports unavailable counts", "[ModelPreviewPalette]")
+{
+    const Color red {1, 0, 0}, green {0, 1, 0}, blue {0, 0, 1};
+    Histogram histogram;
+    histogram.add(0xff0000, 1.);
+    histogram.add(0x00ff00, 1.);
+    histogram.add(0x0000ff, 1.);
+    WorkbenchPaletteCountSeed seed;
+    seed.automatic = true;
+    seed.colors = {red, green, blue};
+    seed.locks[0] = seed.locks[1] = true;
+    const auto lower = prepare_workbench_palette_count(seed, 1, histogram, nullptr);
+    CHECK(lower.limited_by_locks);
+    CHECK(lower.palette.colors == (std::vector<Color>{red, green}));
+    CHECK(lower.palette.locks[0]);
+    CHECK(lower.palette.locks[1]);
+    const auto unavailable = prepare_workbench_palette_count(seed, 32, histogram, nullptr);
+    CHECK(unavailable.available_colors == 3);
+}
 
 TEST_CASE("Workbench AI palette starts with six colors",
           "[ModelPreviewPalette]")
 {
     CHECK(initial_trial_color_count() == 6);
     CHECK(initial_trial_color_count() <= max_preview_colors);
+}
+
+TEST_CASE("Retained palette colors stay in their rows when recommendations change", "[ModelPreviewPalette]")
+{
+    const Color red {1, 0, 0}, green {0, 1, 0}, blue {0, 0, 1}, black {0, 0, 0}, white {1, 1, 1};
+    const std::vector<Color> previous {red, green, blue, white};
+    RetainedRows retained {};
+    retained[1] = retained[3] = true;
+    std::vector<Color> recommended {green, white, black, red};
+    place_retained_colors(recommended, previous, retained);
+    CHECK(recommended == std::vector<Color>{black, green, red, white});
+    CHECK(retained[1]);
+    CHECK(retained[3]);
+
+    recommended = {green, white, black};
+    place_retained_colors(recommended, previous, retained);
+    CHECK(recommended == std::vector<Color>{black, green, white});
+    CHECK_FALSE(retained[0]);
+    CHECK(retained[1]);
+    CHECK(retained[2]);
+    CHECK_FALSE(retained[3]);
+}
+
+TEST_CASE("Reducing the palette keeps a retained last row at the new end", "[ModelPreviewPalette]")
+{
+    const Color red {1, 0, 0}, green {0, 1, 0}, blue {0, 0, 1},
+        black {0, 0, 0}, yellow {1, 1, 0}, white {1, 1, 1};
+    const std::vector<Color> before {red, green, blue, black, yellow, white};
+    RetainedRows locks {};
+    locks[5] = true;
+    std::vector<Color> reduced {white, green, red, blue};
+
+    place_retained_colors(reduced, before, locks);
+    CHECK(reduced == std::vector<Color>{green, red, blue, white});
+    CHECK_FALSE(locks[0]);
+    CHECK(locks[3]);
+    CHECK_FALSE(locks[5]);
+}
+
+TEST_CASE("Retained colors keep their relative order when reduced rows collide", "[ModelPreviewPalette]")
+{
+    const Color red {1, 0, 0}, green {0, 1, 0}, blue {0, 0, 1},
+        black {0, 0, 0}, yellow {1, 1, 0}, white {1, 1, 1};
+    Histogram histogram;
+    histogram.add(0x000000, 1.);
+    WorkbenchPaletteCountSeed seed;
+    seed.automatic = true;
+    seed.colors = {black, red, green, blue, yellow, white};
+    seed.locks[1] = seed.locks[2] = seed.locks[5] = true;
+
+    const auto at_limit = prepare_workbench_palette_count(std::move(seed), 2, histogram, nullptr);
+    REQUIRE(at_limit.limited_by_locks);
+    CHECK(at_limit.palette.colors == std::vector<Color>{red, green, white});
+    CHECK(at_limit.palette.mapping == at_limit.palette.colors);
+    CAPTURE(at_limit.palette.locks);
+    CHECK(std::count(at_limit.palette.locks.begin(), at_limit.palette.locks.end(), true) == 3);
+    CHECK(at_limit.palette.locks[2]);
 }
 
 TEST_CASE("Approved project portrait colors retain eye and brow roles beside the inherited skin preset",

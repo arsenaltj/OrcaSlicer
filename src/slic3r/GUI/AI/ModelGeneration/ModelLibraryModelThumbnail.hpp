@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../Orca/SoftwareViewportExport.hpp"
+#include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include <boost/filesystem/fstream.hpp>
 #include <boost/uuid/detail/sha1.hpp>
 #include <iomanip>
@@ -9,7 +10,10 @@
 #include <wx/image.h>
 #include <wx/imagpng.h>
 #include <wx/mstream.h>
+#include <wx/wfstream.h>
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -42,7 +46,7 @@ inline bool library_model_thumbnail_matches(const boost::filesystem::path& model
     return !error && modified.time_since_epoch().count() == source.modified &&
            library_model_thumbnail_sha(source.sha256);
 }
-inline boost::filesystem::path library_model_thumbnail_manifest(
+inline boost::filesystem::path legacy_library_model_thumbnail_manifest(
     const boost::filesystem::path& root, const boost::filesystem::path& model)
 {
     if (root.empty() || model.empty()) return {};
@@ -57,11 +61,11 @@ inline boost::filesystem::path library_model_thumbnail_manifest(
 }
 // Asset path matters even for equal model bytes: saved display metadata can
 // differ. SHA1 here is only a compact path key; model identity remains SHA256.
-inline boost::filesystem::path library_model_thumbnail_png(const boost::filesystem::path& root,
-    const boost::filesystem::path& model, const std::string& sha)
+inline std::string library_model_thumbnail_key(const boost::filesystem::path& root,
+    const boost::filesystem::path& model)
 {
-    const auto manifest = library_model_thumbnail_manifest(root, model);
-    if (manifest.empty() || !library_model_thumbnail_sha(sha)) return {};
+    const auto manifest = legacy_library_model_thumbnail_manifest(root, model);
+    if (manifest.empty()) return {};
     const std::string key = manifest.lexically_relative(root / "model-thumbnails" / "by-path").generic_string();
     boost::uuids::detail::sha1 checksum;
     checksum.process_bytes(key.data(), key.size());
@@ -69,12 +73,25 @@ inline boost::filesystem::path library_model_thumbnail_png(const boost::filesyst
     checksum.get_digest(digest);
     std::ostringstream encoded; encoded << std::hex << std::setfill('0');
     for (const auto part : digest) encoded << std::setw(8) << part;
-    return root / "model-thumbnails" / "png" / (encoded.str() + "-" + sha + ".png");
+    return encoded.str();
 }
-inline boost::filesystem::path library_model_thumbnail_image(
+inline boost::filesystem::path library_model_thumbnail_manifest(
     const boost::filesystem::path& root, const boost::filesystem::path& model)
 {
-    const auto manifest = library_model_thumbnail_manifest(root, model);
+    const auto key = library_model_thumbnail_key(root, model);
+    return key.empty() ? boost::filesystem::path{} : root / "model-thumbnails" / "index" / (key + ".json");
+}
+inline boost::filesystem::path library_model_thumbnail_png(const boost::filesystem::path& root,
+    const boost::filesystem::path& model, const std::string& sha)
+{
+    const auto key = library_model_thumbnail_key(root, model);
+    return key.empty() || !library_model_thumbnail_sha(sha) ? boost::filesystem::path{} :
+        root / "model-thumbnails" / "png" / (key + "-" + sha + ".png");
+}
+inline boost::filesystem::path read_library_model_thumbnail(
+    const boost::filesystem::path& root, const boost::filesystem::path& model,
+    const boost::filesystem::path& manifest)
+{
     if (manifest.empty()) return {};
     boost::system::error_code error;
     const auto bytes = boost::filesystem::file_size(manifest, error);
@@ -100,6 +117,89 @@ inline boost::filesystem::path library_model_thumbnail_image(
     return !image_error && image_modified.time_since_epoch().count() == record["image_modified"].get<int64_t>()
         ? image : boost::filesystem::path();
 }
+inline boost::filesystem::path library_model_thumbnail_image(
+    const boost::filesystem::path& root, const boost::filesystem::path& model)
+{
+    auto image = read_library_model_thumbnail(root, model, library_model_thumbnail_manifest(root, model));
+    return image.empty() ? read_library_model_thumbnail(root, model,
+        legacy_library_model_thumbnail_manifest(root, model)) : image;
+}
+inline void index_library_model_thumbnail(const boost::filesystem::path& root,
+    const boost::filesystem::path& model, const LibraryModelThumbnailSource& source,
+    const boost::filesystem::path& image)
+{
+    const auto manifest = library_model_thumbnail_manifest(root, model);
+    if (manifest.empty() || !library_model_thumbnail_matches(model, source))
+        throw std::runtime_error("Model changed while publishing its thumbnail.");
+    std::error_code error;
+    const std::filesystem::path png(image.native());
+    const auto bytes = std::filesystem::file_size(png, error);
+    if (error) throw std::runtime_error("Unable to read model thumbnail size.");
+    const auto modified = std::filesystem::last_write_time(png, error);
+    if (error) throw std::runtime_error("Unable to read model thumbnail identity.");
+    boost::filesystem::create_directories(manifest.parent_path());
+    const auto staging = manifest.parent_path() / boost::filesystem::unique_path(".thumb-%%%%-%%%%.tmp");
+    try {
+        boost::filesystem::ofstream record(staging, std::ios::binary);
+        record << nlohmann::json {{"source_sha256", source.sha256}, {"source_bytes", source.bytes},
+            {"source_modified", source.modified}, {"image_bytes", bytes},
+            {"image_modified", static_cast<int64_t>(modified.time_since_epoch().count())}}.dump();
+        record.close();
+        if (!record) throw std::runtime_error("Unable to write model thumbnail identity.");
+        if (!library_model_thumbnail_matches(model, source))
+            throw std::runtime_error("Model changed while publishing its thumbnail.");
+        boost::filesystem::rename(staging, manifest);
+    } catch (...) {
+        boost::system::error_code ignored;
+        boost::filesystem::remove(staging, ignored);
+        throw;
+    }
+}
+
+inline boost::filesystem::path recover_library_model_thumbnail(const boost::filesystem::path& root,
+    const boost::filesystem::path& model, const std::atomic<bool>& canceled)
+{
+    const auto key = library_model_thumbnail_key(root, model);
+    if (key.empty() || canceled) return {};
+    const auto prefix = key + "-";
+    boost::system::error_code ec;
+    const auto images = root / "model-thumbnails" / "png";
+    for (boost::filesystem::directory_iterator it(images, ec), end; !ec && it != end; it.increment(ec)) {
+        if (canceled) return {};
+        if (it->path().filename().string().compare(0, prefix.size(), prefix) != 0) continue;
+        const std::filesystem::path asset(model.native());
+        std::error_code error;
+        const auto bytes = std::filesystem::file_size(asset, error);
+        if (error) return {};
+        const auto modified = std::filesystem::last_write_time(asset, error);
+        if (error) return {};
+        const LibraryModelThumbnailSource source {AI::model_artifact_sha256(model), bytes,
+            static_cast<int64_t>(modified.time_since_epoch().count())};
+        const auto image = library_model_thumbnail_png(root, model, source.sha256);
+        if (image.empty() || canceled || boost::filesystem::is_symlink(image, ec) || ec) return {};
+        const auto image_bytes = boost::filesystem::file_size(image, ec);
+        if (ec || !image_bytes || image_bytes > 4 * 1024 * 1024) return {};
+        boost::filesystem::ifstream png(image, std::ios::binary);
+        std::array<unsigned char, 24> header {};
+        png.read(reinterpret_cast<char*>(header.data()), header.size());
+        const auto dimension = [&](size_t offset) {
+            return (uint32_t(header[offset]) << 24) | (uint32_t(header[offset + 1]) << 16) |
+                   (uint32_t(header[offset + 2]) << 8) | uint32_t(header[offset + 3]);
+        };
+        if (!png || dimension(0) != 0x89504e47 || dimension(4) != 0x0d0a1a0a ||
+            dimension(12) != 0x49484452 || dimension(16) == 0 || dimension(20) == 0 ||
+            dimension(16) > 1024 || dimension(20) > 1024) return {};
+        wxFileInputStream stream(image.wstring());
+        wxImage pixels;
+        wxPNGHandler png_handler;
+        if (!png_handler.LoadFile(&pixels, stream, false) || !pixels.IsOk() || canceled) return {};
+        try {
+            index_library_model_thumbnail(root, model, source, image);
+            return image;
+        } catch (...) { return {}; }
+    }
+    return {};
+}
 inline void publish_library_model_thumbnail(const boost::filesystem::path& root,
     const boost::filesystem::path& model, const LibraryModelThumbnailSource& source,
     int width, int height, const std::vector<unsigned char>& bottom_up_rgb)
@@ -122,9 +222,7 @@ inline void publish_library_model_thumbnail(const boost::filesystem::path& root,
     output.CopyTo(png.data(), png.size());
     const auto destination = library_model_thumbnail_png(root, model, source.sha256);
     boost::filesystem::create_directories(destination.parent_path());
-    boost::filesystem::create_directories(manifest.parent_path());
     const auto image_staging = destination.parent_path() / boost::filesystem::unique_path(".model-image-%%%%-%%%%.png");
-    const auto staging = manifest.parent_path() / boost::filesystem::unique_path(".model-thumb-%%%%-%%%%.tmp");
     try {
         // Only this private derived PNG may be refreshed. The existing export
         // writer still refuses to overwrite user screenshots or model assets.
@@ -132,22 +230,10 @@ inline void publish_library_model_thumbnail(const boost::filesystem::path& root,
         if (!library_model_thumbnail_matches(model, source))
             throw std::runtime_error("Model changed while publishing its thumbnail.");
         boost::filesystem::rename(image_staging, destination);
-        std::error_code image_error;
-        const auto image_modified = std::filesystem::last_write_time(std::filesystem::path(destination.native()), image_error);
-        if (image_error) throw std::runtime_error("Unable to read model thumbnail identity.");
-        boost::filesystem::ofstream record(staging, std::ios::binary);
-        record << nlohmann::json {{"source_sha256", source.sha256}, {"source_bytes", source.bytes},
-            {"source_modified", source.modified}, {"image_bytes", uintmax_t(png.size())},
-            {"image_modified", static_cast<int64_t>(image_modified.time_since_epoch().count())}}.dump();
-        record.close();
-        if (!record) throw std::runtime_error("Unable to write model thumbnail identity.");
-        if (!library_model_thumbnail_matches(model, source))
-            throw std::runtime_error("Model changed while publishing its thumbnail.");
-        boost::filesystem::rename(staging, manifest);
+        index_library_model_thumbnail(root, model, source, destination);
     } catch (...) {
         boost::system::error_code ignored;
         boost::filesystem::remove(image_staging, ignored);
-        boost::filesystem::remove(staging, ignored);
         throw;
     }
 }

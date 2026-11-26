@@ -254,6 +254,31 @@ inline nlohmann::json encode(const State& state, size_t actual_face_count, const
     return doc;
 }
 
+inline nlohmann::json encode_workbench_trial(State state, size_t face_count, const std::string& geometry)
+{
+    const char* mode = !state.suite_id.empty() ? "honor_suite" :
+        state.source == 0 ? "automatic" : state.source == 1 ? "printer_mapping" : "manual";
+    normalize_for_persistence(state);
+    auto record = encode(state, face_count, geometry);
+    record["workbench_palette_mode"] = mode;
+    return record;
+}
+
+inline void restore_workbench_palette_mode(const nlohmann::json& record, State& state)
+{
+    const auto mode = record.find("workbench_palette_mode");
+    if (state.source == 1 && !state.project_slot_identity.empty()) return;
+    if (state.suite_id.empty() && (state.source == 0 ||
+            (mode != record.end() && *mode == "automatic"))) {
+        state.source = 0;
+        state.automatic_count = static_cast<int>(state.colors.size());
+        state.count = state.automatic_count;
+    } else {
+        normalize_as_manual_snapshot(state);
+        if (state.suite_id.empty()) state.count = state.manual_count = static_cast<int>(state.colors.size());
+    }
+}
+
 // Reject mismatched geometry or malformed fields before returning any state.
 // No palette is re-derived, reordered, or fitted to edited vertex colors.
 // A disabled snapshot still retains its paired centers for later toggling.

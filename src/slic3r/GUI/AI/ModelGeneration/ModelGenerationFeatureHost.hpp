@@ -92,7 +92,7 @@ public:
     void set_workbench_import_feedback(bool active);
     void unmount_workbench();
     void set_color_matching_handler(std::function<void(const AI::GeneratedModelArtifact&)> handler);
-    void set_workbench_import_handler(std::function<void(const AI::ModelImportRequest&)> handler);
+    void set_workbench_import_handler(WorkbenchImportHandler handler);
     AI::ModelImportResult import_workbench_model(const AI::ModelImportRequest& request);
     bool import_workbench_model_async(const AI::ModelImportRequest& request,
         std::shared_ptr<WorkbenchImportSession> session, WorkbenchImportProgress progress,

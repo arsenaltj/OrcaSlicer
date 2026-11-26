@@ -290,7 +290,7 @@ ModelGenerationFeatureHost::~ModelGenerationFeatureHost()
     shutdown();
 }
 
-void ModelGenerationFeatureHost::set_workbench_import_handler(std::function<void(const AI::ModelImportRequest&)> handler)
+void ModelGenerationFeatureHost::set_workbench_import_handler(WorkbenchImportHandler handler)
 {
     m_impl->workbench->set_workbench_import_handler(std::move(handler));
 }

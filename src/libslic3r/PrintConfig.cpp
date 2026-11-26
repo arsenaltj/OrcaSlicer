@@ -13855,6 +13855,13 @@ Points get_bed_shape(const PrintConfig &cfg, bool use_share)
 
 Points get_bed_shape(const SLAPrinterConfig &cfg) { return to_points(make_counter_clockwise(cfg.printable_area.values)); }
 
+bool filament_map_has_invalid_nozzle(const std::vector<int> &filament_map, size_t nozzle_count)
+{
+    return std::any_of(filament_map.begin(), filament_map.end(), [nozzle_count](int nozzle) {
+        return nozzle < 1 || static_cast<size_t>(nozzle) > nozzle_count;
+    });
+}
+
 bool is_valid_bed_exclude_area(const Pointfs &points)
 {
     if (points.size() < 3)
@@ -13866,18 +13873,26 @@ bool is_valid_bed_exclude_area(const Pointfs &points)
     }
 
     const Polygon polygon = Polygon::new_scale(points);
-    if (has_duplicate_points(polygon))
-        return false;
-
     const Points &vertices = polygon.points;
     if (polygon.area() == 0.0)
         return false;
+
+    const auto edges_cross = [](const Point &first_start, const Point &first_end,
+                                const Point &second_start, const Point &second_end) {
+        const int first_start_side = int128::orient(first_start, first_end, second_start);
+        const int first_end_side = int128::orient(first_start, first_end, second_end);
+        const int second_start_side = int128::orient(second_start, second_end, first_start);
+        const int second_end_side = int128::orient(second_start, second_end, first_end);
+        return first_start_side != 0 && first_end_side != 0 &&
+               second_start_side != 0 && second_end_side != 0 &&
+               first_start_side != first_end_side && second_start_side != second_end_side;
+    };
 
     const size_t count = vertices.size();
     for (size_t idx = 0; idx + 2 < count; ++idx) {
         const size_t end = idx == 0 ? count - 1 : count;
         for (size_t other = idx + 2; other < end; ++other) {
-            if (Geometry::segments_intersect(
+            if (edges_cross(
                     vertices[idx], vertices[idx + 1], vertices[other], vertices[(other + 1) % count]))
                 return false;
         }
@@ -14423,17 +14438,24 @@ float get_real_skirt_dist(const DynamicPrintConfig& cfg) {
         loops = 1;
     }
 
-    float width = cfg.opt_float("initial_layer_line_width");
+    float nozzle = 0.4f;
+    auto* nd = cfg.opt<ConfigOptionFloats>("nozzle_diameter");
+    if (nd && !nd->values.empty())
+        nozzle = *std::max_element(nd->values.begin(), nd->values.end());
+
+    // A line width can be a percent of the nozzle diameter.
+    auto line_width = [&](const char *key) -> float {
+        const ConfigOption *opt = cfg.option(key);
+        if (const auto *width = dynamic_cast<const ConfigOptionFloatOrPercent *>(opt))
+            return float(width->get_abs_value(nozzle));
+        return opt ? float(opt->getFloat()) : 0.f;
+    };
+    float width = line_width("initial_layer_line_width");
     if (width <= 0.f) {
-        width = cfg.opt_float("line_width");
+        width = line_width("line_width");
     }
     if (width <= 0.f) {
-        auto* nd = cfg.opt<ConfigOptionFloats>("nozzle_diameter");
-        if (nd && !nd->values.empty()) {
-            width = *std::max_element(nd->values.begin(), nd->values.end());
-        } else {
-            width = 0.4f;
-        }
+        width = nozzle;
     }
 
     return dist + loops * width;
