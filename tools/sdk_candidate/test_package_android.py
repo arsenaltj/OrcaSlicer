@@ -891,7 +891,7 @@ class AndroidTiming(unittest.TestCase):
 
 
 class AndroidPhase(unittest.TestCase):
-    def exercise(self, fault=None, observe=False):
+    def exercise(self, fault=None, observe=False, memory=False):
         """Real package orchestrator/contracts/ELF/snapshot; external OS/CLI fakes only."""
         from contextlib import ExitStack
         import sys
@@ -952,6 +952,7 @@ class AndroidPhase(unittest.TestCase):
             # Real host EXE is an explicit external verification fake, never read/executed.
             pythonref=dict(path=sys.executable,bytes=1,sha256='a'*64)
             plan['toolFiles']=[a.identity(path) for path in local+[core/n for n in owner.SUPPORT]+sdktools+[images/n for n in ('git.exe','llvm-strip.exe','llvm-readelf.exe')]+[manifest,cgal]]+[pythonref]
+            if memory:plan['resourcePolicy']=owner.memory_policy()
             plan['lifecycle']=p.life(plan,True)
             for role in ('review','qa'):
                 report=root/(role+'.md');report.write_text('explicit tiny fixture qualification, not real SDK')
@@ -959,6 +960,7 @@ class AndroidPhase(unittest.TestCase):
                 plan['qualification'][role]=a.identity(qual)
             Path(plan['bindingPath']).write_text(json.dumps(plan));sha=a.identity(plan['bindingPath'])['sha256']
             clock=AndroidTiming().clock();go=AndroidTiming().go();go.update(planPath=plan['bindingPath'],planSha256=sha,lifecycle=plan['lifecycle'],cancel=str(Path(plan['evidence']).with_suffix('.cancel')))
+            if memory:go['schema']='android-artifact-go-v3'
             if observe:go['operation']='observe-inputs'
             events=[];hashes=[];owners=[];validations=[];validation_hashes=[];checks=[];phase=[0];sdk_dirty=[False]
             real_verify=a.verify;real_validate=p.validate;real_roots=p.check_roots;real_mkdir=Path.mkdir;sentinel=a.IO_MONITOR
@@ -1001,10 +1003,13 @@ class AndroidPhase(unittest.TestCase):
                 if path==Path(plan['debug']) and fault=='late-debug':real_mkdir(path);(path/'external').write_text('keep')
                 return real_mkdir(path,*args,**kw)
             resource_bad=[False]
-            def sample():return dict(freeKiB=(1 if resource_bad[0] else 4*1024**2),processes=[])
-            resources=types.SimpleNamespace(__file__=str(core/'build_resources.py'),gate=lambda rows,save:events.append('gate'),sample=sample,heavy=lambda row:False)
+            foreign=[dict(Name=name,ProcessId=900+i,ParentProcessId=1,CreationDate=None,CommandLine=None) for i,name in enumerate(('dart.exe','java.exe','clang.exe','llvm-readelf.exe'))]+[{},dict(ProcessId=[],Name=None),None]
+            def sample():return dict(freeKiB=(1 if resource_bad[0] else (10 if memory else 4)*1024**2),processes=foreign if memory else [])
+            resources=types.SimpleNamespace(__file__=str(core/'build_resources.py'),gate=lambda rows,save:events.append('gate'),sample=sample,
+                heavy=(lambda row:row['Name'].lower() in {'dart.exe','java.exe','clang.exe'}) if memory else (lambda row:False))
             def run(argv,path,record,save,cancel,checkpoint,**kw):
                 events.append('owner');owners.append(argv);self.assertEqual(kw['timeout'],7200);self.assertEqual(kw['lifecycle_profile'],p.PROFILE)
+                if memory:self.assertEqual(kw['resource_policy'],owner.memory_policy())
                 self.assertTrue(Path(plan['evidence']).is_dir());self.assertEqual(len(validations),2)
                 if argv[0]==plan['strip']:
                     destination=Path(argv[4]);destination.write_bytes(Path(argv[2]).read_bytes())
@@ -1023,6 +1028,7 @@ class AndroidPhase(unittest.TestCase):
             stack.enter_context(patch.object(p,'CGAL_SHA',a.identity(cgal)['sha256']));stack.enter_context(patch.object(p.companion,'APPROVED_RULE_SHA',a.identity(rule)['sha256']))
             stack.enter_context(patch.object(a,'verify',side_effect=verify));stack.enter_context(patch.object(p.subprocess,'check_output',side_effect=git))
             stack.enter_context(patch.object(p,'utc_now',clock.now));stack.enter_context(patch.object(p.time,'monotonic',lambda:clock.mono))
+            if memory:stack.enter_context(patch.object(owner.time,'sleep',lambda seconds:None))
             stack.enter_context(patch.dict('sys.modules',{'build_resources':resources}));stack.enter_context(patch.object(owner,'run_owned',side_effect=run))
             # Construct closure from the same real tiny validators, before tracing execution phases.
             closure=real_validate(plan,companions=not observe,verify_all=True)+p.tool_refs(plan)+list(p.pins(runtime))+list(plan['qualification'].values())
@@ -1048,9 +1054,10 @@ class AndroidPhase(unittest.TestCase):
             self.assertIs(a.IO_MONITOR,sentinel)
             external=[path.read_text() for path in root.rglob('external')]
             external += [Path(plan[k]).read_text() for k in ('output','debug','evidence') if Path(plan[k]).is_file()]
+            state=json.loads((Path(plan['evidence'])/'execution.json').read_text()) if (Path(plan['evidence'])/'execution.json').is_file() else None
             return dict(error=error,events=events,validations=validations,checks=checks,owners=owners,published=published,
                 output=Path(plan['output']).exists(),debug=Path(plan['debug']).exists(),evidence=Path(plan['evidence']).exists(),external=external,
-                hashes=hashes,validationHashes=validation_hashes,journal=(Path(plan['evidence'])/'execution.json').is_file())
+                hashes=hashes,validationHashes=validation_hashes,journal=(Path(plan['evidence'])/'execution.json').is_file(),state=state)
 
     def test_real_nonobserve_execute_contracts_elf_snapshot_and_publication(self):
         r=self.exercise();self.assertIsNone(r['error']);self.assertTrue(r['published'])
@@ -1087,6 +1094,109 @@ class AndroidPhase(unittest.TestCase):
     def test_observe_has_one_real_full_admission_and_no_package_commands(self):
         r=self.exercise(observe=True);self.assertIsNone(r['error']);self.assertFalse(r['owners']);self.assertFalse(r['published'])
         self.assertEqual(len(r['validations']),1);self.assertFalse(r['output'] or r['debug']);self.assertTrue(r['evidence'])
+
+
+class AndroidMemory(unittest.TestCase):
+    def test_full_package_foreign_heavy_and_malformed_metadata_are_observed_only(self):
+        r=AndroidPhase().exercise(memory=True);self.assertIsNone(r['error']);self.assertTrue(r['published']);self.assertEqual(len(r['owners']),29)
+        self.assertEqual(len(r['state']['entry']),2)
+        self.assertTrue(all(len(row['heavy'])==3 and len(row['processes'])==7 for row in r['state']['entry']))
+        self.assertTrue(all(row['freeKiB']>=8912896 for row in r['state']['entry']))
+
+    def test_memory_policy_typed_gate_thresholds_and_legacy_default(self):
+        self.assertFalse(owner.memory_only());self.assertTrue(owner.memory_only(owner.memory_policy()))
+        for bad in [dict(owner.memory_policy(),entrySamples=True),dict(owner.memory_policy(),runtimeMinExclusiveFreeKiB=3145728.0),{},dict(owner.memory_policy(),foreignProcesses='DENY')]:
+            with self.assertRaises(AssertionError):owner.memory_only(bad)
+        for free in (8912895,0):
+            with patch.object(owner.time,'sleep',lambda seconds:None),self.assertRaises(AssertionError):
+                owner.resource_admission([],lambda:None,owner.memory_policy(),lambda *args:self.fail('strict gate'),lambda:dict(freeKiB=free,processes=[]),lambda row:False)
+        for free,expected in ((3145728,False),(3145729,True)):
+            self.assertEqual(owner.resource_available(dict(freeKiB=free,processes=[{}]),owner.memory_policy(),lambda row:self.fail('foreign classified for rejection')),expected)
+
+    def test_memory_go_and_lifecycle_require_v3_exact_policy(self):
+        plan=copy.deepcopy(AndroidConcreteContract.actual_metadata()[0]);plan['resourcePolicy']=owner.memory_policy();plan['lifecycle']=p.life(plan,True)
+        self.assertEqual(plan['lifecycle']['schema'],'android-artifact-lifecycle-v3');p.validate_life(plan)
+        go=AndroidTiming().go();go['lifecycle']=plan['lifecycle'];go['schema']='android-artifact-go-v3';clock=AndroidTiming().clock()
+        with patch.object(p,'utc_now',clock.now),patch.object(p.time,'monotonic',lambda:clock.mono):
+            budget=p.OperationBudget(go);budget.check()
+            with self.assertRaises(ValueError):p.OperationBudget(dict(go,schema='android-artifact-go-v2'))
+            go['lifecycle']=copy.deepcopy(go['lifecycle']);go['lifecycle']['resourcePolicy']['entrySamples']=2.0
+            with self.assertRaises(ValueError):budget.check()
+
+    def test_memory_full_phase_low_runtime_resource_and_cancel_still_reject(self):
+        for fault in ('resource-second','cancel-second','expiry-second'):
+            r=AndroidPhase().exercise(fault,memory=True);self.assertIsNotNone(r['error']);self.assertFalse(r['owners']);self.assertFalse(r['published'])
+
+
+class MemoryOwner(unittest.TestCase):
+    def scenario(self, *, bad_child=False, malformed_own=False, low=False, reuse=False, unknown_job=False, malformed_child=False, cancelled=False, timeout=False):
+        from contextlib import ExitStack
+        import sys
+        core='D:/Codex/artifacts/task-20261122-v102-api-upstream-integration/evidence/d3cc-validation-tools-v8'
+        with tempfile.TemporaryDirectory() as d,ExitStack() as stack:
+            stack.enter_context(patch.object(sys,'path',[core]+sys.path))
+            import kernel_job as kernel
+            opened=[];closed=[];state=dict(waited=False,returned=False)
+            class Child:
+                pid=42;h='root';errors=[]
+                def poll(self):return 0
+            class API:
+                def job(self):return 'job'
+                def info(self,h):return (42,100000,200000 if reuse else None) if h=='root' else (43,110000,None)
+                def opened(self,pid):opened.append(pid);return 'child'
+                def member(self,h,job):return True
+                def signaled(self,h,timeout=0):return True
+                def active(self,job):
+                    state['activeCalls']=state.get('activeCalls',0)+1
+                    return 2 if unknown_job and state['activeCalls']==1 else 0
+                def close(self,h):closed.append(h)
+            class Domain(kernel.KernelDomain):
+                def __init__(self):super().__init__(API())
+                def launch(self,*args):self.root=Child();return self.root
+                def prove_root(self):self.handles[(42,100000)]='root';self.certified.add((42,100000))
+                def allowed(self,row,owned,images):return row['Name']=='exact-tool'
+            own=dict(ProcessId=42,ParentProcessId=1,Name='exact-tool',CreationDate='/Date(300000)/' if reuse else '/Date(100000)/',CommandLine='exact-tool')
+            if malformed_own:own['CreationDate']=None
+            foreign=[dict(ProcessId=900+i,ParentProcessId=1,Name=name,CreationDate=None,CommandLine=None) for i,name in enumerate(('dart.exe','java.exe','clang.exe','exact-tool'))]
+            foreign += [{},dict(ProcessId=[],Name=None),dict(ProcessId=950,ParentProcessId=[],CreationDate=None),None]
+            rows=foreign+[own]
+            if bad_child:rows.append(dict(ProcessId=43,ParentProcessId=42,Name='java.exe',CreationDate='/Date(110000)/',CommandLine='unpermitted'))
+            if malformed_child:rows.append(dict(ProcessId=43,ParentProcessId=42,Name='java.exe',CreationDate=None))
+            def attempt(errors,label,fn):
+                try:fn();return True
+                except BaseException as ex:errors.append(dict(stage=label,error=repr(ex)));return False
+            def remember(errors,label,ex):errors.append(dict(stage=label,error=repr(ex)))
+            def wait(child,monitor,errors,pause):
+                state['waited']=True
+                if cancelled:(Path(d)/'cancel').write_text('cancel while owned')
+                monitor();return 0
+            runtime=(Domain,lambda:dict(freeKiB=1 if low else 10*1024**2,processes=rows),lambda row:True,
+                lambda row:(row['ProcessId'],row['CreationDate'],row.get('CommandLine')),lambda:'now',attempt,remember,wait)
+            record={};error=None
+            with patch.object(owner,'runtime',return_value=runtime),patch.object(owner.time,'sleep',lambda seconds:None):
+                try:
+                    owner.run_owned(['exact-tool'],Path(d)/'log',record,lambda:None,Path(d)/'cancel',lambda:None,timeout=0 if timeout else 7200,
+                        permitted_commands=[['exact-tool']],permitted_images=['exact-tool'],resource_policy=owner.memory_policy())
+                    state['returned']=True
+                except AssertionError as exc:error=str(exc)
+            self.assertTrue(state['waited']);self.assertIn('root',closed);self.assertIn('job',closed)
+            self.assertTrue(all(pid==43 for pid in opened));self.assertTrue(all(row in record['rawSamples'][-1]['processes'] for row in foreign))
+            return dict(state=state,error=error,record=record,opened=opened,closed=closed,rows=rows)
+
+    def test_foreign_heavy_same_name_and_malformed_continue_through_job_double_zero(self):
+        r=self.scenario();self.assertTrue(r['state']['returned']);self.assertIsNone(r['error']);self.assertFalse(r['opened'])
+        self.assertGreaterEqual(r['record']['kernelEvidence']['consistentZeroChecks'],2)
+        for projection in r['record']['ownProjections']:
+            raw=r['record']['rawSamples'][projection['rawSampleIndex']]['processes']
+            self.assertEqual([raw[i]['ProcessId'] for i in projection['rawProcessIndices']],[42])
+
+    def test_own_unpermitted_unknown_birth_and_low_memory_fail_naturally(self):
+        for changes in (dict(bad_child=True),dict(malformed_own=True),dict(low=True),dict(unknown_job=True),dict(malformed_child=True),dict(cancelled=True),dict(timeout=True)):
+            r=self.scenario(**changes);self.assertIsNotNone(r['error']);self.assertFalse(r['state']['returned'])
+
+    def test_proven_later_foreign_pid_reuse_is_never_opened_or_owned(self):
+        r=self.scenario(reuse=True);self.assertTrue(r['state']['returned']);self.assertFalse(r['opened'])
+        self.assertTrue(all(not p['rawProcessIndices'] for p in r['record']['ownProjections']))
 
 
 if __name__=='__main__':unittest.main()

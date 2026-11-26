@@ -17,6 +17,72 @@ SUPPORT = {
 TRACE_CONTEXT = None
 
 
+def memory_policy():
+    return dict(schema='sdk-resource-policy-v1',profile='SDK_MEMORY_ONLY_V1',entrySamples=2,
+                entryMinFreeKiB=8912896,runtimeMinExclusiveFreeKiB=3145728,
+                foreignProcesses='OBSERVE_ONLY',ownership='STRICT_RETAINED_PID_BIRTH_JOB')
+
+
+def memory_only(policy=None):
+    if policy is None:return False # unchanged legacy strict contract
+    assert type(policy) is dict and json.dumps(policy,sort_keys=True,allow_nan=False)==json.dumps(memory_policy(),sort_keys=True), 'unknown/ill-typed resource policy'
+    return True
+
+
+def resource_admission(rows,save,policy,strict_gate,sample,heavy):
+    if not memory_only(policy):return strict_gate(rows,save)
+    for _ in range(2):
+        raw=sample();rows.append(raw)
+        # Preserve complete nullable process rows. Classification is diagnostic only.
+        observed=[];unknown=[]
+        for index,row in enumerate(raw['processes']):
+            try:
+                if heavy(row):observed.append(row)
+            except (KeyError,TypeError,AttributeError):unknown.append(index)
+        raw['heavy']=observed;raw['unclassifiedProcessIndices']=unknown;raw['resourcePolicy']=memory_policy()
+        save()
+        assert type(raw['freeKiB']) is int and raw['freeKiB']>=8912896, 'memory-only entry requires8.5GiB'
+        time.sleep(1)
+
+
+def resource_available(raw,policy,heavy):
+    if memory_only(policy):return type(raw['freeKiB']) is int and raw['freeKiB']>3145728
+    return raw['freeKiB']>3*1024**2 and not any(heavy(row) for row in raw['processes'])
+
+
+def observe_owned(domain,rows):
+    """No foreign enumeration/open by name. Only certified generations/lineage."""
+    from kernel_job import key
+    selected=[];owned=set()
+    for _ in range(len(rows)+1):
+        certified=set(domain.certified);pids={k[0] for k in certified};selected=[]
+        for row in rows:
+            if type(row) is not dict:continue
+            pid=row.get('ProcessId');parent=row.get('ParentProcessId')
+            if type(pid) is not int:
+                assert not (type(parent) is int and parent in pids), 'unknown own descendant PID'
+                continue
+            if pid in pids:
+                generation=key(row) # unknown own generation remains a strict error
+                if generation not in certified:
+                    retained=[k for k in certified if k[0]==pid]
+                    for old in retained:
+                        assert old in domain.handles, 'unretained own generation conflict'
+                        actual=domain.api.info(domain.handles[old])
+                        assert actual[:2]==old, 'retained own identity conflict'
+                        assert actual[2] is not None and generation[1]>actual[2], 'live own PID/birth conflict'
+                    continue # proven later foreign PID reuse; never open/wait it
+                selected.append(row)
+            elif type(parent) is int and parent in pids:
+                # Core parent() verifies the certified parent's generation/lifetime.
+                candidates=[r for r in rows if type(r) is dict and type(r.get('ProcessId')) is int and r['ProcessId'] in pids]
+                if domain.parent(row,candidates):selected.append(row)
+        owned=domain.observe(selected,lambda row:False)
+        assert all(key(row) in domain.certified for row in selected), 'own descendant outside certified Job'
+        if domain.certified==certified:break
+    return selected,owned
+
+
 def admit_cancel(path):
     assert not Path(path).exists(), 'preexisting cancellation'
 
@@ -78,9 +144,10 @@ def runtime():
 
 def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=7200,
               mode='artifact', *, permitted_commands, permitted_images, env=None, cwd=None, lifecycle_profile=None,
-              package_plan=None, android_plan=None):
+              package_plan=None, android_plan=None, resource_policy=None):
     global TRACE_CONTEXT
     assert mode == 'artifact', 'artifact protocol only'
+    memory=memory_only(resource_policy)
     assert argv in permitted_commands, 'command outside exact artifact contract'
     admit_cancel(cancel_file)
     launch_env=dict(os.environ) if env is None else dict(env)
@@ -97,6 +164,7 @@ def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=720
         if android_plan is not None:
             from package_android import owner_contract, commands as android_commands
             life = owner_contract(android_plan)
+            assert life.get('resourcePolicy')==resource_policy, 'Android owner resource policy differs'
             assert permitted_commands == android_commands(android_plan), 'Android command table differs'
             assert launch_cwd == life['cwd'] and type(timeout) is int and timeout == life['commandTimeoutSeconds'], 'Android budget/cwd differs'
             assert permitted_images == [android_plan['strip'], android_plan['readelf']], 'Android images differ'
@@ -129,6 +197,7 @@ def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=720
     started = time.monotonic()
     record.update(protocol=PROTOCOL, argv=argv, rawSamples=[], samples=[], state='started')
     record.update(launchEnvironmentSha256=hashlib.sha256(json.dumps(launch_env,sort_keys=True).encode()).hexdigest(),launchCwd=launch_cwd)
+    if memory:record['resourcePolicy']=memory_policy()
     def persist():
         attempt(errors, 'record_save', save)
     def monitor():
@@ -137,16 +206,28 @@ def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=720
             raw = sample()
             record['rawSamples'].append(raw)
             persist()  # preserve raw nullable metadata before any classification
-            TRACE_CONTEXT.rows(raw['processes'],len(record['rawSamples'])-1)
             TRACE_CONTEXT.phase = 'observe'
             names = {Path(x).name.lower() for x in images}
-            owned = domain.observe(raw['processes'], lambda p: heavy(p) or p['Name'].lower() in names)
-            bad = [p for p in raw['processes'] if
-                   (heavy(p) or identity(p) in owned) and not domain.allowed(p, owned, images)]
+            if memory:
+                TRACE_CONTEXT.rows([],len(record['rawSamples'])-1)
+                selected,owned=observe_owned(domain,raw['processes'])
+                record.setdefault('ownProjections',[]).append(dict(rawSampleIndex=len(record['rawSamples'])-1,
+                    rawProcessIndices=[i for i,row in enumerate(raw['processes']) if any(row is item for item in selected)]))
+                TRACE_CONTEXT.rows(selected,len(record['rawSamples'])-1)
+                bad=[p for p in selected if identity(p) in owned and not domain.allowed(p,owned,images)]
+                live=sum(not domain.api.signaled(h) for h in set(domain.handles.values()))
+                active=domain.api.active(domain.job)
+                assert type(active) is int and active>=0 and active<=live, 'unaccounted own Job process'
+            else:
+                TRACE_CONTEXT.rows(raw['processes'],len(record['rawSamples'])-1)
+                owned = domain.observe(raw['processes'], lambda p: heavy(p) or p['Name'].lower() in names)
+                bad = [p for p in raw['processes'] if
+                       (heavy(p) or identity(p) in owned) and not domain.allowed(p, owned, images)]
             row = dict(freeKiB=raw['freeKiB'], unexpected=bad,
                        cancel=Path(cancel_file).exists(), timeout=time.monotonic()-started >= timeout)
             record['samples'].append(row)
-            if row['freeKiB'] <= 3*1024**2 or bad or row['cancel'] or row['timeout']:
+            low_memory=(type(row['freeKiB']) is not int or row['freeKiB']<=3145728) if memory else row['freeKiB']<=3*1024**2
+            if low_memory or bad or row['cancel'] or row['timeout']:
                 failure = failure or 'artifact_resource_or_cancel'
         except BaseException as exc:
             remember(errors, 'monitor', exc)

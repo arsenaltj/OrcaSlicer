@@ -19,6 +19,7 @@ import unicodedata
 import zipfile
 import adapter as a
 import companion
+import artifact_owner as resource_owner
 from android_elf import runtime_identity, source_marker
 from suspended_root import PROFILE, FLAGS
 
@@ -171,10 +172,16 @@ def original_refs(refs):
 
 
 def life(plan, enabled=False):
-    return dict(schema='android-artifact-lifecycle-v2',enabled=enabled,profile=PROFILE,timingPolicy=timing_policy(),
+    policy=plan.get('resourcePolicy');memory=resource_owner.memory_only(policy)
+    result=dict(schema='android-artifact-lifecycle-v3' if memory else 'android-artifact-lifecycle-v2',enabled=enabled,profile=PROFILE,timingPolicy=timing_policy(),
         effectiveCreationFlags=FLAGS,neverResumedAbortExitCode=74,custodian='CURRENT_CREATING_PROCESS',
         source=a.SOURCE,toolSource=plan['toolSource'],cwd=str(Path(plan['sdkRepository'])),
         commandTimeoutSeconds=7200,commands=commands(plan),toolFiles=plan['toolFiles'])
+    if memory:result['resourcePolicy']=policy
+    return result
+
+
+def go_schema(plan):return 'android-artifact-go-v3' if resource_owner.memory_only(plan.get('resourcePolicy')) else 'android-artifact-go-v2'
 
 
 def validate_life(plan, go=None):
@@ -486,10 +493,12 @@ class OperationBudget:
         need(all(k in go for k in self.FIELDS),'Android timing fields required')
         self.entryUtc=utc_now();self.entryMono=time.monotonic()
         fresh(go,now=self.entryUtc)
-        need(go.get('schema')=='android-artifact-go-v2','versioned Android timing GO required')
+        memory=resource_owner.memory_only(go['lifecycle'].get('resourcePolicy'))
+        need(go.get('schema')==('android-artifact-go-v3' if memory else 'android-artifact-go-v2'),'versioned Android timing GO required')
         need(typed_equal(go['lifecycle']['timingPolicy'],timing_policy()),'typed Android timing policy differs')
         self.go=go;self.bound={k:go[k] for k in self.FIELDS}
         self.policy=typed_json(go['lifecycle']['timingPolicy'])
+        self.resource=typed_json(go['lifecycle'].get('resourcePolicy'))
         issued=utc_value(go['issuedUtc']);deadline=utc_value(go['operationDeadlineUtc'])
         resource_end=utc_value(go['resourceAdmissionWindowEndUtc'])
         need(self.entryUtc<deadline<=min(issued+dt.timedelta(seconds=7200),resource_end),
@@ -500,7 +509,8 @@ class OperationBudget:
 
     def check(self):
         need(typed_equal({k:self.go[k] for k in self.FIELDS},self.bound)
-             and typed_json(self.go['lifecycle']['timingPolicy'])==self.policy,'Android timing authority changed; no renewal')
+             and typed_json(self.go['lifecycle']['timingPolicy'])==self.policy
+             and typed_json(self.go['lifecycle'].get('resourcePolicy'))==self.resource,'Android timing/resource authority changed; no renewal')
         need(utc_now()<self.deadline and time.monotonic()<self.monoDeadline,'Android operation deadline elapsed')
 
     def receipt(self):
@@ -518,7 +528,7 @@ def source_check(plan):
 
 
 def exact_go(plan,go,plan_sha,observe=False,admission=None):
-    need(go.get('schema')=='android-artifact-go-v2' and go.get('authorized') is True
+    need(go.get('schema')==go_schema(plan) and go.get('authorized') is True
          and type(go['authorized']) is bool and go.get('rootConversation')==ROOT
          and go.get('artifactOnlyAuthorized') is True and go.get('allowSDKLoad') is False,
          'explicit Android artifact-only root GO required')
@@ -841,7 +851,7 @@ def verify_closure(refs):
 
 
 def execute(plan, go, plan_sha,observe=False):
-    need(go.get('schema')=='android-artifact-go-v2' and go.get('authorized') is True and go.get('artifactOnlyAuthorized') is True
+    need(go.get('schema')==go_schema(plan) and go.get('authorized') is True and go.get('artifactOnlyAuthorized') is True
          and go.get('allowSDKLoad') is False and go.get('rootConversation')==ROOT
          and go.get('operation')==('observe-inputs' if observe else 'package-android'),
          'Android artifact GO required before resource admission')
@@ -859,14 +869,16 @@ def execute(plan, go, plan_sha,observe=False):
     from build_resources import gate,sample,heavy
     from artifact_owner import admit_cancel,run_owned
     cancel=Path(go['cancel']);admit_cancel(cancel)
-    entry=[];gate(entry,lambda:None)
+    policy=plan.get('resourcePolicy')
+    def admission(rows,save):return resource_owner.resource_admission(rows,save,policy,gate,sample,heavy)
+    entry=[];admission(entry,lambda:None)
     budget=OperationBudget(go) # capture once AFTER resource wait, before full source verification
     preflight_samples=[];preflight_last=[0.0]
     def preflight_monitor(force=False):
         admit_cancel(cancel);budget.check()
         if not force and time.monotonic()-preflight_last[0]<5:return
         preflight_last[0]=time.monotonic();s=sample();preflight_samples.append(s)
-        need(s['freeKiB']>3*1024**2 and not any(heavy(p) for p in s['processes']),'Android source admission IO gate')
+        need(resource_owner.resource_available(s,policy,heavy),'Android source admission IO gate')
         budget.check()
     previous_preflight=a.IO_MONITOR;a.IO_MONITOR=preflight_monitor
     try:
@@ -886,17 +898,18 @@ def execute(plan, go, plan_sha,observe=False):
         admit_cancel(cancel);budget.check()
         if not force and time.monotonic()-last[0]<5:return
         last[0]=time.monotonic();s=sample();state['ioSamples'].append(s);save()
-        need(s['freeKiB']>3*1024**2 and not any(heavy(p) for p in s['processes']),'Android IO resource gate')
+        need(resource_owner.resource_available(s,policy,heavy),'Android IO resource gate')
         budget.check()
     def command(argv,label):
         admit_cancel(cancel);budget.check();source_check(plan);budget.check()
-        step=dict(argv=argv,label=label);state['commands'].append(step);gate(step.setdefault('admission',[]),save)
+        step=dict(argv=argv,label=label);state['commands'].append(step);admission(step.setdefault('admission',[]),save)
         path=evidence/(label+'.log')
         admit_cancel(cancel);budget.check()
         step['dispatchAdmissionUtc']=utc_now().isoformat().replace('+00:00','Z')
+        resource_kwargs=dict(resource_policy=policy) if resource_owner.memory_only(policy) else {}
         run_owned(argv,path,step,save,cancel,lambda:None,timeout=7200,mode='artifact',
             permitted_commands=commands(plan),permitted_images=[plan['strip'],plan['readelf']],env=dict(os.environ),
-            cwd=plan['sdkRepository'],lifecycle_profile=PROFILE,android_plan=plan)
+            cwd=plan['sdkRepository'],lifecycle_profile=PROFILE,android_plan=plan,**resource_kwargs)
         admit_cancel(cancel);budget.check()
         result=path.read_text(encoding='utf8');budget.check();return result
     previous=a.IO_MONITOR;a.IO_MONITOR=monitor
