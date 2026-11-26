@@ -560,7 +560,8 @@ def dynamic_tables(command,ref,label,kind=None):
 
 
 def process_libraries(plan, command, monitor):
-    out=Path(plan['output'])/'android/arm64-v8a';out.mkdir(parents=True)
+    root=Path(plan['output']);safe_target(root.parent,root.name).mkdir(parents=True)
+    out=root/'android/arm64-v8a';out.mkdir(parents=True)
     debug=Path(plan['debug']);debug.mkdir(parents=True)
     proof={};needed={}
     for name,row in sorted(runtime_inputs(plan).items()):
@@ -861,17 +862,22 @@ def execute(plan, go, plan_sha,observe=False):
     entry=[];gate(entry,lambda:None)
     budget=OperationBudget(go) # capture once AFTER resource wait, before full source verification
     preflight_samples=[];preflight_last=[0.0]
-    def preflight_monitor():
+    def preflight_monitor(force=False):
         admit_cancel(cancel);budget.check()
-        if time.monotonic()-preflight_last[0]<5:return
+        if not force and time.monotonic()-preflight_last[0]<5:return
         preflight_last[0]=time.monotonic();s=sample();preflight_samples.append(s)
         need(s['freeKiB']>3*1024**2 and not any(heavy(p) for p in s['processes']),'Android source admission IO gate')
         budget.check()
     previous_preflight=a.IO_MONITOR;a.IO_MONITOR=preflight_monitor
-    try:exact_go(plan,go,plan_sha,observe,admission=budget)
+    try:
+        exact_go(plan,go,plan_sha,observe,admission=budget)
+        if not observe:
+            # Both complete source passes require all three roots still absent.
+            preflight_monitor(True);validate(plan,verify_all=True);source_check(plan);preflight_monitor(True)
+        check_roots(plan);preflight_monitor(True)
     finally:a.IO_MONITOR=previous_preflight
     budget.check();admit_cancel(cancel)
-    evidence=Path(plan['evidence']);evidence.mkdir(parents=True)
+    evidence=Path(plan['evidence']);safe_target(evidence.parent,evidence.name).mkdir(parents=True)
     state=dict(state='started',commands=[],entry=entry,sourceAdmissionSamples=preflight_samples,ioSamples=[],
                timingAdmission=budget.receipt())
     def save():(evidence/'execution.json').write_text(json.dumps(state,indent=2),encoding='utf8')
@@ -901,8 +907,8 @@ def execute(plan, go, plan_sha,observe=False):
             source_check(plan);monitor(True)
             state['state']='android_inputs_observed_not_packaged';save()
             return
-        # Full streamed source closure and approved TBB/header validation before any copy.
-        monitor(True);validate(plan,verify_all=True);source_check(plan);monitor(True)
+        # Both full source passes completed before exclusive evidence publication.
+        monitor(True)
         proof=process_libraries(plan,command,monitor)
         monitor(True)
         a.write(evidence/'android-static-proof.json',proof)

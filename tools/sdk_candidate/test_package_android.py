@@ -807,7 +807,7 @@ class AndroidTiming(unittest.TestCase):
         c=self.clock();calls=[];closed=[];published=[];core=Path('D:/Codex/artifacts/task-20261122-v102-api-upstream-integration/evidence/d3cc-validation-tools-v8')
         with tempfile.TemporaryDirectory() as d,ExitStack() as stack:
             root=Path(d);plan=copy.deepcopy(AndroidConcreteContract.actual_metadata()[0])
-            plan.update(output=str(root/'out'),evidence=str(root/'evidence'),debug=str(root/'debug'),ownerDirectory=str(core))
+            plan.update(output=str(root/('sdk-android-'+a.SOURCE[:12]+'-r1')),evidence=str(root/'evidence'),debug=str(root/'debug'),ownerDirectory=str(core))
             plan['lifecycle']=p.life(plan,True)
             go=self.go();go.update(lifecycle=plan['lifecycle'],cancel=str(root/'cancel'),closure=[])
             go['operationDeadlineUtc']=(self.BASE+p.dt.timedelta(seconds=operation_deadline)).isoformat().replace('+00:00','Z')
@@ -888,6 +888,205 @@ class AndroidTiming(unittest.TestCase):
         changed=copy.deepcopy(plan);changed['lifecycle']=p.life(changed,True)
         changed['lifecycle']['schema']='android-artifact-lifecycle-v1'
         with self.assertRaises(ValueError):p.validate_life(changed)
+
+
+class AndroidPhase(unittest.TestCase):
+    def exercise(self, fault=None, observe=False):
+        """Real package orchestrator/contracts/ELF/snapshot; external OS/CLI fakes only."""
+        from contextlib import ExitStack
+        import sys
+        with tempfile.TemporaryDirectory() as d,ExitStack() as stack:
+            root=Path(d);repo=root/'sdk';repo.mkdir();dep=root/'dep';dep.mkdir();(dep/'NOTICE').write_bytes(b'dep notice')
+            names=['LICENSE.txt','mobile-slicing/tests/honor_multihead_thermal_test.cpp','deps_src/nlohmann/json.hpp',
+                'src/orca_model_sdk/include/orca/model/model_sdk_c.h','src/orca_mobile_slicing_sdk/include/orca/mobile/slicing_sdk_c.h']
+            for name in names:
+                path=repo/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b'/*license*/ tiny source')
+            manifest=root/'dependency.json';manifest.write_text(json.dumps([dict(key='DEP_SOURCE',path=str(dep),files=[dict(path='NOTICE',sha256=a.identity(dep/'NOTICE')['sha256'])])]))
+            cgal=root/'CGAL.zip';cgal.write_bytes(b'tiny CGAL fixture')
+            tbb=elf_fixture(root/'libtbb.so');headers=root/'headers';headers.mkdir();(headers/'tiny.h').write_bytes(b'tiny approved header')
+            extra_runtime=[elf_fixture(root/name) for name in ('libtbbmalloc.so','libClipper2.so','libnlopt.so')]
+            rule=root/'approved_tbb.json';rule.write_text(json.dumps(dict(runtime=dict(library='libtbb.so',sha256=a.identity(tbb)['sha256'],bytes=tbb.stat().st_size),
+                headers={'tiny.h':a.identity(headers/'tiny.h')['sha256']},upstream={})))
+            verifier=root/'verify_approved_tbb.py';original=p.HERE.parents[1]/'src/orca_model_sdk/repair_core/verify_approved_tbb.py'
+            verifier.write_bytes(original.read_bytes());spec=importlib.util.spec_from_file_location('phase_tiny_tbb',verifier)
+            module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+            hp=root/'header-proof.json';hp.write_text(json.dumps(dict(headerRoot=str(headers),headers=json.loads(rule.read_text())['headers'])))
+            items={};summaries={};origins={};pairs={};appendices={};requests={};runtime={}
+            for stage in p.STAGES:
+                item,summary,_=producer(root,stage);build=root/stage;raw=elf_fixture(build/p.NAMES[stage])
+                item['rawSource']['raw']=a.identity(raw);(build/'raw-source.json').write_text(json.dumps(item['rawSource']))
+                (build/'actual-compiler-inputs.json').write_text(json.dumps(dict(read=[a.identity(raw),a.identity(tbb),a.identity(headers/'tiny.h')]+[a.identity(path) for path in extra_runtime])))
+                item['fullIndex']['files']=[a.identity(ref['path']) for ref in item['fullIndex']['files']]
+                Path(item['seal']['path']).write_text(json.dumps(item['fullIndex']));item['seal']=a.identity(item['seal']['path'])
+                summary=next(ref for ref in item['fullIndex']['files'] if Path(ref['path']).name==Path(summary['path']).name)
+                cache=build/'CMakeCache.txt';cache.write_text('ORCA_MODEL_SOURCE_COMMIT:STRING='+a.SOURCE+'\nCMAKE_CACHEFILE_DIR:INTERNAL='+str(build)+'\nDEP_SOURCE:PATH='+str(dep)+'\n')
+                binding=build/'approved-tbb-binding.json';binding.write_text(json.dumps(module.validate(tbb,headers,rule)))
+                normal=build/'normal-plan.json';normal.write_text(json.dumps(dict(stages={stage:dict(configureArgv=['-B',str(build),'-DORCA_MODEL_SOURCE_COMMIT:STRING='+a.SOURCE],buildArgv=['cmake','--build',str(build)])})))
+                appendix=root/(stage+'-appendix.json');entries=[dict(role=role,pin=a.identity(path),firstObservedUtc='tiny-fixture') for role,path in [('normal-plan',normal),('approved-rule',rule),('approved-verifier',verifier),('header-manifest',hp)]]
+                appendix.write_text(json.dumps(dict(schema='b5f-companion-source-appendix-v1',origin=p.companion.origin(item,stage),evidenceTiming=p.companion.TIMING,entries=entries)))
+                basis=dict(normalPlan=a.identity(normal));req=[dict(role='cache',stage=stage,producerBuildRoot=str(build),producerOutputPath=str(cache),basis=basis),
+                    dict(role='approved-binding',stage=stage,producerBuildRoot=str(build),producerOutputPath=str(binding),basis=dict(basis,approvedRule=a.identity(rule),approvedVerifier=a.identity(verifier),binding=a.identity(binding),headerProof=a.identity(hp)))]
+                drift=p.original_refs(p.companion.index(item)+[item['seal'],item['rawSource']['raw'],a.identity(appendix)]+list(p.pins(json.loads((build/'actual-compiler-inputs.json').read_text())))+[row['pin'] for row in entries])
+                folder=root/(stage+'-companion');folder.mkdir();receipt=folder/'receipt.json'
+                receipt.write_text(json.dumps(dict(schema=p.companion.SCHEMA,origin=p.companion.origin(item,stage),sourceAppendix=a.identity(appendix),evidenceTiming=p.companion.TIMING,
+                    driftBefore=drift,driftAfter=drift,companions=[dict(r,current=a.identity(r['producerOutputPath']),firstObservedUtc='tiny-fixture',evidenceTiming=p.companion.TIMING) for r in req])))
+                seal=folder/'seal.json';seal.write_text(json.dumps(dict(schema='b5f-companion-seal-v1',receipt=a.identity(receipt))))
+                items[stage]=item;summaries[stage]=summary;pairs[stage]=dict(receipt=a.identity(receipt),seal=a.identity(seal));appendices[stage]=a.identity(appendix);requests[stage]=req
+                origins[stage]=dict(seal=item['seal']['sha256'],rawSha=a.identity(raw)['sha256'],rawBytes=raw.stat().st_size)
+                runtime[p.NAMES[stage]]=dict(stage=stage,source=a.identity(raw))
+            runtime['libtbb.so']=dict(stage='model-android',source=a.identity(tbb))
+            runtime.update({path.name:dict(stage='slicing-android',source=a.identity(path)) for path in extra_runtime})
+            for relative,source in [('src/orca_model_sdk/tools/strip_android_model.py',None),('src/orca_model_sdk/repair_core/verify_approved_tbb.py',verifier),
+                ('src/orca_model_sdk/repair_core/approved_tbb.json',rule),('mobile-slicing/build_android_arm64.cjs',None)]:
+                path=repo/relative;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(source.read_bytes() if source else b'tiny tool metadata')
+            core=Path('D:/Codex/artifacts/task-20261122-v102-api-upstream-integration/evidence/d3cc-validation-tools-v8')
+            images=root/'images';images.mkdir()
+            for name in ('git.exe','llvm-strip.exe','llvm-readelf.exe'):(images/name).write_bytes(b'inert image fixture')
+            plan=dict(schema=p.PLAN,source=a.SOURCE,tree=a.TREE,toolSource='f'*40,sdkRepository=str(repo),producers=items,resourceSummaries=summaries,
+                companions=pairs,sourceAppendices=appendices,observationRequests=requests,runtimeInputs=runtime,output=str(root/('sdk-android-'+a.SOURCE[:12]+'-r1')),
+                debug=str(root/'debug'),evidence=str(root/'execution'),bindingPath=str(root/'plan.json'),ownerDirectory=str(core),artifactOwner=str(p.HERE/'artifact_owner.py'),
+                python=sys.executable,git=str(images/'git.exe'),strip=str(images/'llvm-strip.exe'),readelf=str(images/'llvm-readelf.exe'),dependencyManifest=a.identity(manifest),cgalArchive=a.identity(cgal),
+                functionalQualification=None,qualification={})
+            local=[p.HERE/n for n in ('package_android.py','android_elf.py','adapter.py','companion.py','artifact_owner.py','api_context.py','suspended_root.py','suspended_launch.py')]
+            sdktools=[repo/n for n in ('src/orca_model_sdk/tools/strip_android_model.py','src/orca_model_sdk/repair_core/verify_approved_tbb.py','src/orca_model_sdk/repair_core/approved_tbb.json','mobile-slicing/build_android_arm64.cjs')]
+            # Real host EXE is an explicit external verification fake, never read/executed.
+            pythonref=dict(path=sys.executable,bytes=1,sha256='a'*64)
+            plan['toolFiles']=[a.identity(path) for path in local+[core/n for n in owner.SUPPORT]+sdktools+[images/n for n in ('git.exe','llvm-strip.exe','llvm-readelf.exe')]+[manifest,cgal]]+[pythonref]
+            plan['lifecycle']=p.life(plan,True)
+            for role in ('review','qa'):
+                report=root/(role+'.md');report.write_text('explicit tiny fixture qualification, not real SDK')
+                qual=root/(role+'.json');qual.write_text(json.dumps(dict(schema='android-artifact-qualification-v1',role=role,outcome='passed',toolSource=plan['toolSource'],toolFiles=plan['toolFiles'],lifecycle=plan['lifecycle'],inputs=p.input_contract(plan),report=a.identity(report))))
+                plan['qualification'][role]=a.identity(qual)
+            Path(plan['bindingPath']).write_text(json.dumps(plan));sha=a.identity(plan['bindingPath'])['sha256']
+            clock=AndroidTiming().clock();go=AndroidTiming().go();go.update(planPath=plan['bindingPath'],planSha256=sha,lifecycle=plan['lifecycle'],cancel=str(Path(plan['evidence']).with_suffix('.cancel')))
+            if observe:go['operation']='observe-inputs'
+            events=[];hashes=[];owners=[];validations=[];validation_hashes=[];checks=[];phase=[0];sdk_dirty=[False]
+            real_verify=a.verify;real_validate=p.validate;real_roots=p.check_roots;real_mkdir=Path.mkdir;sentinel=a.IO_MONITOR
+            def verify(ref):
+                hashes.append((phase[0],p.key(ref['path'])))
+                if p.key(ref['path'])==p.key(sys.executable):return Path(sys.executable)
+                return real_verify(ref)
+            def git(args,**kw):
+                if args[-2:]==['ls-files','-z']:return ('\0'.join(names)+'\0').encode()
+                if args[-2:]==['rev-parse','HEAD']:return a.SOURCE if Path(args[2])==repo else plan['toolSource']
+                if args[-2:]==['rev-parse','HEAD^{tree}']:return a.TREE
+                if args[-2:]==['status','--porcelain']:return ' M tiny-sdk-tool' if Path(args[2])==repo and sdk_dirty[0] else ''
+                raise AssertionError(args)
+            def roots(value):
+                if fault=='pollute-final' and len(checks)==2:
+                    Path(plan['output']).mkdir();(Path(plan['output'])/'external').write_text('keep')
+                checks.append(tuple(Path(value[k]).exists() for k in ('output','debug','evidence')))
+                return real_roots(value)
+            def validate(value,**kw):
+                phase[0]+=1;events.append('validate'+str(phase[0]));validations.append((kw,tuple(Path(value[k]).exists() for k in ('output','debug','evidence'))))
+                if fault=='pollute-between' and phase[0]==2:Path(plan['output']).mkdir();(Path(plan['output'])/'external').write_text('keep')
+                target=1 if fault and fault.endswith('first') else 2
+                if fault and fault.startswith('cancel-') and phase[0]==target:Path(go['cancel']).write_text('cancel');a.IO_MONITOR()
+                if fault and fault.startswith('expiry-') and phase[0]==target:clock.tick(7200);a.IO_MONITOR()
+                if fault and fault.startswith('resource-') and phase[0]==target:resource_bad[0]=True;a.IO_MONITOR()
+                if fault and fault.startswith('drift-') and phase[0]==target:Path(items['model-android']['rawSource']['raw']['path']).write_bytes(b'drift')
+                if fault and fault.startswith('source-') and phase[0]==target:(root/'model-android/actual-compiler-inputs.json').write_text('{}')
+                if fault and fault.startswith('tool-') and phase[0]==target:(repo/'mobile-slicing/build_android_arm64.cjs').write_text('changed tiny tool');sdk_dirty[0]=True
+                if fault and fault.startswith('companion-') and phase[0]==target:(root/'model-android/CMakeCache.txt').write_text('ORCA_MODEL_SOURCE_COMMIT:STRING=wrong\n')
+                start=len(hashes)
+                try:return real_validate(value,**kw)
+                finally:validation_hashes.append([path for n,path in hashes[start:]])
+            def mkdir(path,*args,**kw):
+                if path==Path(plan['evidence']):
+                    events.append('evidence-create')
+                    if fault=='late-evidence':real_mkdir(path);(path/'external').write_text('keep')
+                if path==Path(plan['output']):
+                    events.append('output-create')
+                    if fault=='late-output':real_mkdir(path);(path/'external').write_text('keep')
+                if path==Path(plan['debug']) and fault=='late-debug':real_mkdir(path);(path/'external').write_text('keep')
+                return real_mkdir(path,*args,**kw)
+            resource_bad=[False]
+            def sample():return dict(freeKiB=(1 if resource_bad[0] else 4*1024**2),processes=[])
+            resources=types.SimpleNamespace(__file__=str(core/'build_resources.py'),gate=lambda rows,save:events.append('gate'),sample=sample,heavy=lambda row:False)
+            def run(argv,path,record,save,cancel,checkpoint,**kw):
+                events.append('owner');owners.append(argv);self.assertEqual(kw['timeout'],7200);self.assertEqual(kw['lifecycle_profile'],p.PROFILE)
+                self.assertTrue(Path(plan['evidence']).is_dir());self.assertEqual(len(validations),2)
+                if argv[0]==plan['strip']:
+                    destination=Path(argv[4]);destination.write_bytes(Path(argv[2]).read_bytes())
+                    if argv[1]=='--strip-debug':
+                        with destination.open('r+b') as stream:stream.seek(8192+5*64);stream.write(struct.pack('<I',0))
+                    text=''
+                elif argv[1]=='-d':
+                    needed=['libtbb.so','libtbbmalloc.so','libClipper2.so','libnlopt.so'] if Path(argv[-1]).name in p.NAMES.values() else []
+                    text='Dynamic section contains entries:\n'+'\n'.join(' (NEEDED) Shared library: ['+name+']' for name in needed)
+                else:
+                    name=Path(argv[-1]).name;kind='model' if name==p.NAMES['model-android'] else ('slicing' if name==p.NAMES['slicing-android'] else None)
+                    prefix='orca_model_' if kind=='model' else 'orca_mobile_slicing_'
+                    text="Symbol table '.dynsym' contains entries:\n"+('' if kind is None else '\n'.join('1: 001 1 FUNC GLOBAL DEFAULT 1 '+prefix+n for n in a.PUBLIC[kind]))
+                Path(path).write_text(text);record.update(state='returned',exitCode=0)
+            for target,value in [(p.ORIGINS,origins),(p.TBB,dict(sha256=a.identity(tbb)['sha256'],bytes=tbb.stat().st_size))]:stack.enter_context(patch.dict(target,value))
+            stack.enter_context(patch.object(p,'CGAL_SHA',a.identity(cgal)['sha256']));stack.enter_context(patch.object(p.companion,'APPROVED_RULE_SHA',a.identity(rule)['sha256']))
+            stack.enter_context(patch.object(a,'verify',side_effect=verify));stack.enter_context(patch.object(p.subprocess,'check_output',side_effect=git))
+            stack.enter_context(patch.object(p,'utc_now',clock.now));stack.enter_context(patch.object(p.time,'monotonic',lambda:clock.mono))
+            stack.enter_context(patch.dict('sys.modules',{'build_resources':resources}));stack.enter_context(patch.object(owner,'run_owned',side_effect=run))
+            # Construct closure from the same real tiny validators, before tracing execution phases.
+            closure=real_validate(plan,companions=not observe,verify_all=True)+p.tool_refs(plan)+list(p.pins(runtime))+list(plan['qualification'].values())
+            if observe:
+                for stage in p.STAGES:closure += [appendices[stage]]+p.appendix_records(appendices[stage],items[stage],stage)
+                closure += list(p.pins(requests))
+            closure += [a.small_json(real_verify(ref))['report'] for ref in plan['qualification'].values()]
+            go['closure']=list(p.exact_refs(closure).values());hashes.clear()
+            stack.enter_context(patch.object(p,'validate',side_effect=validate));stack.enter_context(patch.object(p,'check_roots',side_effect=roots));stack.enter_context(patch.object(Path,'mkdir',mkdir))
+            if fault and fault.startswith('existing-'):
+                key=fault.split('-')[1];path=Path(plan[key])
+                if fault.endswith('-file'):path.write_text('keep')
+                else:
+                    real_mkdir(path)
+                    if not fault.endswith('-empty'):(path/'external').write_text('keep')
+            error=None
+            try:p.execute(plan,go,sha,observe)
+            except (ValueError,AssertionError,OSError) as exc:error=str(exc)
+            result=Path(plan['evidence'])/'candidate-result.json';published=result.exists()
+            if published:
+                data=json.loads((Path(plan['output'])/'manifest.json').read_text());self.assertEqual(data['runtimeCapabilities']['status'],'pending-phone')
+                with zipfile.ZipFile(root/'execution'/(Path(plan['output']).name+'.zip')) as z:self.assertEqual(set(z.namelist()),{r['path'] for r in data['files']}|{'manifest.json'})
+            self.assertIs(a.IO_MONITOR,sentinel)
+            external=[path.read_text() for path in root.rglob('external')]
+            external += [Path(plan[k]).read_text() for k in ('output','debug','evidence') if Path(plan[k]).is_file()]
+            return dict(error=error,events=events,validations=validations,checks=checks,owners=owners,published=published,
+                output=Path(plan['output']).exists(),debug=Path(plan['debug']).exists(),evidence=Path(plan['evidence']).exists(),external=external,
+                hashes=hashes,validationHashes=validation_hashes,journal=(Path(plan['evidence'])/'execution.json').is_file())
+
+    def test_real_nonobserve_execute_contracts_elf_snapshot_and_publication(self):
+        r=self.exercise();self.assertIsNone(r['error']);self.assertTrue(r['published'])
+        self.assertEqual([v[0] for v in r['validations']],[dict(companions=True,verify_all=True),dict(verify_all=True)])
+        self.assertEqual([v[1] for v in r['validations']],[(False,False,False)]*2)
+        self.assertTrue(all(row==(False,False,False) for row in r['checks']))
+        self.assertLess(r['events'].index('validate2'),r['events'].index('evidence-create'));self.assertLess(r['events'].index('output-create'),r['events'].index('owner'))
+        self.assertEqual(len(r['owners']),29);self.assertTrue(all(any(phase==n for phase,path in r['hashes']) for n in (1,2)))
+        self.assertEqual(r['validationHashes'][0],r['validationHashes'][1])
+        first=[path for phase,path in r['hashes'] if phase==1];second=[path for phase,path in r['hashes'] if phase==2]
+        self.assertTrue(all(path in second for path in first if path.endswith('.so')))
+
+    def test_existing_roots_and_interphase_pollution_preserve_external_content(self):
+        for fault in ('existing-output','existing-debug','existing-evidence','existing-output-file','existing-debug-file','existing-evidence-file',
+                      'existing-output-empty','existing-debug-empty','existing-evidence-empty','pollute-between','pollute-final','late-evidence','late-output','late-debug'):
+            with self.subTest(fault=fault):
+                r=self.exercise(fault);self.assertIsNotNone(r['error']);self.assertFalse(r['owners']);self.assertFalse(r['published'])
+                self.assertEqual(r['external'],[] if fault.endswith('-empty') else ['keep'])
+                if fault not in ('late-output','late-debug'):self.assertFalse(r['journal'])
+
+    def test_second_full_admission_cancel_clock_resource_and_drift_do_not_create_roots(self):
+        for fault in ('cancel-second','expiry-second','resource-second','drift-second','source-second','tool-second','companion-second',
+                      'cancel-first','expiry-first','resource-first','drift-first','source-first','tool-first','companion-first'):
+            with self.subTest(fault=fault):
+                r=self.exercise(fault);self.assertIsNotNone(r['error']);self.assertFalse(r['owners']);self.assertFalse(r['published'])
+                self.assertFalse(r['output'] or r['debug'] or r['evidence'])
+                self.assertEqual(len(r['validations']),1 if fault.endswith('first') else 2)
+                self.assertFalse(r['journal'])
+                expected={'cancel':'preexisting cancellation','expiry':'operation deadline elapsed','resource':'source admission IO gate',
+                    'drift':'file identity changed','source':'file identity changed','companion':'cache source not frozen',
+                    'tool':'source/tool dirty' if fault.endswith('second') else 'file identity changed'}[fault.split('-')[0]]
+                self.assertIn(expected,r['error'])
+
+    def test_observe_has_one_real_full_admission_and_no_package_commands(self):
+        r=self.exercise(observe=True);self.assertIsNone(r['error']);self.assertFalse(r['owners']);self.assertFalse(r['published'])
+        self.assertEqual(len(r['validations']),1);self.assertFalse(r['output'] or r['debug']);self.assertTrue(r['evidence'])
 
 
 if __name__=='__main__':unittest.main()
