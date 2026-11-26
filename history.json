@@ -1,5 +1,15 @@
 [
   {
+    "pr": 88,
+    "run": 45766310087,
+    "head": "fc47246507d2db90ee56e8b358eca8d20292f6f2",
+    "base": "9e40c707f7b0bddda50f957659f5d1298fab4242",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "修复工作台默认六色首帧与人像优化回退",
+    "path": "pr/88/fc47246507d2db90ee56e8b358eca8d20292f6f2/45766310087",
+    "created": "2026-11-26T06:13:58+00:00"
+  },
+  {
     "pr": 87,
     "run": 45621730327,
     "head": "d3338af4d1b804e4ceec1e925df01633f03f43e2",

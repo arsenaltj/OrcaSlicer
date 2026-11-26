@@ -1,0 +1,27 @@
+{
+  "pr": 88,
+  "run": 45766310087,
+  "head": "fc47246507d2db90ee56e8b358eca8d20292f6f2",
+  "base": "9e40c707f7b0bddda50f957659f5d1298fab4242",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "修复工作台默认六色首帧与人像优化回退",
+  "path": "pr/88/fc47246507d2db90ee56e8b358eca8d20292f6f2/45766310087",
+  "created": "2026-11-26T06:13:58+00:00",
+  "files": {
+    "index.html": "f26d122e34d60b9d1f955a6488274a4408f039321618811de6472dec0fff5018",
+    "details.html": "9c2e97b96ec272aa5ef5669dfcc4ace3f90b41ea6fbceba116573eeda9979a2c",
+    "report.json": "76493f69c8e255605436ee424523c9ef0c788bca2efcd348d866b4e174944ccc",
+    "summary.md": "2f81fb94a3eb93ee029231a40cf74a488f4db7910c376c641b0d6be8f75dfb54",
+    "archify-receipts.json": "5543031c3d119f173ae232c8099ec7fb9f172c54f6936660dd2348bc246e86d9",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l0-platform.html": "99935095d905d448319e796148e04715478224ba9576c63820c2d1ba37e75aa2",
+    "l0-platform.json": "cf11ddcc6ebffc6bb2ab8f18b82871e1b72d147778df05af8f63b1c196dcaefa",
+    "l1-modules.html": "191b86567f043e82986a1a70b7b71176b141f95ee721d4da40436dc9b7c4b1fa",
+    "l1-modules.json": "8e07fcfab8e9935aad7581e2f88f755bf14adf01ee8f55767075619da525b8e4",
+    "l2-generation.html": "5ab5558ef137d23eda721ae0ddaa25f82afe2839900e0e142691cb8020e85350",
+    "l2-generation.json": "9d870a02f238a819088346855f3b6c4f912a733fb48dec971a7ab4e6ed8caea5",
+    "l2-slicing.html": "d90d8be9e8d358423e04a3e12617d88a0796cd9e9740d2339cbfeeb1b5277a0d",
+    "l2-slicing.json": "5137fddbf8b9b2e17bd079e501454a6cdb667e6e12f11f40f49207ca165d243c"
+  }
+}
