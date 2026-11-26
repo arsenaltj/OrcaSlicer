@@ -9,6 +9,7 @@ import datetime as dt
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import re
 import subprocess
@@ -36,6 +37,96 @@ ORIGINS = {
    rawSha='eafe048e5196ae43fd71f2d556168679219c38d28bfaee3eaf6ec37696cda847',rawBytes=704366320)}
 HERE = Path(__file__).resolve().parent
 need = a.require
+RECEIPT_LIMIT = 16*1024*1024
+MANIFEST_LIMIT = 32*1024*1024
+
+
+def typed_json(value):
+    """Canonical JSON values with bool/int/float and array order preserved."""
+    def check(obj):
+        kind=type(obj)
+        need(kind in (dict,list,str,int,float,bool,type(None)),'non-JSON value')
+        if kind is dict:
+            need(all(type(k) is str for k in obj),'non-string JSON key')
+            for child in obj.values():check(child)
+        elif kind is list:
+            for child in obj:check(child)
+        elif kind is float:need(math.isfinite(obj),'nonfinite JSON number')
+    check(value)
+    return json.dumps(value,sort_keys=True,ensure_ascii=False,allow_nan=False,separators=(',',':'))
+
+
+def typed_equal(left,right):return typed_json(left)==typed_json(right)
+
+
+def typed_member(value,values):
+    target=typed_json(value)
+    return any(typed_json(other)==target for other in values)
+
+
+def typed_contains(value,target):
+    if type(value) is dict:
+        return (all(k in value and typed_equal(value[k],v) for k,v in target.items())
+                or any(typed_contains(child,target) for child in value.values()))
+    return type(value) is list and any(typed_contains(child,target) for child in value)
+
+
+def role_shape(value,role,stage=None,producer=None):
+    typed_json(value)
+    need(type(value) is dict,'JSON role object required')
+    if role=='receipt':
+        need(value.get('schema')==companion.SCHEMA and type(value.get('origin')) is dict
+             and value['origin'].get('stage')==stage and stage in STAGES,'wrong Android receipt role/stage')
+        if producer is not None:
+            need(typed_equal(value['origin'],companion.origin(producer,stage)),'typed receipt origin differs')
+    elif role=='manifest':
+        need(value.get('schemaVersion')==SCHEMA and type(value.get('files')) is list,'wrong Android manifest role')
+    elif role=='evidence-index':
+        need(value.get('schema')=='android-provenance-index-v1' and type(value.get('entries')) is list,
+             'wrong Android evidence index role')
+    else:need(False,'unknown Android JSON role')
+
+
+def role_bytes(value,role,stage=None,producer=None):
+    role_shape(value,role,stage,producer)
+    data=(json.dumps(value,indent=2,ensure_ascii=False,allow_nan=False)+'\n').encode('utf8')
+    need(len(data)<=(MANIFEST_LIMIT if role=='manifest' else RECEIPT_LIMIT),'Android JSON role size limit')
+    return data
+
+
+def read_role(ref,role,stage=None,producer=None):
+    need(role in ('receipt','manifest','evidence-index'),'unknown Android JSON role')
+    identity=next(iter(exact_refs([ref]).values()))
+    path=Path(ref['path'])
+    need(safe_target(path.parent,path.name)==path.absolute(),'Android JSON role path changed')
+    need(path.name=={'receipt':'receipt.json','manifest':'manifest.json','evidence-index':'evidence-index.json'}[role],
+         'wrong Android JSON role filename')
+    limit=MANIFEST_LIMIT if role=='manifest' else RECEIPT_LIMIT
+    need(0<identity['bytes']<=limit and path.is_file() and not path.is_symlink(),'Android JSON role bound/file')
+    need(path.stat().st_size==identity['bytes'],'Android JSON role declared length differs')
+    digest=hashlib.sha256();blocks=[];size=0
+    with path.open('rb') as stream:
+        while block:=stream.read(min(1024*1024,limit+1-size)):
+            a.IO_MONITOR();size+=len(block);need(size<=limit,'Android JSON role size limit')
+            digest.update(block);blocks.append(block)
+    need(size==identity['bytes'] and digest.hexdigest()==identity['sha256'],'Android JSON role bytes/SHA differ')
+    def unique(pairs):
+        obj={}
+        for k,v in pairs:
+            need(k not in obj,'duplicate JSON object key');obj[k]=v
+        return obj
+    value=json.loads(b''.join(blocks).decode('utf-8-sig'),object_pairs_hook=unique,
+                     parse_constant=lambda text:(_ for _ in ()).throw(ValueError('nonfinite JSON number')))
+    role_shape(value,role,stage,producer)
+    return value
+
+
+def write_role(path,value,role,stage=None,producer=None):
+    data=role_bytes(value,role,stage,producer) # enforce before the first output write
+    target=safe_target(Path(path).parent,Path(path).name)
+    need(target.name=={'receipt':'receipt.json','manifest':'manifest.json','evidence-index':'evidence-index.json'}[role],
+         'wrong Android JSON role filename')
+    with target.open('xb') as out:out.write(data)
 
 
 def key(path):return str(Path(path).resolve())
@@ -73,7 +164,7 @@ def original_refs(refs):
     exact_refs(refs)
     seen=set();result=[]
     for ref in refs:
-        shape=json.dumps(ref,sort_keys=True,ensure_ascii=False)
+        shape=typed_json(ref)
         if shape not in seen:
             seen.add(shape);result.append(ref)
     return result
@@ -91,9 +182,9 @@ def validate_life(plan, go=None):
     need(isinstance(value,dict) and type(value.get('enabled')) is bool
          and all(type(value.get(k)) is int for k in ('effectiveCreationFlags','neverResumedAbortExitCode','commandTimeoutSeconds')),
          'typed Android lifecycle required')
-    need(value == life(plan,True), 'explicit enabled Android lifecycle required')
+    need(typed_equal(value,life(plan,True)), 'explicit enabled Android lifecycle required')
     if go is not None:
-        need(go.get('lifecycle') == value, 'Android GO lifecycle differs')
+        need(typed_equal(go.get('lifecycle'),value), 'Android GO lifecycle differs')
         other=go['lifecycle']
         need(type(other['enabled']) is bool and all(type(other[k]) is int for k in
              ('effectiveCreationFlags','neverResumedAbortExitCode','commandTimeoutSeconds')), 'typed GO lifecycle required')
@@ -108,6 +199,7 @@ def runtime_inputs(plan):
         need(re.fullmatch(r'lib[A-Za-z0-9_+.-]+\.so',name) and Path(row['source']['path']).name == name,
              'unsafe or renamed Android runtime')
         need(row['stage'] in STAGES, 'runtime producer stage differs')
+        exact_refs([row['source']])
     return rows
 
 
@@ -126,7 +218,7 @@ def original_graph(plan, stage, *, verify_all=False):
     item=plan['producers'][stage];expected=ORIGINS[stage]
     need(item is not None and item['seal']['sha256']==expected['seal'], 'unqualified Android producer seal')
     sealed=a.small_json(a.verify(item['seal']))
-    need(sealed==item['fullIndex'], 'Android seal/fullIndex differs')
+    need(typed_equal(sealed,item['fullIndex']), 'Android seal/fullIndex differs')
     refs=sealed.get('files',sealed.get('refs'))
     need(isinstance(refs,list) and refs and len(exact_refs(refs))==len(refs), 'incomplete original index')
     def member(name):
@@ -134,7 +226,7 @@ def original_graph(plan, stage, *, verify_all=False):
         need(len(matches)==1,'missing/ambiguous original '+name)
         return matches[0]
     for name,expected_value in [('actual-terminal.json',item['terminal']),('raw-source.json',item['rawSource'])]:
-        need(a.small_json(a.verify(member(name)))==expected_value,'original Android metadata substituted')
+        need(typed_equal(a.small_json(a.verify(member(name))),expected_value),'original Android metadata substituted')
     a.terminal_ok(stage,item['terminal'],item['rawSource'])
     raw=item['rawSource']['raw']
     need(raw['sha256']==expected['rawSha'] and raw['bytes']==expected['rawBytes']
@@ -142,11 +234,11 @@ def original_graph(plan, stage, *, verify_all=False):
          'old or incorrect Android raw identity')
     origins=[r for r in refs if Path(r['path']).name=='recovery-origin.json']
     original=a.small_json(a.verify(origins[0]))['originalRecords'] if origins else {}
-    need(original==item.get('originalRecords',{}),'original recovery records substituted')
+    need(typed_equal(original,item.get('originalRecords',{})),'original recovery records substituted')
     provenance=refs+list(original.values())
     graph=exact_refs(provenance)
     summary_ref=plan['resourceSummaries'][stage]
-    need(summary_ref in provenance,'resource summary outside original graph')
+    need(typed_member(summary_ref,provenance),'resource summary outside original graph')
     summary=a.small_json(a.verify(summary_ref))
     record=graph.get(key(Path(summary_ref['path']).parent/'execution.json'))
     need(record is not None and summary['source']==a.SOURCE,'same-directory original execution missing')
@@ -186,11 +278,99 @@ def check_roots(plan):
     need(re.fullmatch('sdk-android-'+a.SOURCE[:12]+r'-r[1-9][0-9]*',roots[0].name),'Android bundle namespace required')
 
 
+def appendix_records(ref,item,stage):
+    data=a.small_json(a.verify(ref))
+    need(data.get('schema')=='b5f-companion-source-appendix-v1'
+         and typed_equal(data['origin'],companion.origin(item,stage))
+         and data['evidenceTiming']==companion.TIMING,'typed appendix origin/timing differs')
+    need(type(data.get('entries')) is list and all(type(row) is dict
+         and type(row.get('firstObservedUtc')) is str and row['firstObservedUtc'] for row in data['entries']),
+         'appendix observation string required')
+    # Keep all existing role/path constraints in the unchanged validator.
+    return companion.appendix(dict(sourceAppendix=ref),item,stage)
+
+
+def typed_receipt_guard(plan,stage,receipt,source=None):
+    item=plan['producers'][stage]
+    need(typed_equal(receipt['origin'],companion.origin(item,stage)),'typed receipt origin differs')
+    need(typed_equal(a.small_json(a.verify(item['seal'])),item['fullIndex']),'typed companion original index differs')
+    before=receipt['driftBefore']
+    need(type(before) is list and before and typed_equal(before,receipt['driftAfter']),
+         'typed drift before/after differs')
+    exact_refs(before)
+    index=companion.index(item)
+    origin=next((r for r in index if Path(r['path']).name=='recovery-origin.json'),None)
+    records=a.small_json(a.verify(origin)).get('originalRecords',{}) if origin else {}
+    need(typed_equal(records,item.get('originalRecords',{})),'typed companion original records differ')
+    if source is None:
+        source=a.small_json(a.verify(next(r for r in index if Path(r['path']).name=='actual-compiler-inputs.json')))
+    objects=a.small_json(a.verify(next(r for r in index if Path(r['path']).name=='new-object-inventory.json')))
+    required=index+[item['seal'],item['rawSource']['raw']]+list(pins(source))+list(pins(objects))
+    extra=[]
+    if receipt.get('sourceAppendix'):
+        expected=plan.get('sourceAppendices',{}).get(stage)
+        need(expected is not None and typed_equal(receipt['sourceAppendix'],expected),'typed appendix reference differs')
+        extra=appendix_records(receipt['sourceAppendix'],item,stage)
+        required += [receipt['sourceAppendix']]+extra
+    covered={typed_json(r) for r in before}
+    need(all(typed_json(ref) in covered for ref in required),'typed original source/object/appendix coverage missing')
+    entries=receipt['companions'];requests=plan['observationRequests'][stage]
+    need(type(entries) is list and len(entries)==len(requests),'typed observation request count differs')
+    for entry,request in zip(entries,requests):
+        need(set(entry)==set(request)|{'current','firstObservedUtc','evidenceTiming'}
+             and all(k in entry and typed_equal(entry[k],v) for k,v in request.items()),
+             'typed observation basis/request differs')
+        need(type(entry['firstObservedUtc']) is str and entry['firstObservedUtc']
+             and entry['evidenceTiming']==companion.TIMING,'typed observation timing differs')
+        exact_refs([entry['current']]+list(pins(entry['basis'])))
+        for name in ('normalPlan','approvedRule','approvedVerifier','headerProof'):
+            if name in entry['basis']:
+                ref=entry['basis'][name]
+                need(typed_member(ref,index) or typed_contains(source,ref) or typed_member(ref,extra),
+                     'typed historical basis outside original/appendix graph')
+        if entry['role']=='approved-binding':
+            need(typed_equal(entry['current'],entry['basis']['binding']),'typed current approved binding differs')
+            basis=entry['basis'];binding=a.small_json(a.verify(basis['binding']))
+            rule=a.small_json(a.verify(basis['approvedRule']))
+            expected_binding=dict(schemaVersion=1,runtimePath=str(Path(binding['runtimePath']).resolve()),
+                headerRoot=str(Path(binding['headerRoot']).resolve()),approvalManifestSha256=basis['approvedRule']['sha256'],
+                runtime=rule['runtime'],upstream=rule['upstream'],headerCount=len(rule['headers']),
+                headersSha256=hashlib.sha256(json.dumps(rule['headers'],sort_keys=True).encode()).hexdigest(),
+                runtimeBuiltByThisProducer=False)
+            need(typed_equal(binding,expected_binding),'typed approved binding metadata differs')
+            headers=a.small_json(a.verify(basis['headerProof']))
+            need(typed_equal(headers['headers'],rule['headers']),'typed approved header inventory differs')
+    return extra
+
+
+def companion_receipt(plan,stage,source=None):
+    pair=plan['companions'][stage]
+    need(pair is not None,'Android cache/approved-binding companion unbound')
+    seal=a.small_json(a.verify(pair['seal']))
+    need(seal.get('schema')=='b5f-companion-seal-v1' and typed_equal(seal['receipt'],pair['receipt']),
+         'typed companion receipt/seal differs')
+    receipt=read_role(pair['receipt'],'receipt',stage,plan['producers'][stage])
+    extra=typed_receipt_guard(plan,stage,receipt,source)
+    return receipt,extra
+
+
+def companion_closure(plan,stage):
+    receipt,extra=companion_receipt(plan,stage)
+    pair=plan['companions'][stage]
+    refs=[pair['seal'],pair['receipt']]+receipt['driftBefore']
+    if receipt.get('sourceAppendix'):refs += [receipt['sourceAppendix']]+extra
+    refs += list(pins(receipt['companions']))
+    return refs
+
+
 def support(plan, stage, source, *, required=True):
     pair=plan.get('companions',{}).get(stage)
     if not required and pair is None:return []
     need(pair is not None,'Android cache/approved-binding companion unbound')
-    return companion.accepted(dict(companion=pair),plan['producers'][stage],stage)
+    receipt,_=companion_receipt(plan,stage,source)
+    companion.validate(receipt,plan['producers'][stage],stage)
+    for ref in exact_refs(receipt['driftBefore']).values():a.verify(ref)
+    return [entry['current'] for entry in receipt['companions']]
 
 
 def validate(plan, *, companions=True, verify_all=False):
@@ -214,14 +394,14 @@ def validate(plan, *, companions=True, verify_all=False):
             cache=next((r for r in extra if Path(r['path']).name=='CMakeCache.txt'),None)
             binding=next((r for r in extra if Path(r['path']).name=='approved-tbb-binding.json'),None)
             need(cache is not None and binding is not None,'cache and approved-binding companion required')
-            closure += companion.closure(dict(companion=plan['companions'][stage]))
+            closure += companion_closure(plan,stage)
     for stage,name in NAMES.items():
-        need(plan['runtimeInputs'][name]==dict(stage=stage,source=plan['producers'][stage]['rawSource']['raw']),
+        need(typed_equal(plan['runtimeInputs'][name],dict(stage=stage,source=plan['producers'][stage]['rawSource']['raw'])),
              'canonical Android raw must match qualified producer')
     for name,row in runtime_inputs(plan).items():
         if name in NAMES.values():continue
         item,source,extra=allowed[row['stage']]
-        need(companion.contains(source,row['source']) or row['source'] in extra,'runtime outside exact source/companion graph')
+        need(typed_contains(source,row['source']) or typed_member(row['source'],extra),'runtime outside exact source/companion graph')
     tbb=plan['runtimeInputs']['libtbb.so']['source']
     need(all(tbb[k]==v for k,v in TBB.items()),'approved TBB original bytes required')
     return list(exact_refs(closure).values())
@@ -256,9 +436,9 @@ def tool_refs(plan):
         receipt=a.small_json(a.verify(ref))
         need(receipt['schema']=='android-artifact-qualification-v1' and receipt['role']==role
              and receipt['outcome']=='passed' and receipt['toolSource']==plan['toolSource']
-             and json.dumps(receipt['toolFiles'],sort_keys=True)==json.dumps(plan['toolFiles'],sort_keys=True)
-             and json.dumps(receipt['lifecycle'],sort_keys=True)==json.dumps(plan['lifecycle'],sort_keys=True)
-             and json.dumps(receipt['inputs'],sort_keys=True)==json.dumps(input_contract(plan),sort_keys=True),
+             and typed_equal(receipt['toolFiles'],plan['toolFiles'])
+             and typed_equal(receipt['lifecycle'],plan['lifecycle'])
+             and typed_equal(receipt['inputs'],input_contract(plan)),
              'Android concrete-contract qualification differs')
         a.verify(receipt['report'])
     return list(refs.values())
@@ -298,14 +478,14 @@ def exact_go(plan,go,plan_sha,observe=False):
     fresh(go)
     need(go.get('operation')==('observe-inputs' if observe else 'package-android'), 'Android GO operation differs')
     need(go['planSha256']==plan_sha and a.identity(go['planPath'])['sha256']==plan_sha
-         and key(plan['bindingPath'])==key(go['planPath']) and a.small_json(go['planPath'])==plan,'Android exact plan mismatch')
+         and key(plan['bindingPath'])==key(go['planPath']) and typed_equal(a.small_json(go['planPath']),plan),'Android exact plan mismatch')
     need(key(go['cancel'])==key(Path(plan['evidence']).with_suffix('.cancel')),'dedicated Android cancellation channel required')
     validate_life(plan,go)
     closure=validate(plan,companions=not observe,verify_all=True)+tool_refs(plan)+list(pins(plan['runtimeInputs']))
     if observe:
         for stage in STAGES:
             appendix=plan['sourceAppendices'][stage]
-            closure += [appendix]+companion.appendix(dict(sourceAppendix=appendix),plan['producers'][stage],stage)
+            closure += [appendix]+appendix_records(appendix,plan['producers'][stage],stage)
         closure += list(pins(plan['observationRequests']))
     closure += list(plan['qualification'].values())
     closure += [a.small_json(a.verify(r))['report'] for r in plan['qualification'].values()]
@@ -351,11 +531,11 @@ def process_libraries(plan, command, monitor):
                      'preserved Model debug raw differs')
             command([plan['strip'],'--strip-debug' if kind=='model' else '--strip-unneeded',str(raw),'-o',str(released)],name+'-strip')
         after,released_debug=runtime_identity(released,monitor)
-        need(before==after,'ALLOC/PT_LOAD/loader/runtime bytes changed')
+        need(typed_equal(before,after),'ALLOC/PT_LOAD/loader/runtime bytes changed')
         if kind=='model':need(not released_debug,'Model debug sections retained')
         if kind:need(source_marker(released,a.SOURCE,monitor),'Android release source marker missing')
         second=dynamic_tables(lambda flags,label:command([plan['readelf'],*flags],label),released,name+'-release',kind)
-        need(first==second,'NEEDED/dynsym changed after strip')
+        need(typed_equal(first,second),'NEEDED/dynsym changed after strip')
         a.verify(row['source'])
         needed[name]=first['needed']
         proof[name]=dict(raw=row['source'],release=a.identity(released),runtimeIdentity=after,
@@ -431,7 +611,7 @@ def payload_files(root):
 def write_bundle(out, bundle):
     """Validate the final complete namespace and declared bytes before opening ZIP."""
     out=Path(out)
-    data=a.small_json(safe_target(out,'manifest.json'))
+    data=read_role(a.identity(safe_target(out,'manifest.json')),'manifest')
     declared=data['files']
     names=[row['path'] for row in declared]+['manifest.json']
     register_names(names)
@@ -441,6 +621,7 @@ def write_bundle(out, bundle):
         need(type(row['sizeBytes']) is int and row['sizeBytes']>=0,'invalid manifest file size')
         a.verify(dict(path=str(safe_target(out,row['path'])),bytes=row['sizeBytes'],sha256=row['sha256']))
     destination=safe_target(Path(bundle).parent,Path(bundle).name)
+    need(not destination.resolve().is_relative_to(out.resolve()),'final bundle archive overlaps payload root')
     with zipfile.ZipFile(destination,'x',zipfile.ZIP_DEFLATED,compresslevel=1) as z:
         for name,_ in actual:
             a.zip_copy(z,safe_target(out,name),archive_name(name))
@@ -456,7 +637,7 @@ def snapshot(plan, monitor):
     need(deps,'dependency source inputs required')
     caches=[]
     for stage in STAGES:
-        receipt=a.small_json(a.verify(plan['companions'][stage]['receipt']))
+        receipt=read_role(plan['companions'][stage]['receipt'],'receipt',stage,plan.get('producers',{}).get(stage))
         cache=next(x['current'] for x in receipt['companions'] if x['role']=='cache')
         caches.append(cache_values(a.verify(cache)))
     keys=[item['key'] for item in deps]
@@ -498,7 +679,7 @@ def snapshot(plan, monitor):
             archive_name(name)
             need(safe_target(path.parent,path.name)==path.absolute(),'source ZIP input path changed')
             monitor();before=a.identity(path);a.zip_copy(z,path,name)
-            need(a.identity(path)==before,'snapshot source changed')
+            need(typed_equal(a.identity(path),before),'snapshot source changed')
             sources.append(dict(path=name,sha256=before['sha256']))
         z.writestr(archive_name('source-files.json'),json.dumps(sources,indent=2))
         z.writestr(archive_name('dependency-source-inputs.json'),json.dumps(deps,indent=2))
@@ -534,6 +715,78 @@ def manifest(plan, sources, static_ref):
         runtimeCapabilities=dict(status='pending-phone',evidence=None),functionalQualification=None,
         knownGaps=['Android runtime business behavior pending phone validation','Physical printing and affected AI/GLB flows remain unqualified'],
         locks=dict(device='unchanged',ai='unchanged',ios='unchanged'))
+
+
+def provenance_index(plan,closure_refs=()):
+    """Complete original references, with a separate bounded distribution policy."""
+    occurrences=list(pins(plan['producers']))+list(pins(plan.get('companions',{})))+list(closure_refs)
+    roles={}
+    def assign(ref,role):roles.setdefault(key(ref['path']),set()).add(role)
+    producer_roles={'actual-terminal.json':'producer-terminal','raw-source.json':'producer-raw-reference',
+        'recovery-origin.json':'producer-recovery-origin','actual-compiler-inputs.json':'compiler-input-metadata',
+        'actual-source-command-flags.json':'compiler-command-metadata','new-object-inventory.json':'object-inventory-metadata',
+        'clean-origin.json':'producer-clean-origin','admission.json':'producer-admission','exact-argv.json':'producer-argv'}
+    for stage,item in plan['producers'].items():
+        _,_,refs=original_graph(plan,stage,verify_all=False);occurrences+=refs
+        assign(item['seal'],'producer-seal')
+        for ref in companion.index(item):
+            if Path(ref['path']).name in producer_roles:assign(ref,producer_roles[Path(ref['path']).name])
+        pair=plan.get('companions',{}).get(stage)
+        if pair is not None:
+            receipt,_=companion_receipt(plan,stage)
+            occurrences+=list(pins(receipt))+[pair['receipt'],pair['seal']]
+            assign(pair['receipt'],'companion-receipt');assign(pair['seal'],'companion-seal')
+            if receipt.get('sourceAppendix'):
+                ref=receipt['sourceAppendix'];assign(ref,'source-appendix')
+                appendix=a.small_json(a.verify(ref))
+                for row in appendix['entries']:
+                    if row['role'] in {'normal-plan','approved-rule','header-manifest'}:assign(row['pin'],row['role'])
+            for entry in receipt['companions']:
+                if entry['role'] in {'cache','approved-binding'}:assign(entry['current'],entry['role'])
+    physical=exact_refs(occurrences);records={}
+    for ref in original_refs(occurrences):records.setdefault(key(ref['path']),[]).append(ref)
+    entries=[]
+    for n,(path,identity) in enumerate(sorted(physical.items())):
+        names=sorted(roles.get(path,set()));name=Path(path).name
+        forbidden=(name.lower()=='execution.json' or Path(path).suffix.lower() in
+                   {'.so','.dll','.exe','.obj','.o','.pch','.lib','.a','.log','.tlog','.pdb'})
+        copied=bool(names) and not forbidden and 0<identity['bytes']<=RECEIPT_LIMIT
+        reason=('explicit small metadata role within16MiB' if copied else
+                ('raw/execution/object/tool/log remains original external evidence' if forbidden else
+                 ('metadata exceeds16MiB distribution budget' if names else 'no declared distribution role')))
+        entries.append(dict(identity=identity,originalRefs=records[path],roles=names,
+            distribution='distributed-copy' if copied else 'external-only',reason=reason,
+            payloadPath='provenance/records/'+str(n)+'-'+name if copied else None))
+    return dict(schema='android-provenance-index-v1',entries=entries,
+        originalsPreservedExternally=True,allOriginalRefsRetained=True,
+        distributionScope='Original evidence copies under provenance/records; release/source payloads are independently listed in manifest/static proof',
+        sourceVerification='All original/external references still require full actual pre/post verification; distribution is not qualification')
+
+
+def distribute_provenance(plan,closure_refs=()):
+    out=Path(plan['output']);index=provenance_index(plan,closure_refs)
+    role_bytes(index,'evidence-index')
+    paths=[entry['payloadPath'] for entry in index['entries'] if entry['distribution']=='distributed-copy']
+    register_names(paths+['provenance/evidence-index.json'])
+    for name in paths:safe_target(out,name)
+    for entry in index['entries']:
+        if entry['distribution']!='distributed-copy':continue
+        source=a.verify(entry['identity']);destination=safe_target(out,entry['payloadPath'])
+        destination.parent.mkdir(parents=True,exist_ok=True)
+        a.stream_copy(source,safe_target(out,entry['payloadPath']))
+        copied=a.identity(destination)
+        need(typed_equal({k:copied[k] for k in ('bytes','sha256')},
+                         {k:entry['identity'][k] for k in ('bytes','sha256')}),'distributed metadata bytes differ')
+        a.verify(entry['identity'])
+    target=safe_target(out,'provenance/evidence-index.json');target.parent.mkdir(parents=True,exist_ok=True)
+    write_role(target,index,'evidence-index')
+    ref=a.identity(target)
+    return dict(path='provenance/evidence-index.json',bytes=ref['bytes'],sha256=ref['sha256'])
+
+
+def verify_closure(refs):
+    """Physical verification includes external-only evidence; never a payload filter."""
+    for ref in exact_refs(refs).values():a.verify(ref)
 
 
 def execute(plan, go, plan_sha,observe=False):
@@ -584,6 +837,7 @@ def execute(plan, go, plan_sha,observe=False):
     try:
         if observe:
             observe_inputs(plan,evidence,monitor)
+            verify_closure(go['closure'])
             source_check(plan);monitor(True)
             state['state']='android_inputs_observed_not_packaged';save()
             return
@@ -594,14 +848,15 @@ def execute(plan, go, plan_sha,observe=False):
         sources=snapshot(plan,monitor)
         provenance=Path(plan['output'])/'provenance';provenance.mkdir()
         a.write(provenance/'binding.json',plan)
-        for n,ref in enumerate(exact_refs(list(pins(plan['producers']))+list(pins(plan['companions']))).values()):
-            a.stream_copy(a.verify(ref),provenance/(str(n)+'-'+Path(ref['path']).name))
+        index_ref=distribute_provenance(plan,go['closure'])
         a.stream_copy(evidence/'android-static-proof.json',provenance/'android-static-proof.json')
         static_ref=dict(path='provenance/android-static-proof.json',**{k:v for k,v in a.identity(provenance/'android-static-proof.json').items() if k!='path'})
-        a.write(safe_target(plan['output'],'manifest.json'),manifest(plan,sources,static_ref))
+        final_manifest=manifest(plan,sources,static_ref)
+        final_manifest['provenanceIndex']=index_ref
+        write_role(safe_target(plan['output'],'manifest.json'),final_manifest,'manifest')
         bundle=evidence/(Path(plan['output']).name+'.zip')
         write_bundle(plan['output'],bundle)
-        validate_originals=lambda:[original_graph(plan,s,verify_all=True) for s in STAGES]
+        validate_originals=lambda:([original_graph(plan,s,verify_all=True) for s in STAGES],verify_closure(go['closure']))
         validate_originals();source_check(plan);monitor(True)
         state['state']='android_candidate_phone_pending';save()
         a.publish_result(evidence,dict(state=state['state'],manifest=a.identity(Path(plan['output'])/'manifest.json'),archive=a.identity(bundle)),
@@ -621,7 +876,7 @@ def observe_inputs(plan,evidence,monitor):
     for stage in STAGES:
         item,source,refs=original_graph(plan,stage,verify_all=True)
         appendix=plan['sourceAppendices'][stage]
-        refs += [appendix]+companion.appendix(dict(sourceAppendix=appendix),item,stage)
+        refs += [appendix]+appendix_records(appendix,item,stage)
         before=original_refs(refs)
         for ref in before:a.verify(ref)
         entries=[]
@@ -635,12 +890,13 @@ def observe_inputs(plan,evidence,monitor):
             entries.append(entry)
         receipt=dict(schema=companion.SCHEMA,origin=companion.origin(item,stage),sourceAppendix=appendix,
             evidenceTiming=companion.TIMING,driftBefore=before,driftAfter=before,companions=entries)
+        typed_receipt_guard(plan,stage,receipt,source)
         companion.validate(receipt,item,stage)
         for ref in before:a.verify(ref)
         for entry in entries:a.verify(entry['current'])
         source_check(plan);monitor(True)
         out=Path(evidence)/stage;out.mkdir()
-        a.write(out/'receipt.json',receipt)
+        write_role(out/'receipt.json',receipt,'receipt',stage,item)
         a.write(out/'seal.json',dict(schema='b5f-companion-seal-v1',receipt=a.identity(out/'receipt.json')))
 
 

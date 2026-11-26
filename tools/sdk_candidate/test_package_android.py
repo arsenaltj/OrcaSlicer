@@ -1,4 +1,4 @@
-"""Tiny Android fixtures; no SDK, native tools, device or real raw reads."""
+"""Synthetic payloads and read-only metadata; no SDK, native tools or real raw reads."""
 import copy
 import hashlib
 import importlib.util
@@ -85,8 +85,8 @@ class AndroidPackage(unittest.TestCase):
 
     def test_disabled_typed_lifecycle_and_exact_two_stages(self):
         plan=dict(toolSource='a'*40,sdkRepository='D:/sdk',toolFiles=[],output='D:/new',strip='strip',readelf='readelf',
-                  runtimeInputs={n:dict(stage=s,source=dict(path='D:/'+n)) for s,n in p.NAMES.items()})
-        plan['runtimeInputs']['libtbb.so']=dict(stage='model-android',source=dict(path='D:/libtbb.so'))
+                  runtimeInputs={n:dict(stage=s,source=dict(path='D:/'+n,bytes=1,sha256='a'*64)) for s,n in p.NAMES.items()})
+        plan['runtimeInputs']['libtbb.so']=dict(stage='model-android',source=dict(path='D:/libtbb.so',bytes=1,sha256='a'*64))
         plan['lifecycle']=p.life(plan)
         self.assertFalse(plan['lifecycle']['enabled'])
         with self.assertRaises(ValueError):p.validate_life(plan)
@@ -269,10 +269,15 @@ class AndroidPackage(unittest.TestCase):
             dep=root/'dependency';dep.mkdir();(dep/'NOTICE').write_bytes(b'upstream notice')
             manifest=root/'dependencies.json';manifest.write_text(json.dumps([dict(key='DEP_SOURCE',path=str(dep),files=[dict(path='NOTICE',sha256=a.identity(dep/'NOTICE')['sha256'])])]))
             cache=root/'CMakeCache.txt';cache.write_text('DEP_SOURCE:PATH='+str(dep)+'\n')
-            receipt=root/'receipt.json';receipt.write_text(json.dumps(dict(companions=[dict(role='cache',current=a.identity(cache))])))
+            receipts={}
+            for stage in p.STAGES:
+                folder=root/stage;folder.mkdir();receipt=folder/'receipt.json'
+                receipt.write_text(json.dumps(dict(schema=p.companion.SCHEMA,origin=dict(stage=stage),
+                    companions=[dict(role='cache',current=a.identity(cache))])))
+                receipts[stage]=dict(receipt=a.identity(receipt))
             archive=root/'cgal.zip';archive.write_bytes(b'archive fixture')
             plan=dict(sdkRepository=str(repo),output=str(out),git='never-git',dependencyManifest=a.identity(manifest),
-                      cgalArchive=a.identity(archive),companions={s:dict(receipt=a.identity(receipt)) for s in p.STAGES})
+                      cgalArchive=a.identity(archive),companions=receipts)
             with patch.object(p.subprocess,'check_output',return_value='\0'.join(names).encode()+b'\0'),patch.object(p,'CGAL_SHA',a.identity(archive)['sha256']):
                 sources=p.snapshot(plan,lambda:None)
             with zipfile.ZipFile(out/'source-snapshot.zip') as z:
@@ -281,6 +286,225 @@ class AndroidPackage(unittest.TestCase):
                 for ref in sources:self.assertEqual(hashlib.sha256(z.read(ref['path'])).hexdigest(),ref['sha256'])
             self.assertEqual((out/'include/orca/model/model_sdk_c.h').read_bytes(),(out/'include/orca/mobile/model_sdk_c.h').read_bytes())
             self.assertTrue((out/'licenses/dependencies/DEP_SOURCE/NOTICE').is_file())
+
+
+class AndroidConcreteContract(unittest.TestCase):
+    EVIDENCE=Path('D:/Codex/artifacts/task-20261125-b5f-sdk-package-tooling/evidence')
+    _actual_cache=None
+
+    @classmethod
+    def actual_metadata(cls):
+        if cls._actual_cache is None:
+            plan=json.loads((cls.EVIDENCE/'android-concrete-binding-preparation-v2/observe-plan-DISABLED.json').read_text(encoding='utf8'))
+            native=json.loads(Path('D:/Codex/artifacts/task-20261124-v102-desktop-sdk-sync/evidence/android-source-current-readonly-v1/android-current-source-map.json').read_text(encoding='utf8'))
+            receipts={}
+            for stage,item in plan['producers'].items():
+                index=p.companion.index(item);refs=list(index)
+                for filename in ('actual-compiler-inputs.json','new-object-inventory.json'):
+                    ref=next(r for r in index if Path(r['path']).name==filename)
+                    self_path=Path(ref['path']);assert self_path.stat().st_size<=4*1024*1024
+                    refs+=list(p.pins(json.loads(self_path.read_text(encoding='utf8'))))
+                refs += [item['rawSource']['raw'],dict(item['rawSource']['raw'],path=item['rawSource']['buildPath']),item['seal']]
+                appendix=plan['sourceAppendices'][stage]
+                data=json.loads(Path(appendix['path']).read_text(encoding='utf8'))
+                refs += [appendix]+[row['pin'] for row in data['entries']]
+                before=p.original_refs(refs)
+                current={row['role']:row['current'] for row in native['stages'][stage]['companionCurrentMap']}
+                entries=[dict(request,current=current[request['role']],firstObservedUtc='<FUTURE-FIRST-OBSERVED-UTC>',
+                              evidenceTiming=p.companion.TIMING) for request in plan['observationRequests'][stage]]
+                receipts[stage]=dict(schema=p.companion.SCHEMA,origin=p.companion.origin(item,stage),sourceAppendix=appendix,
+                    evidenceTiming=p.companion.TIMING,driftBefore=before,driftAfter=before,companions=entries)
+            cls._actual_cache=(plan,receipts)
+        return cls._actual_cache
+
+    def test_typed_json_bool_int_float_nested_order_and_no_mutation(self):
+        original=dict(a=[True,1,1.0,None],b={'x':False});before=copy.deepcopy(original)
+        self.assertTrue(p.typed_equal(original,dict(b={'x':False},a=[True,1,1.0,None])))
+        for left,right in [(True,1),(False,0),(1,1.0),({'x':[True]},{'x':[1]}),([1,2],[2,1]),({'x':1},{'x':1,'y':None})]:
+            self.assertFalse(p.typed_equal(left,right))
+            self.assertFalse(p.typed_member(left,[right]))
+        self.assertFalse(p.typed_contains({'row':{'proof':True}},{'proof':1}))
+        self.assertTrue(p.typed_contains({'row':{'proof':True,'extra':'kept'}},{'proof':True}))
+        self.assertEqual(p.typed_json(original),p.typed_json(before))
+        for bad in (float('nan'),float('inf'),{1:'wrong key'},(1,2),object()):
+            with self.assertRaises(ValueError):p.typed_json(bad)
+
+    def test_actual_sealed_true_integer_and_other_typed_substitutions_rejected(self):
+        plan,_=self.actual_metadata();original=p.typed_json(plan)
+        changes=[lambda q:q['producers']['model-android']['fullIndex']['files'][-1].update(identityFromCompletedProducerReceipt=1),
+                 lambda q:q['producers']['model-android']['fullIndex'].update(actualExitCode=0.0),
+                 lambda q:q['producers']['model-android']['terminal'].update(sdkExecuted=0),
+                 lambda q:q['producers']['model-android']['rawSource'].update(cleanBuild=1),
+                 lambda q:q['producers']['model-android']['fullIndex']['files'].reverse(),
+                 lambda q:q['producers']['model-android']['fullIndex'].update(extra='substitution')]
+        real_verify=a.verify
+        def metadata_only(ref):
+            self.assertLessEqual(Path(ref['path']).stat().st_size,4*1024*1024)
+            self.assertEqual(Path(ref['path']).suffix,'.json');return real_verify(ref)
+        with patch.object(a,'verify',metadata_only):
+            for change in changes:
+                changed=copy.deepcopy(plan);change(changed)
+                with self.assertRaises(ValueError):p.original_graph(changed,'model-android',verify_all=False)
+        self.assertEqual(p.typed_json(plan),original)
+
+    def test_actual_slicing_receipt_9154_full_records_fits_only_android_role_reader(self):
+        plan,receipts=self.actual_metadata()
+        self.assertEqual(len(receipts['slicing-android']['driftBefore']),9154)
+        with tempfile.TemporaryDirectory() as d:
+            for stage,receipt in receipts.items():
+                folder=Path(d)/stage;folder.mkdir();file=folder/'receipt.json'
+                before=p.typed_json(receipt)
+                p.write_role(file,receipt,'receipt',stage,plan['producers'][stage])
+                ref=a.identity(file)
+                if stage=='slicing-android':
+                    self.assertGreater(ref['bytes'],4*1024*1024)
+                    self.assertLess(ref['bytes'],p.RECEIPT_LIMIT)
+                    with self.assertRaises(ValueError):a.small_json(file)
+                loaded=p.read_role(ref,'receipt',stage,plan['producers'][stage])
+                self.assertEqual(p.typed_json(loaded),before)
+                self.assertEqual(p.typed_json(receipt),before)
+                for candidate in (dict(ref,sha256='0'*64),dict(ref,bytes=ref['bytes']+1)):
+                    with self.assertRaises(ValueError):p.read_role(candidate,'receipt',stage,plan['producers'][stage])
+
+    def test_role_caps_wrong_role_invalid_json_and_no_global_limit_change(self):
+        self.assertEqual(p.RECEIPT_LIMIT,16*1024*1024);self.assertEqual(p.MANIFEST_LIMIT,32*1024*1024)
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);file=root/'receipt.json'
+            value=dict(schema=p.companion.SCHEMA,origin=dict(stage='model-android'))
+            p.write_role(file,value,'receipt','model-android')
+            ref=a.identity(file)
+            for role,stage in [('manifest',None),('receipt','slicing-android'),('unknown',None)]:
+                with self.assertRaises(ValueError):p.read_role(ref,role,stage)
+            for role,name,limit in [('receipt','receipt.json',p.RECEIPT_LIMIT),('manifest','manifest.json',p.MANIFEST_LIMIT)]:
+                candidate=dict(path=str(root/name),bytes=limit+1,sha256='0'*64)
+                with patch.object(Path,'open',side_effect=AssertionError('over-limit file opened')):
+                    with self.assertRaises(ValueError):p.read_role(candidate,role,'model-android')
+            for raw in (b'{broken',b'{"x":1,"x":2}',b'{"x":NaN}'):
+                file.write_bytes(raw)
+                with self.assertRaises(ValueError):p.read_role(a.identity(file),'receipt','model-android')
+            other=root/'not-receipt.json';other.write_text(json.dumps(value))
+            with self.assertRaises(ValueError):p.read_role(a.identity(other),'receipt','model-android')
+            with patch.object(p,'RECEIPT_LIMIT',64),patch.object(Path,'open',side_effect=AssertionError('oversize write opened')):
+                with self.assertRaises(ValueError):p.write_role(file,dict(value,padding='x'*100),'receipt','model-android')
+
+    def test_actual_complete_source_name_manifest_budget_not_source_contents(self):
+        plan,_=self.actual_metadata()
+        names=json.loads((self.EVIDENCE/'android-concrete-contract-dev-v1/fixed-git-source-names.json').read_text(encoding='utf8'))['selectedTrackedNames']
+        metadata=Path(plan['dependencyManifest']['path'])
+        self.assertLessEqual(metadata.stat().st_size,16*1024*1024)
+        deps=json.loads(metadata.read_text(encoding='utf8'))
+        # Repository hashes are explicit length placeholders for this size-only fixture.
+        sources=[dict(path=n,sha256='0'*64) for n in names]
+        sources += [dict(path='dependencies/'+item['key']+'/'+row['path'],sha256=row['sha256']) for item in deps for row in item['files']]
+        p.register_names([row['path'] for row in sources]+['source-files.json','dependency-source-inputs.json'])
+        notices=['licenses/'+row['path'] for row in sources if
+                 Path(row['path']).name.upper().split('.')[0] in {'LICENSE','COPYING','COPYRIGHT','NOTICE'}
+                 or 'LICENSES' in [part.upper() for part in Path(row['path']).parts]]
+        generated=['source-snapshot.zip','licenses/nlohmann-json-LICENSE.MIT','dependencies/CGAL-6.2.1.zip',
+                   'include/orca/mobile/model_sdk_c.h','include/orca/model/model_sdk_c.h',
+                   'include/orca/mobile/slicing_sdk_c.h','manifest.json']
+        release_names=['android/arm64-v8a/'+name for name in plan['runtimeInputs']]
+        p.register_names(notices+generated+release_names)
+        fixture=dict(schemaVersion=p.SCHEMA,files=[],sourceFiles=sources,fixtureHashesOnly=True)
+        with tempfile.TemporaryDirectory() as d:
+            out=Path(d)/'payload';out.mkdir();file=out/'manifest.json'
+            p.write_role(file,fixture,'manifest');ref=a.identity(file)
+            self.assertGreater(ref['bytes'],12_319_817);self.assertLess(ref['bytes'],p.MANIFEST_LIMIT)
+            with self.assertRaises(ValueError):a.small_json(file)
+            parsed=p.read_role(ref,'manifest')
+            self.assertEqual(len(parsed['sourceFiles']),len(sources))
+            self.assertEqual(p.typed_json(parsed),p.typed_json(fixture))
+            p.write_bundle(out,Path(d)/'fixture.zip')
+            with self.assertRaises(ValueError):p.write_bundle(out,out/'recursive.zip')
+
+    def test_actual_distribution_index_preserves_all_refs_without_large_target_io(self):
+        plan,_=self.actual_metadata();fixture=copy.deepcopy(plan)
+        fixture['companions']={stage:None for stage in p.STAGES}
+        real_verify=a.verify
+        def metadata_only(ref):
+            self.assertEqual(Path(ref['path']).suffix,'.json')
+            self.assertLessEqual(Path(ref['path']).stat().st_size,4*1024*1024)
+            return real_verify(ref)
+        with patch.object(a,'verify',metadata_only):index=p.provenance_index(fixture,plan['toolFiles'])
+        self.assertLess(len(p.role_bytes(index,'evidence-index')),p.RECEIPT_LIMIT)
+        rows={p.key(row['identity']['path']):row for row in index['entries']}
+        for stage,item in fixture['producers'].items():
+            for ref in p.companion.index(item)+[item['seal'],item['rawSource']['raw']]:
+                self.assertTrue(p.typed_member(ref,rows[p.key(ref['path'])]['originalRefs']))
+        for row in rows.values():
+            if Path(row['identity']['path']).suffix.lower() in {'.so','.obj','.o','.exe','.log'} or Path(row['identity']['path']).name=='execution.json':
+                self.assertEqual(row['distribution'],'external-only');self.assertIsNone(row['payloadPath'])
+            if row['distribution']=='distributed-copy':
+                self.assertTrue(row['roles']);self.assertLessEqual(row['identity']['bytes'],p.RECEIPT_LIMIT)
+        self.assertTrue(any(Path(row['identity']['path']).name=='execution.json' and row['identity']['bytes']<p.RECEIPT_LIMIT
+                            and row['distribution']=='external-only' for row in rows.values()))
+
+    def test_distribution_copies_only_declared_small_metadata_and_post_verification_is_unfiltered(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);data=root/'source';data.mkdir();out=root/'output';out.mkdir()
+            terminal=data/'actual-terminal.json';terminal.write_text('{"original":true}')
+            execution=data/'execution.json';execution.write_bytes(b'execution stays external even tiny')
+            raw=data/'liborca_model_sdk_c.so';raw.write_bytes(b'raw stays external')
+            unknown=data/'unlisted.json';unknown.write_bytes(b'{}')
+            annotated=dict(a.identity(raw),identityFromCompletedProducerReceipt=True)
+            refs=[a.identity(terminal),a.identity(execution),annotated,a.identity(unknown)]
+            seal=data/'seal.json';seal.write_text('{}');refs.append(a.identity(seal))
+            item=dict(fullIndex=dict(files=refs),originalRecords={},seal=a.identity(seal),rawSource=dict(raw=a.identity(raw)))
+            plan=dict(output=str(out),producers={'model-android':item},companions={})
+            with patch.object(p,'original_graph',return_value=(item,{},refs+[a.identity(raw)])):
+                index_ref=p.distribute_provenance(plan)
+            index=p.read_role(dict(index_ref,path=str(out/index_ref['path'])),'evidence-index')
+            rows={p.key(row['identity']['path']):row for row in index['entries']}
+            self.assertEqual(len(rows[p.key(raw)]['originalRefs']),2)
+            self.assertEqual(rows[p.key(unknown)]['distribution'],'external-only')
+            self.assertTrue(terminal.exists() and execution.exists() and raw.exists())
+            copied=[out/row['payloadPath'] for row in rows.values() if row['distribution']=='distributed-copy']
+            self.assertTrue(copied)
+            self.assertFalse(any(path.name.endswith(('execution.json','.so','unlisted.json')) for path in copied))
+            calls=[]
+            with patch.object(a,'verify',side_effect=lambda ref:calls.append(ref) or Path(ref['path'])):
+                p.verify_closure(refs)
+            self.assertIn(p.key(raw),{p.key(ref['path']) for ref in calls})
+            self.assertIn(p.key(execution),{p.key(ref['path']) for ref in calls})
+            # A declared metadata role still cannot bypass the distribution budget.
+            oversize=dict(a.identity(seal),bytes=p.RECEIPT_LIMIT+1)
+            oversized_refs=[ref for ref in refs if p.key(ref['path'])!=p.key(seal)]+[oversize]
+            oversized_item=dict(item,seal=oversize,fullIndex=dict(files=oversized_refs))
+            oversized_plan=dict(plan,producers={'model-android':oversized_item})
+            with patch.object(p,'original_graph',return_value=(oversized_item,{},oversized_refs)):
+                budget_index=p.provenance_index(oversized_plan)
+            row=next(row for row in budget_index['entries'] if p.key(row['identity']['path'])==p.key(seal))
+            self.assertEqual(row['roles'],['producer-seal'])
+            self.assertEqual(row['distribution'],'external-only');self.assertIsNone(row['payloadPath'])
+            self.assertIn('exceeds16MiB',row['reason'])
+
+    def test_typed_actual_receipt_and_appendix_guards_precede_old_validator(self):
+        plan,receipts=self.actual_metadata()
+        original=p.typed_json(plan)
+        # These calls inspect only JSON/tool-source metadata. They do not execute the original verifier.
+        real_verify=a.verify
+        def metadata_only(ref):
+            path=Path(ref['path'])
+            self.assertTrue(path.suffix=='.json' or path.name=='verify_approved_tbb.py')
+            self.assertLessEqual(path.stat().st_size,4*1024*1024)
+            return real_verify(ref)
+        with patch.object(a,'verify',metadata_only),patch.object(p.companion,'validate',side_effect=AssertionError('no actual validator')):
+            for stage in p.STAGES:p.typed_receipt_guard(plan,stage,receipts[stage])
+            modified=json.loads(json.dumps(receipts['model-android']))
+            for label in ('driftBefore','driftAfter'):
+                annotated=next(r for r in modified[label] if r.get('identityFromCompletedProducerReceipt') is True)
+                annotated['identityFromCompletedProducerReceipt']=1
+            with self.assertRaisesRegex(ValueError,'typed.*coverage'):p.typed_receipt_guard(plan,'model-android',modified)
+            modified=copy.deepcopy(receipts['model-android']);modified['origin']['terminal']['sdkExecuted']=0
+            with self.assertRaisesRegex(ValueError,'typed receipt origin'):p.typed_receipt_guard(plan,'model-android',modified)
+            modified=copy.deepcopy(receipts['model-android']);modified['companions'][0]['basis']['normalPlan']['bytes']=15988.0
+            with self.assertRaisesRegex(ValueError,'typed observation basis'):p.typed_receipt_guard(plan,'model-android',modified)
+            appendix=json.loads(Path(plan['sourceAppendices']['model-android']['path']).read_text(encoding='utf8'))
+            appendix['origin']['terminal']['sdkExecuted']=0
+            with patch.object(a,'small_json',return_value=appendix):
+                with self.assertRaisesRegex(ValueError,'typed appendix origin'):
+                    p.appendix_records(plan['sourceAppendices']['model-android'],plan['producers']['model-android'],'model-android')
+        self.assertEqual(p.typed_json(plan),original)
 
 
 class AndroidPinTracks(unittest.TestCase):
@@ -406,10 +630,15 @@ class AndroidNamespace(unittest.TestCase):
         files=refs if refs is not None else [dict(path='NOTICE',sha256=a.identity(dep/'NOTICE')['sha256'])]
         manifest=root/'dependency.json';manifest.write_text(json.dumps([dict(key=k,path=str(dep),files=files) for k in keys]))
         cache=root/'cache';cache.write_text(''.join(k+':PATH='+str(dep)+'\n' for k in keys),encoding='utf8')
-        receipt=root/'receipt';receipt.write_text(json.dumps(dict(companions=[dict(role='cache',current=a.identity(cache))])))
+        receipts={}
+        for stage in p.STAGES:
+            folder=root/stage;folder.mkdir();receipt=folder/'receipt.json'
+            receipt.write_text(json.dumps(dict(schema=p.companion.SCHEMA,origin=dict(stage=stage),
+                companions=[dict(role='cache',current=a.identity(cache))])))
+            receipts[stage]=dict(receipt=a.identity(receipt))
         cgal=root/'cgal';cgal.write_bytes(b'fixture archive')
         plan=dict(sdkRepository=str(repo),output=str(out),git='never',dependencyManifest=a.identity(manifest),
-                  cgalArchive=a.identity(cgal),companions={s:dict(receipt=a.identity(receipt)) for s in p.STAGES})
+                  cgalArchive=a.identity(cgal),companions=receipts)
         return plan, ('\0'.join(names+list(tracked_extra))+'\0').encode()
 
     def assert_snapshot_rejected_without_writes(self,plan,tracked):
@@ -487,7 +716,7 @@ class AndroidNamespace(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);out=root/'out';out.mkdir();(out/'payload').write_bytes(b'tiny')
             declared=[dict(path='payload',sizeBytes=4,sha256=hashlib.sha256(b'tiny').hexdigest())]
-            (out/'manifest.json').write_text(json.dumps(dict(files=declared)))
+            (out/'manifest.json').write_text(json.dumps(dict(schemaVersion=p.SCHEMA,files=declared)))
             p.write_bundle(out,root/'bundle.zip')
             with zipfile.ZipFile(root/'bundle.zip') as z:self.assertEqual(set(z.namelist()),{'payload','manifest.json'})
             (out/'extra').write_bytes(b'extra')
@@ -501,7 +730,7 @@ class AndroidNamespace(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);out=root/'out';out.mkdir()
             for names in (('../escape',),('a','A'),('a','a/b'),('manifest.json',)):
-                (out/'manifest.json').write_text(json.dumps(dict(files=[dict(path=n,sizeBytes=0,sha256='0'*64) for n in names])))
+                (out/'manifest.json').write_text(json.dumps(dict(schemaVersion=p.SCHEMA,files=[dict(path=n,sizeBytes=0,sha256='0'*64) for n in names])))
                 with patch.object(p.zipfile,'ZipFile',side_effect=AssertionError('ZIP opened early')) as writer:
                     with self.assertRaises(ValueError):p.write_bundle(out,root/'bad.zip')
                     writer.assert_not_called()
