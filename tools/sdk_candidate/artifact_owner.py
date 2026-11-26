@@ -77,7 +77,7 @@ def runtime():
 
 
 def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=7200,
-              mode='artifact', *, permitted_commands, permitted_images, env=None, cwd=None):
+              mode='artifact', *, permitted_commands, permitted_images, env=None, cwd=None, lifecycle_profile=None):
     global TRACE_CONTEXT
     assert mode == 'artifact', 'artifact protocol only'
     assert argv in permitted_commands, 'command outside exact artifact contract'
@@ -91,9 +91,20 @@ def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=720
     errors = record.setdefault('monitorErrors', [])
     import ctypes
     from api_context import Context
+    if lifecycle_profile is not None:
+        from suspended_root import PROFILE, SuspendedContext
+        assert lifecycle_profile == PROFILE, 'unknown lifecycle profile'
+        from owner_preflight import commands as fixed_commands, REPO
+        assert permitted_commands == fixed_commands() and argv in fixed_commands(), 'fixed suspended SDK fixtures only'
+        assert timeout == 60 and launch_cwd == str(REPO), 'fixed suspended budget/cwd only'
+        Context = SuspendedContext
     TRACE_CONTEXT = Context(record, save, errors, argv, lambda:getattr(ctypes,'get_last_error',lambda:None)(),
                             lambda value:getattr(ctypes,'set_last_error',lambda v:None)(value) if value is not None else None,
                             journal_path=Path(log_path).with_suffix('.api.jsonl'))
+    if lifecycle_profile is not None:
+        from suspended_root import runtime as suspended_runtime
+        Domain, sample, heavy, identity, now, attempt, remember, wait = suspended_runtime(
+            runtime, TRACE_CONTEXT, lambda:Path(cancel_file).exists())
     domain = child = None
     code = None
     failure = None
@@ -179,6 +190,10 @@ def run_owned(argv, log_path, record, save, cancel_file, checkpoint, timeout=720
         record.update(state='failed', cancelReason=failure or 'monitor_error')
         persist()
     TRACE_CONTEXT = None
+    if lifecycle_profile is not None:
+        record['suspendedRoot']['cleanup'] = record.get('ownClosure', 'INCOMPLETE')
+        record['suspendedRoot']['qualification'] = ('QUALIFIED' if code == 0 and failure is None and not errors
+                                                   else 'FAILED')
     assert code == 0 and failure is None and not errors, 'artifact first failure; no next command'
 
 
