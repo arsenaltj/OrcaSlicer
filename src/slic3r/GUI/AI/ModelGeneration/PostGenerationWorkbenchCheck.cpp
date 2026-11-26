@@ -25,7 +25,7 @@ bool ModelGenerationPanel::apply_pending_workbench_ai_palette(const boost::files
 {
     if (!m_workbench_auto_palette_pending || revision != m_workbench_auto_palette_revision ||
         source != m_workbench_auto_palette_path || revision != m_sequence || source != m_displayed_model_path ||
-        !m_model_preview_ready || m_model_preview->restored_persisted_color_trial()) {
+        !m_model_preview_ready || !m_model_preview->uses_default_workbench_palette()) {
         clear_pending_workbench_ai_palette();
         return false;
     }
@@ -131,7 +131,7 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
         saved_appearance ? WorkbenchCheckPurpose::SavedModelReadOnly : WorkbenchCheckPurpose::GeneralImport;
     const bool native_partition_requested = !m_model_preview->keeps_original_history_colors() &&
         workbench_initial_partition_requested(
-        automatic, source_appearance.valid(), portrait_recheck,
+        automatic && m_model_preview->uses_default_workbench_palette(), source_appearance.valid(), portrait_recheck,
         m_model_preview->restored_persisted_color_trial(), bound_edits);
     // Shared v11 partitioning owns automatic repair before clustering. Checks
     // remain read-only whenever they will hand the model to that partition, or

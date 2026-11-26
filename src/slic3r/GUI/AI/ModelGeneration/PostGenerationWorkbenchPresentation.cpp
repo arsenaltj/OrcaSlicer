@@ -348,7 +348,9 @@ bool ModelGenerationPanel::position_workbench_check_card(bool preparing)
     const wxPoint preferred(
         viewport.x + std::max(0, (viewport.width - card_size.x) / 2),
         viewport.y + std::max(0, (viewport.height - card_size.y) / 2));
-    const wxRect owner = wxGetTopLevelParent(canvas)->GetScreenRect();
+    auto* owner_window = wxGetTopLevelParent(canvas);
+    wxRect owner(owner_window->ClientToScreen(wxPoint()), owner_window->GetClientSize());
+    owner.Deflate(FromDIP(8));
     const wxPoint position(
         std::clamp(preferred.x, owner.x, owner.x + std::max(0, owner.width - card_size.x)),
         std::clamp(preferred.y, owner.y, owner.y + std::max(0, owner.height - card_size.y)));
@@ -446,7 +448,7 @@ void ModelGenerationPanel::on_workbench_card_overlay_size(wxSizeEvent& event)
 void ModelGenerationPanel::hide_workbench_check_card()
 {
     m_workbench_check_card_visible = false;
-    if (m_workbench_honor_semantic_active && m_finishing_workbench && m_workbench_presented &&
+    if (workbench_honor_optimization_status() && m_finishing_workbench && m_workbench_presented &&
         m_workbench_shell && m_workbench_shell->IsShownOnScreen()) {
         update_workbench_check_card();
         return;
@@ -473,11 +475,9 @@ void ModelGenerationPanel::cancel_workbench_check()
         return;
     }
     if (m_native_workbench_partition_running && m_native_workbench_partition_cancel) {
-        m_native_workbench_partition_cancel->store(true);
+        if (m_native_workbench_partition_cancel->exchange(true)) return;
+        update_workbench_check_card();
         if (m_model_preview) m_model_preview->fail_model_installation_frame();
-        if (m_workbench_check_message)
-            m_workbench_check_message->SetLabel(_L("正在取消严格修复，当前模型保持不变……"));
-        if (m_workbench_check_cancel_button) m_workbench_check_cancel_button->Disable();
         return;
     }
     if (!m_workbench_check_running || !m_workbench_check_cancel) return;
@@ -898,8 +898,9 @@ void ModelGenerationPanel::update_workbench_check_card()
     if (!m_workbench_check_card || !m_workbench_check_modal) return;
     const auto& result = m_workbench_check_result;
     const bool native_repair = m_native_workbench_partition_running;
+    const auto* honor_progress = workbench_honor_optimization_status();
     const auto mode = workbench_floating_card_mode(m_finishing_workbench, m_workbench_presented,
-        m_workbench_honor_semantic_active, m_workbench_check_card_visible,
+        honor_progress != nullptr, m_workbench_check_card_visible,
         m_workbench_check_running, m_workbench_auto_repair && m_finishing_running,
         native_repair, result);
     if (mode == WorkbenchFloatingCardMode::None || !m_workbench_shell ||
@@ -917,6 +918,9 @@ void ModelGenerationPanel::update_workbench_check_card()
     const bool honor_semantic = mode == WorkbenchFloatingCardMode::HonorSuiteSemantic;
     const bool saving_repair = m_workbench_auto_repair && m_finishing_running;
     const bool running = native_repair || honor_semantic || m_workbench_check_running || saving_repair;
+    const auto cancel = native_repair ? m_native_workbench_partition_cancel :
+        saving_repair ? m_finishing_canceled : m_workbench_check_cancel;
+    const bool cancel_requested = cancel && cancel->load();
     if (!honor_semantic) m_workbench_check_card_visible = true;
     const wxColour modal_text(238, 240, 244);
     for (auto* label : {m_workbench_check_phase, m_workbench_check_message}) {
@@ -928,8 +932,8 @@ void ModelGenerationPanel::update_workbench_check_card()
     if (m_model_preview) m_model_preview->set_workbench_input_locked(true);
     if (m_workbench_shell && m_workbench_shell->IsEnabled()) m_workbench_shell->Disable();
     wxString phase;
-    if (native_repair) phase = _L("修复模型");
-    else if (honor_semantic) phase = _L("正在应用荣耀耗材套装");
+    if (honor_progress) phase = from_u8(honor_progress);
+    else if (native_repair) phase = _L("修复模型");
     else if (m_workbench_check_running) {
         switch (result.phase) {
         case WorkbenchCheckPhase::Repairing: phase = _L("修复模型"); break;
@@ -940,10 +944,12 @@ void ModelGenerationPanel::update_workbench_check_card()
     else phase = from_u8(workbench_check_status_line(result));
     bool modal_layout_changed = set_workbench_label(m_workbench_check_phase, phase);
     wxString message = native_repair
-        ? from_u8(m_workbench_operation_notice)
+        ? honor_progress ? _L("正在准备配色区域……") : from_u8(m_workbench_operation_notice)
         : honor_semantic ? m_workbench_honor_semantic_message
         : m_workbench_check_running ? from_u8(result.summary) : wxString();
-    if (honor_semantic && message.empty())
+    if (native_repair && cancel_requested)
+        message = honor_progress ? _L("正在取消人像优化……") : _L("正在取消严格修复，当前模型保持不变……");
+    if (m_workbench_honor_semantic_active && message.empty())
         message = _L("正在识别人像区域并匹配肤色、头发、眼白、牙齿和嘴唇，请稍候……");
     else if (!honor_semantic && saving_repair)
         message = _L("安全修复已通过复检，正在自动保存……");
@@ -956,15 +962,12 @@ void ModelGenerationPanel::update_workbench_check_card()
         m_workbench_check_message->Wrap(FromDIP(376));
         modal_layout_changed = true;
     }
+    modal_layout_changed = set_workbench_label(m_workbench_check_cancel_button,
+        honor_progress ? _L("取消优化") : _L("取消检查")) || modal_layout_changed;
     modal_layout_changed = set_workbench_shown(m_workbench_check_cancel_button,
         native_repair || (!honor_semantic && (m_workbench_check_running || saving_repair))) || modal_layout_changed;
-    const bool cancel_requested = native_repair
-        ? m_native_workbench_partition_cancel && m_native_workbench_partition_cancel->load()
-        : saving_repair
-            ? m_finishing_canceled && m_finishing_canceled->load()
-            : m_workbench_check_cancel && m_workbench_check_cancel->load();
     set_workbench_enabled(m_workbench_check_cancel_button,
-        running && !honor_semantic && !cancel_requested);
+        running && !honor_semantic && cancel && !cancel_requested);
     const bool review = !honor_semantic && !running && result.candidate_status != RepairCandidateStatus::Ready;
     const bool retry = review && result.status != WorkbenchCheckStatus::Normal;
     set_workbench_label(m_workbench_check_continue_button, _L("重新检查修复"));
@@ -1342,11 +1345,13 @@ void ModelGenerationPanel::apply_workbench_snapshot()
     set_workbench_enabled(m_workbench_slicing, can_import);
     set_workbench_tooltip(m_workbench_check, topology_normal
         ? _L("拓扑正常；点击重新检查") : _L("检查并修复模型，复检通过后自动保存新版本；原模型保留。"));
-    wxString check_text = m_native_workbench_partition_running ? from_u8(m_workbench_operation_notice) :
+    const auto* honor_progress = workbench_honor_optimization_status();
+    wxString check_text = honor_progress ? from_u8(honor_progress) :
+        m_native_workbench_partition_running ? from_u8(m_workbench_operation_notice) :
         m_workbench_auto_repair && m_finishing_running ? _L("正在保存修复结果……") :
         check_status;
     wxString check_tooltip = check_text;
-    if (!m_native_workbench_partition_running && !m_finishing_running) {
+    if (!honor_progress && !m_native_workbench_partition_running && !m_finishing_running) {
         const auto next_step = workbench_check_next_step(snapshot.check);
         if (!next_step.empty()) check_tooltip += "\n" + from_u8(next_step);
     }
@@ -1379,7 +1384,7 @@ void ModelGenerationPanel::apply_workbench_snapshot()
             ? _L("当前预览使用的逻辑颜色数量") : trial.honor_suite_fallback_reason
         : original_appearance_reason);
     layout_changed = set_wrapped_workbench_text(m_workbench_palette_status, palette_status,
-        FromDIP(210), false) || layout_changed;
+        FromDIP(210), true) || layout_changed;
     layout_changed = set_workbench_shown(m_workbench_palette_status, !palette_status.empty()) || layout_changed;
     if (layout_changed) {
         m_workbench_shell->Layout();

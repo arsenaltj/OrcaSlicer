@@ -375,7 +375,8 @@ public:
     void load(std::shared_ptr<const PreviewPalette::Histogram> histogram, std::vector<Color> colors,
               std::string geometry_id = {},
               std::shared_ptr<const PreviewPalette::AutomaticColorUnits> automatic_units = {},
-              const std::vector<Color>* history_colors = nullptr) {
+              const std::vector<Color>* history_colors = nullptr,
+              std::optional<PreviewPalette::AutomaticColorBasis> default_basis = {}) {
         close_workbench_palette_details();
         m_initial_trial.reset();
         m_suite_region_binding.reset();
@@ -389,7 +390,15 @@ public:
         read_project();
         int initial_count = int(PreviewPalette::initial_trial_color_count());
         wxString initial_notice;
-        if (history_colors) {
+        const bool use_default = !history_colors && default_basis && default_basis->valid() &&
+            default_basis->geometry_id == m_geometry_id && default_basis->requested_count == size_t(initial_count);
+        if (use_default) {
+            m_automatic_basis = std::move(*default_basis);
+            m_mapping_colors = m_colors = m_automatic_basis.source_palette;
+            if (m_colors.size() < size_t(initial_count))
+                initial_notice = wxString::Format(_L("原始配色证据只能形成 %d 个可区分颜色，已应用实际色数。"),
+                    int(m_colors.size()));
+        } else if (history_colors) {
             m_mapping_colors = m_colors = *history_colors;
         } else if (m_histogram && m_colors.size() != size_t(initial_count)) {
             m_colors = m_histogram->trial_palette(size_t(initial_count), {}, true);
@@ -402,7 +411,7 @@ public:
         }
         if (!m_colors.empty()) initial_count = int(m_colors.size());
         m_suggestion_colors = m_colors;
-        set_current_automatic_basis(size_t(initial_count), m_mapping_colors);
+        if (!use_default) set_current_automatic_basis(size_t(initial_count), m_mapping_colors);
         m_color_card_remap = {};
         m_color_card_palette.clear();
         m_semantic_colors.clear(); m_semantic_mapping.clear(); m_semantic_card.clear(); m_semantic_roles.clear();
@@ -412,7 +421,7 @@ public:
         sync_active_palette_state();
         set_semantic_status(wxEmptyString, false);
         const int source = history_colors && !m_colors.empty() ? 2 : 0;
-        m_enabled = false; set_source_internal(source); m_count->SetValue(initial_count); m_fidelity->SetValue(true);
+        m_enabled = use_default; set_source_internal(source); m_count->SetValue(initial_count); m_fidelity->SetValue(true);
         m_automatic_count = initial_count; m_manual_count = initial_count; m_project_count = 0; m_last_source = source;
         m_lighting->SetValue(false);
         m_notice = initial_notice;
@@ -938,6 +947,10 @@ public:
     }
     const std::shared_ptr<const ModelPreviewInitialColorState>& initial_trial_snapshot() const {
         return m_initial_trial;
+    }
+    bool uses_default_workbench_palette() const {
+        return m_initial_trial && !m_workbench_count_requests.pending() && !m_workbench_count_requests.tracking() &&
+            m_initial_trial->matches_default_workbench_palette(m_geometry_id, state());
     }
     bool set_initial_trial_snapshot(std::shared_ptr<const ModelPreviewInitialColorState> initial) {
         if (!initial || initial->geometry_id != m_geometry_id) return false;
