@@ -1,3 +1,11 @@
+# MOB-LOCAL-MFG-SKIRT-DIRECTIVE-01 repair1 source (2026-11-27)
+
+Mainline: continue the nonGLB Android manufacture/slice flow; b5f original phone first failure and all unrelated held histories remain.
+This round: inspector validates native skirt_start_angle plate metadata (finite [-180,180], complete scalar, no conflicting duplicate), then load_project verifies the actual Native PlateData option before existing single/explicit selected plate configuration application. Unknown directives and invalid metadata on every source plate still block. Original source bytes are retained.
+Open: source and pure fixture checks only; no compiler, SDK loading, Android rebuild or phone retry. Public-CABI positive/negative/source-override/selected-plate/export/slice regression assertions are prepared, not executed.
+Next: freeze this source, independent review, then root-authorized incremental Android producer/package/consumer rebuild and different phone QA using the preserved first 3MF. No Windows native build.
+Plan change: narrow compatibility bug repair, no new contract, process-prefix key, UI route, unsupported-content waiver or GLB/16KiB/physical qualification.
+
 # NATIVE-HOST-B6-THERMAL-01 empty-map oracle correction (2026-11-25)
 
 Mainline: original Native task and same B6 issue, pre-arbitration3/post-arbitration1 failures preserved; next actual failed verification would be post2.

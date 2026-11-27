@@ -65,3 +65,20 @@ Honor routing emits physical `T` commands while cooling adjustments, fan configu
 The host `orca_cooling_tool_domain_test <new-evidence-dir>` uses the actual writer/configuration, CoolingBuffer and PressureEqualizer. It saves physical G-code, then compares derived logical analysis views across sparse T4/T5, independent support T3, permutation T1/T0, identity six tools and generic routing. Unequal fan/slowdown/bridge/support parameters and material diameters provide behavioral oracles; tests cover transitions, flush persistence, real fan/feedrate output, nonzero pressure slope and invalid/unmapped/inactive tools. This is a small Core integration regression, not device/firmware or complete manufacturing acceptance. The excluded baseline target is solely for explicitly recorded historical-Core comparison; `BuildProjectReferences=false` must never qualify a production SDK or a fixed implementation.
 
 Enhanced `repair_mesh` is generated from the complete original enhanced implementation behind a whole-source SHA guard. The separate desktop full strict repair remains unsupported. No fake strict implementation or GUI object is linked. Run the real host regression with `python mobile-slicing/tests/color_bridge_native_test.py <fresh-slicing-build> <full-model-dll> <new-evidence-dir>`; it exercises authoritative editing/round-trip, actual G-code, sparse physical tools, independent support, negative bindings/config/source cases and repair consent. Build and runtime evidence must be evaluated for the exact candidate; these source contracts do not qualify an older Android binary or a physical print.
+
+### Native plate skirt angle
+
+The 3MF inspector accepts `skirt_start_angle` as an ordinary native plate option,
+including the `-135` value emitted by native project export. It requires one
+finite scalar in `[-180,180]`; conflicting duplicates, malformed values and
+unknown directives remain output blockers on every plate, including unselected
+plates. After native import, the SDK checks the actual PlateData angle against
+the inspected value before applying the single or explicitly selected plate's
+configuration. The unchanged source archive remains authoritative; request
+configuration overrides cannot erase invalid source metadata.
+
+`tests/skirt_angle_cases.py` provides copy-only fixtures and assertions used by
+`plate_process_public_test.py` for real public-CABI import, source preservation,
+explicit override, selected plates, export/reimport and effective slice config.
+Its standalone unittest checks fixture preparation only, without loading an SDK.
+Actual CABI/Android execution is a separate qualification step.

@@ -144,6 +144,19 @@ struct ThreeMfScan {
                     else {
                         if(key.rfind("orca_workbench_slicing_",0)==0 || key.rfind("orca_workbench_curve_",0)==0)
                             feature("plate_directive:"+key,"blocked","Workbench sessions and layer curves are not executed by this SDK");
+                        // Native export writes this ordinary plate option even for
+                        // a freshly manufactured project. Validate before directives
+                        // overwrite duplicates or Native silently drops bad angles.
+                        if(key=="skirt_start_angle") {
+                            try {
+                                if(value.empty() || value.size()>1024) throw std::invalid_argument("SKIRT_START_ANGLE_INVALID_LENGTH");
+                                const double angle=Slic3r::PlateProcess::number(value);
+                                Slic3r::PlateProcess::range(angle,-180.,180.);
+                                if(plate.contains("validatedNativeSkirtStartAngle") && plate["validatedNativeSkirtStartAngle"].get<double>()!=angle)
+                                    throw std::invalid_argument("SKIRT_START_ANGLE_CONFLICTING_DUPLICATE");
+                                plate["validatedNativeSkirtStartAngle"]=angle;
+                            } catch(const std::exception& error) {feature("invalid_plate_directive:skirt_start_angle","blocked",error.what());}
+                        }
                         if(Slic3r::PlateProcess::has_prefix(key)) {
                             try {
                                 const auto option=key.substr(Slic3r::PlateProcess::prefix.size());
@@ -245,7 +258,7 @@ struct ThreeMfScan {
         };
         for(auto& source_plate:result["plates"]) {
             const auto& directives=source_plate.at("directives");
-            const std::set<std::string> known{"locked","bed_type","print_sequence","first_layer_print_sequence","other_layers_print_sequence","other_layers_print_sequence_nums","spiral_mode","spiral_vase_mode","filament_map_mode","filament_maps","filament_volume_maps","thumbnail_file","thumbnail_no_light_file","top_file","pick_file"};
+            const std::set<std::string> known{"locked","bed_type","skirt_start_angle","print_sequence","first_layer_print_sequence","other_layers_print_sequence","other_layers_print_sequence_nums","spiral_mode","spiral_vase_mode","filament_map_mode","filament_maps","filament_volume_maps","thumbnail_file","thumbnail_no_light_file","top_file","pick_file"};
             for(auto it=directives.begin();it!=directives.end();++it)
                 if(!known.count(it.key())&&!Slic3r::PlateProcess::has_prefix(it.key())&&active(it.value()))feature("plate_directive:"+it.key(),"blocked","Unknown per-plate directive cannot be dropped, including selected multi-plate projects");
             for(const char* key:{"filament_maps","filament_volume_maps"}) {
@@ -277,7 +290,7 @@ struct ThreeMfScan {
         if(result["plates"].size()==1) {
             if(!result["plates"][0]["id"].is_string() || result["plates"][0]["id"].get<std::string>().empty()) feature("invalid_plate_identity","blocked","Current plate identity is missing");
             result["currentPlate"]=result["plates"][0]["id"];
-            const std::set<std::string> supportedDirectives{"locked","bed_type","print_sequence","first_layer_print_sequence","other_layers_print_sequence","other_layers_print_sequence_nums","spiral_mode","spiral_vase_mode","filament_map_mode","filament_maps","filament_volume_maps","thumbnail_file","thumbnail_no_light_file","top_file","pick_file"};
+            const std::set<std::string> supportedDirectives{"locked","bed_type","skirt_start_angle","print_sequence","first_layer_print_sequence","other_layers_print_sequence","other_layers_print_sequence_nums","spiral_mode","spiral_vase_mode","filament_map_mode","filament_maps","filament_volume_maps","thumbnail_file","thumbnail_no_light_file","top_file","pick_file"};
             for(auto it=result["plates"][0]["directives"].begin();it!=result["plates"][0]["directives"].end();++it)
                 if(!supportedDirectives.count(it.key()) && !Slic3r::PlateProcess::has_prefix(it.key()) && active(it.value())) feature("plate_directive:"+it.key(),"blocked","Unsupported per-plate directive must not be dropped");
             std::set<std::string> owned;

@@ -318,11 +318,17 @@ LoadedProject load_project(const std::string& inputPath, const Json& configOverr
         for(const auto& declared:inspection.at("plates")) {
             const auto id=declared.value("id",std::string());
             if((nativePlateId>0 && id!=selectedPlateId) || (nativePlateId==0 && plates.size()!=1)) continue;
-            if(!declared.contains("validatedNativeProcess")) continue;
+            if(!declared.contains("validatedNativeProcess") && !declared.contains("validatedNativeSkirtStartAngle")) continue;
             const auto found=std::find_if(plates.begin(),plates.end(),[&](const auto* plate){
                 return plate && std::to_string(plate->plate_index+1)==id;
             });
             if(found==plates.end()) throw std::runtime_error("PLATE_PROCESS_NATIVE_METADATA_MISSING");
+            if(declared.contains("validatedNativeSkirtStartAngle")) {
+                const auto* actual=(*found)->config.option<ConfigOptionFloat>("skirt_start_angle");
+                if(!actual || !std::isfinite(actual->value) || actual->value!=declared.at("validatedNativeSkirtStartAngle").get<double>())
+                    throw std::runtime_error("PLATE_NATIVE_SKIRT_START_ANGLE_INSPECTION_MISMATCH");
+            }
+            if(!declared.contains("validatedNativeProcess")) continue;
             for(auto it=declared.at("validatedNativeProcess").begin();it!=declared.at("validatedNativeProcess").end();++it) {
                 const auto* actual=(*found)->config.option(it.key());
                 if(!actual || actual->serialize()!=it.value().get<std::string>())

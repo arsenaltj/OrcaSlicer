@@ -6,6 +6,7 @@ import argparse,copy,ctypes as C,hashlib,json,os,re,zipfile
 from pathlib import Path
 import xml.etree.ElementTree as ET
 from three_mf_component_world_test import make_source,IDENTITY
+from skirt_angle_cases import exercise as exercise_skirt_angles
 
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('library',type=Path);ap.add_argument('output',type=Path);a=ap.parse_args()
@@ -61,6 +62,7 @@ def main():
                 dst.writestr(info,data)
         return path
     try:
+        exercise_skirt_angles(run, success, basis, root)
         valid=project('all11',legal)
         imported=success('all11-import',valid)
         native=imported['project'];assert not native['blockingFeatures'],native['blockingFeatures']
