@@ -1,5 +1,15 @@
 [
   {
+    "pr": 90,
+    "run": 46022779572,
+    "head": "88552dab7c618560276e6cfb68e8b565562b1c53",
+    "base": "7c7298edc895b1655138f2736bff563d339221aa",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "feat(sdk): 集成1.0.2上色、多材料切片与虚拟打印机",
+    "path": "pr/90/88552dab7c618560276e6cfb68e8b565562b1c53/46022779572",
+    "created": "2026-11-27T15:15:32+00:00"
+  },
+  {
     "pr": 89,
     "run": 45922457445,
     "head": "97f1e175374157a923cd9c440a0be17aa0e226f1",

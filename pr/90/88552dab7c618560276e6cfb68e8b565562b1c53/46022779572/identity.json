@@ -1,0 +1,27 @@
+{
+  "pr": 90,
+  "run": 46022779572,
+  "head": "88552dab7c618560276e6cfb68e8b565562b1c53",
+  "base": "7c7298edc895b1655138f2736bff563d339221aa",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "feat(sdk): 集成1.0.2上色、多材料切片与虚拟打印机",
+  "path": "pr/90/88552dab7c618560276e6cfb68e8b565562b1c53/46022779572",
+  "created": "2026-11-27T15:15:32+00:00",
+  "files": {
+    "index.html": "1f153a247bb8acc273e2785adad87b743b7156703de63159f95059afba031b7e",
+    "details.html": "22268e89d6af9d969571599b684423b04c96746d8e23ae7a197caa0e787091c1",
+    "report.json": "5512121f9d0edd3ec424c83e11ac08b7a5d01b612b239d2264ef1314326e0797",
+    "summary.md": "6385d313c2191e93170f16836dc4a328e2b4e8fc0d45c8ac716dec4822c49338",
+    "archify-receipts.json": "ea3df634d4f3a3c8ed311d3ea80c57e954e05c07cf800d297e282004f385fd81",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l0-platform.html": "99935095d905d448319e796148e04715478224ba9576c63820c2d1ba37e75aa2",
+    "l0-platform.json": "cf11ddcc6ebffc6bb2ab8f18b82871e1b72d147778df05af8f63b1c196dcaefa",
+    "l1-modules.html": "e81cdb54a3245c98a3492ddba335b26e92cdb81e60f8ae66586af0dd5b46d50a",
+    "l1-modules.json": "7ba1b4b423d6fefcc5744cc514c794fd7845e7fbe4cc9c1b784350c64628672f",
+    "l2-generation.html": "5ab5558ef137d23eda721ae0ddaa25f82afe2839900e0e142691cb8020e85350",
+    "l2-generation.json": "9d870a02f238a819088346855f3b6c4f912a733fb48dec971a7ab4e6ed8caea5",
+    "l2-slicing.html": "d90d8be9e8d358423e04a3e12617d88a0796cd9e9740d2339cbfeeb1b5277a0d",
+    "l2-slicing.json": "5137fddbf8b9b2e17bd079e501454a6cdb667e6e12f11f40f49207ca165d243c"
+  }
+}
