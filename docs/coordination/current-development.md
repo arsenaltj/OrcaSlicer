@@ -1,3 +1,11 @@
+# Normal Android dependency coverage fix1 (2026-11-27)
+
+Mainline: current0a Android SDK provenance validation; original prepared76da review finding SDK-NORMAL-DEPS-COVERAGE-01 retained.
+This round: strict current target dependency domain plus actual new producer identity binding; metadata streams preserve full original evidence and old inventory roles.
+Open: fix1 selftests/real metadata consumption only, independent re-review/third QA and full package execution pending.
+Next: freeze this repair and hand off to the original independent reviewer; no SDK source or cache changes.
+Plan change: current retained objects cannot bypass dependency completeness; exact actual link/copy relations explain noncompile inputs without generic exceptions.
+
 # Android current-source normal producer binding (2026-11-27)
 
 Mainline: update SDK after desktop7c7298 integration, business source0a86364f, independent tooling checkout.

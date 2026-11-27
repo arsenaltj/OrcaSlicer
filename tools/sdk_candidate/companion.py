@@ -164,6 +164,9 @@ def appendix(receipt,producer,stage):
 
 
 def index(item):
+    import normal_android_producer
+    if normal_android_producer.selected(item['terminal']):
+        return normal_android_producer.stage_refs(item)
     refs=item['fullIndex'].get('files',item['fullIndex'].get('refs',[]))
     return refs+list(item.get('originalRecords',{}).values())
 

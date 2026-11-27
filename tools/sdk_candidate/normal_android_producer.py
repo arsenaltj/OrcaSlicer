@@ -154,22 +154,34 @@ def command_summary(stage,terminal,raw,execution,normal_plan):
 
 
 def dependencies(text,root):
-    result={};current=None
-    for line in text.splitlines():
-        if line.startswith('    ') and current is not None:
-            path=Path(line.strip());path=path if path.is_absolute() else Path(root)/path
-            result[current].add(key(path))
+    result={};seen=set();current=None;expected=0;observed=[];normalized={}
+    def normalize(value):
+        if value not in normalized:
+            path=Path(value);path=path if path.is_absolute() else Path(root)/path
+            normalized[value]=key(path)
+        return normalized[value]
+    def finish():
+        if current is not None:
+            need(expected>0 and len(observed)==expected,
+                 'partial/empty Ninja dependency section')
+            result[current]=set(observed)
+    for line in text.splitlines() if isinstance(text,str) else text:
+        line=line.rstrip('\r\n')
+        if line.startswith('    '):
+            if current is not None:
+                value=line.strip();need(bool(value),'empty Ninja dependency path')
+                observed.append(normalize(value))
         elif line.strip():
-            match=re.fullmatch(r'(.+\.(?:o|obj)): #deps \d+, deps mtime .+ \(VALID\)',line.strip())
-            current=None
-            if match:
-                path=Path(match.group(1));path=path if path.is_absolute() else Path(root)/path
-                current=key(path);need(current not in result,'duplicate Ninja dependency object')
-                result[current]=set()
+            finish();current=None;observed=[]
+            match=re.fullmatch(r'(.+): #deps (\d+), deps mtime .+ \((VALID|STALE)\)',line.strip())
+            need(match is not None,'malformed Ninja dependency section')
+            name=normalize(match.group(1));need(name not in seen,'duplicate Ninja dependency object');seen.add(name)
+            if match.group(3)=='VALID':current=name;expected=int(match.group(2))
+    finish()
     return result
 
 
-def input_rebuilds(old_source,new_source,before_deps,after_deps,rebuilt,post_objects):
+def input_rebuilds(old_source,new_source,before_deps,after_deps,rebuilt,post_objects,link_deps=None,relinked=(),copies=()):
     def inputs(value):
         rows=value.get('readInputs');need(type(rows) is list and rows,'source graph empty')
         result={}
@@ -178,15 +190,111 @@ def input_rebuilds(old_source,new_source,before_deps,after_deps,rebuilt,post_obj
             result[name]=(row['bytes'],row['sha256'])
         return result
     old=inputs(old_source);new=inputs(new_source)
+    objects=set(post_objects)
+    need(objects and objects<=set(after_deps),'current object missing VALID Ninja dependencies')
+    need(all(type(after_deps[obj]) is set and after_deps[obj] for obj in objects),
+         'current object dependency set empty/unqualified')
+    need(all(after_deps[obj]<=set(new) for obj in objects),'current dependencies missing source graph identities')
     changed={name for name in set(old)|set(new) if old.get(name)!=new.get(name)}
+    links=link_deps or {}
+    need(all(type(deps) is set and deps and deps<=set(new) for deps in links.values()),'link dependencies empty or absent from source graph')
+    mapped=set().union(*(before_deps.get(obj,set())|after_deps[obj]|{obj} for obj in objects))
+    for output,deps in links.items():mapped.update(deps|{output})
+    for source,destination,output in copies:
+        need(source in new and destination in new and new[source]==new[destination]==(726384,'cc093ffa23653600950960121ab5c4261e6586aa14f7dadc91aab6773daaa038'), 'approved TBB copy bytes differ')
+        need(output in links and source in links[output] and output in set(relinked), 'TBB copy lacks observed consuming link edge')
+        mapped.add(destination)
+    need(changed<=mapped,'changed input lacks qualified current-object dependency relation')
     affected=[]
-    for obj in post_objects:
-        deps=before_deps.get(obj,set())|after_deps.get(obj,set())
+    for obj in objects:
+        deps=before_deps.get(obj,set())|after_deps[obj]|{obj}
         if changed&deps:
             need(obj in rebuilt,'changed dependency retained without actual rebuild')
             affected.append(obj)
-    return dict(changedInputs=sorted(changed),affectedObjects=sorted(affected))
+    affected_links=[]
+    for output,deps in links.items():
+        if changed&(deps|{output}):
+            need(output in set(relinked),'changed link input without actual relink')
+            affected_links.append(output)
+    return dict(changedInputs=sorted(changed),affectedObjects=sorted(affected),affectedLinkOutputs=sorted(affected_links),
+                dependencyDomain='all supplied current objects; no historical exemptions')
 
+
+
+def target_header(path):
+    # The sealed native metadata writes scope/targets/operations before its huge
+    # redundant object listings. Read this bounded prefix only; reconstruct the
+    # object domain independently from the actual command and DOT outputs.
+    with Path(path).open('r',encoding='utf-8') as stream:text=stream.read(65536)
+    decoder=json.JSONDecoder();pos=1;values={}
+    need(text.startswith('{'),'target domain header is not an object')
+    while True:
+        while pos<len(text) and text[pos].isspace():pos+=1
+        name,pos=decoder.raw_decode(text,pos)
+        while pos<len(text) and text[pos].isspace():pos+=1
+        need(text[pos:pos+1]==':','target domain key malformed');pos+=1
+        if name=='objects':break
+        need(name in {'scope','targets','operations'} and name not in values,'unexpected target header key')
+        while pos<len(text) and text[pos].isspace():pos+=1
+        values[name],pos=decoder.raw_decode(text,pos)
+        while pos<len(text) and text[pos].isspace():pos+=1
+        need(text[pos:pos+1]==',','target domain header incomplete');pos+=1
+    need(set(values)=={'scope','targets','operations'},'target header incomplete')
+    return values
+
+
+def target_objects(commands,dot,root):
+    outputs=set()
+    for match in re.finditer(r'(?:^|\s)-o\s+(?:"([^"\r\n]+)"|([^\s]+))',commands):
+        value=match.group(1) or match.group(2)
+        if Path(value).suffix.lower() not in ('.o','.obj'):continue
+        path=Path(value);path=path if path.is_absolute() else Path(root)/path
+        need(path.resolve().is_relative_to(Path(root).resolve()),'target compile output outside cache')
+        outputs.add(key(path))
+    graph_objects=set()
+    for value in re.findall(r'\[label=("(?:\\.|[^"\\])*")',dot):
+        value=json.loads(value)
+        if Path(value).suffix.lower() not in ('.o','.obj'):continue
+        path=Path(value);path=path if path.is_absolute() else Path(root)/path
+        need(path.resolve().is_relative_to(Path(root).resolve()),'target graph object outside cache')
+        graph_objects.add(key(path))
+    need(outputs and outputs==graph_objects,'target commands/graph object domains differ')
+    return outputs
+
+
+def consumed_domain(stage,ref,frozen,refs,verify):
+    need(ref in refs,'target domain reference not sealed')
+    header=target_header(verify(ref));argv=frozen['buildArgv'];start=argv.index('--target')+1
+    targets=[]
+    for value in argv[start:]:
+        if value.startswith('-'):break
+        targets.append(value)
+    need(header['targets']==targets,'target domain differs from approved targets')
+    operations=header['operations'];need(type(operations) is list and len(operations)==2,'target observations incomplete')
+    ninja=next((arg.split('=',1)[1] for arg in frozen['configureArgv'] if arg.startswith('-DCMAKE_MAKE_PROGRAM')),None)
+    need(ninja is not None,'normal Ninja tool not bound')
+    texts=[]
+    for operation,kind in zip(operations,('commands','graph')):
+        need(operation.get('argv')==[ninja,'-C',str(Path(CACHES[stage])),'-t',kind]+targets
+             and key(operation['cwd'])==key(CACHES[stage]) and type(operation.get('exitCode')) is int
+             and operation['exitCode']==0,'target operation differs or failed')
+        need(operation['output'] in refs,'target output not sealed')
+        texts.append(Path(verify(operation['output'])).read_text(encoding='utf-8'))
+    nodes=set()
+    for value in re.findall(r'\[label=("(?:\\.|[^"\\])*")',texts[1]):
+        value=json.loads(value);path=Path(value)
+        path=path if path.is_absolute() else Path(CACHES[stage])/path
+        nodes.add(key(path))
+    copies=[]
+    option='-DORCA_MODEL_ANDROID_TBB_RUNTIME:' if stage=='model-android' else '-DORCA_MOBILE_ANDROID_TBB_RUNTIME:'
+    source=next(arg.split('=',1)[1] for arg in frozen['configureArgv'] if arg.startswith(option))
+    destination=str(Path(CACHES[stage])/'libtbb.so').replace('\\','/')
+    filename='liborca_model_sdk_c.so' if stage=='model-android' else 'liborca_mobile_slicing_sdk_c.so'
+    pattern=r'-E copy_if_different '+re.escape(source)+r' '+re.escape(destination)+r'(?="|\s|$)'
+    for line in texts[0].splitlines():
+        if re.search(pattern,line) and re.search(r'-o\s+"?'+re.escape(filename)+r'(?="|\s|$)',line):
+            copies.append((key(source),key(destination),key(Path(CACHES[stage])/filename)))
+    return dict(objects=target_objects(texts[0],texts[1],CACHES[stage]),nodes=nodes,copies=copies)
 
 def graph(plan,stage,api,expected):
     """Validate the new producer; do not feed historical object bytes into live drift."""
@@ -197,8 +305,10 @@ def graph(plan,stage,api,expected):
     need(api.canonical(sealed)==api.canonical(item['fullIndex']),'normal seal/fullIndex differs')
     refs=sealed.get('files',sealed.get('refs'))
     need(type(refs) is list and refs and len(api.exact_refs(refs))==len(refs),'normal full index incomplete')
+    root=Path(raw['raw']['path']).resolve().parent.parent
+    need(root.name==stage and root.parent==Path(item['seal']['path']).resolve().parent,'normal stage archive/seal root differs')
     def member(name):
-        rows=[ref for ref in refs if Path(ref['path']).name==name]
+        rows=[ref for ref in refs if key(ref['path'])==key(root/name)]
         need(len(rows)==1,'normal source index missing/ambiguous '+name)
         return rows[0]
     for name,value in [('actual-terminal.json',term),('raw-source.json',raw)]:
@@ -224,7 +334,21 @@ def graph(plan,stage,api,expected):
                  'normal current source binding substituted')
     objects=api.small_json(api.verify(member('new-object-inventory.json')))
     current=inventory(objects,CACHES[stage])
-    proof=item['normalProvenance'];historical=proof['historicalMetadata']
+    proof=item['normalProvenance'];originref=proof['origin']
+    need(originref in refs and key(originref['path'])==key(root/'normal-incremental-origin.json')
+         and originref['sha256']==expected['originSha'],'normal stage origin differs')
+    origin=api.small_json(api.verify(originref))
+    need(origin.get('schema')=='orca-android-normal-incremental-origin-v1'
+         and origin.get('source')==SOURCE and origin.get('sourceTree')==TREE
+         and origin.get('stage')==stage,'normal source origin fields differ')
+    for field,name in [('rawSourceRef','raw-source.json'),('terminalRef','actual-terminal.json'),
+                       ('currentSourceInputsRef','actual-compiler-inputs.json'),
+                       ('physicalPostInventoryRef','new-object-inventory.json')]:
+        need(api.canonical(origin[field])==api.canonical(member(name)),'normal origin metadata reference differs')
+    need(api.canonical(origin['currentNinjaTargetDomainRef'])==api.canonical(proof['targetDomain']),
+         'normal target domain outside exact origin')
+    historical=origin['qualifiedBaselineRefs']
+    need(api.canonical(historical)==api.canonical(proof['historicalMetadata']),'normal historical metadata differs')
     old=checked_baseline(stage,historical,api.verify,api.small_json)
     sub,seal_name,_,_,_=BASELINES[stage]
     old_source_ref=next((ref for ref in historical if key(ref['path'])==key(BASE/sub/'actual-compiler-inputs.json')),None)
@@ -232,21 +356,33 @@ def graph(plan,stage,api,expected):
     old_seal=api.small_json(api.verify(next(ref for ref in historical if key(ref['path'])==key(BASE/sub/seal_name))))
     need(old_source_ref in old_seal.get('files',old_seal.get('refs',[])), 'historical source graph not in qualified seal')
     old_source=api.small_json(api.verify(old_source_ref))
-    root=Path(item['seal']['path']).resolve().parent
     def observed(role,relative):
         ref=proof[role]
         need(key(ref['path'])==key(root/relative), 'normal observation path substituted: '+role)
         need(ref in refs,'normal observation not sealed: '+role)
-        return Path(api.verify(ref)).read_text(encoding='utf-8')
+        return Path(api.verify(ref))
     buildlogref=proof['buildLog']
     need(key(buildlogref['path'])==key(root.parent/(stage+'-build.log'))
          and buildlogref in refs,'normal build log not original stage log')
-    rebuilt=actions(Path(api.verify(buildlogref)).read_text(encoding='utf-8'),CACHES[stage])
+    build_text=Path(api.verify(buildlogref)).read_text(encoding='utf-8')
+    rebuilt=actions(build_text,CACHES[stage])
     classification=classify(old,current,rebuilt)
-    before=dependencies(observed('beforeDeps','before/ninja-deps.txt'),CACHES[stage])
-    after=dependencies(observed('afterDeps','after/ninja-deps.txt'),CACHES[stage])
-    input_rebuilds(old_source,source,before,after,rebuilt,current)
-    need(set(current)-set(after)<=set(old), 'new object missing current Ninja dependency graph')
+    with observed('beforeDeps','before/ninja-deps.txt').open(encoding='utf-8') as stream:
+        before=dependencies(stream,CACHES[stage])
+    with observed('afterDeps','after/ninja-deps.txt').open(encoding='utf-8') as stream:
+        after=dependencies(stream,CACHES[stage])
+    target=consumed_domain(stage,proof['targetDomain'],frozen,refs,api.verify) if 'targetDomain' in proof else None
+    domain=target['objects'] if target is not None else set(current)
+    need(domain<=set(current),'consumed target object missing physical inventory')
+    links={};relinked=set()
+    if target is not None:
+        output=key(raw['buildPath'])
+        need(output in target['nodes'] and output in after and after[output], 'SDK link output lacks graph/VALID dependencies')
+        links[output]=after[output]
+        for line in build_text.splitlines():
+            match=re.fullmatch(r'\[\d+/\d+\] Linking (?:CXX|C) (?:shared library|static library|executable) (.+)',line.strip())
+            if match:relinked.add(key(Path(CACHES[stage])/match.group(1)))
+    input_rebuilds(old_source,source,before,after,rebuilt,domain,links,relinked,target['copies'] if target is not None else ())
     if classification['retained']:
         need(raw['priorObjectsReused'] is True,'retained old objects not acknowledged')
     member('actual-source-command-flags.json')
@@ -255,3 +391,33 @@ def graph(plan,stage,api,expected):
     closure=refs+historical+[item['seal'],raw['raw'],raw['buildRaw'],raw['go'],raw['normalPlan']]
     closure+=list(api.pins(source))+list(api.pins(objects))
     return item,source,api.original_refs(closure)
+
+
+def stage_refs(item):
+    refs=item['fullIndex'].get('files',item['fullIndex'].get('refs',[]))
+    stage=item['stage'];root=Path(item['seal']['path']).resolve().parent
+    others=[root/name for name in CACHES if name!=stage]
+    # Only the observer's stage view is projected. fullIndex and graph closure
+    # retain the complete pair seal and every source/provenance row unchanged.
+    return [ref for ref in refs if not any(Path(ref['path']).resolve().is_relative_to(other) for other in others)]
+
+
+def prepare(stage,seal_ref,origin_ref,api):
+    need(stage in CACHES,'normal stage unsupported')
+    sealed=api.small_json(api.verify(seal_ref));origin=api.small_json(api.verify(origin_ref))
+    need(origin.get('stage')==stage and origin.get('source')==SOURCE and origin.get('sourceTree')==TREE,
+         'normal prepare origin source/stage differs')
+    refs=sealed.get('files',sealed.get('refs',[]))
+    need(origin_ref in refs and origin['rawSourceRef'] in refs and origin['terminalRef'] in refs,
+         'normal prepare origin not completely sealed')
+    raw=api.small_json(api.verify(origin['rawSourceRef']));term=api.small_json(api.verify(origin['terminalRef']))
+    validate_terminal(stage,term,raw)
+    root=Path(origin_ref['path']).resolve().parent
+    def observation(path):
+        matches=[ref for ref in refs if key(ref['path'])==key(path)]
+        need(len(matches)==1,'normal observation missing/ambiguous');return matches[0]
+    return dict(stage=stage,terminal=term,rawSource=raw,seal=seal_ref,fullIndex=sealed,originalRecords={},
+        bindingStatus='SOURCE_RECEIPT_ONLY_NOT_EXECUTION_AUTHORITY',normalProvenance=dict(origin=origin_ref,
+          historicalMetadata=origin['qualifiedBaselineRefs'],targetDomain=origin['currentNinjaTargetDomainRef'],
+          beforeDeps=observation(root/'before/ninja-deps.txt'),afterDeps=observation(root/'after/ninja-deps.txt'),
+          buildLog=observation(root.parent/(stage+'-build.log'))))

@@ -32,10 +32,13 @@ STAGES = ('model-android','slicing-android')
 NAMES = dict(zip(STAGES, ('liborca_model_sdk_c.so','liborca_mobile_slicing_sdk_c.so')))
 SYSTEM = {'liblog.so','libm.so','libdl.so','libc.so','libandroid.so','libz.so','libEGL.so','libGLESv2.so'}
 ORIGINS = {
- 'model-android': dict(seal='1e6a88d930f12e208a68347fda510ada180cb46069553966e01cd34fa328f3e7',
-   rawSha='90b81c248670999ef071432f489138d65dad329295f9966a3d86eb00a5c76dd8',rawBytes=81377656),
- 'slicing-android': dict(seal='32cca4d5383acc6a6ad11e9b68d767a917493d896da2300ce45535af4eb76b81',
-   rawSha='eafe048e5196ae43fd71f2d556168679219c38d28bfaee3eaf6ec37696cda847',rawBytes=704366320)}
+ 'model-android': dict(seal='eb9f643fb24fae66623f2ba18db77e31bf51a57c4c13ac0cb3162cfd8f24f1f8',
+   originSha='f2b73e28e49d3df24d31192defc0e1c0524b9ec817f43db7cff8eb15c1facf39',
+   rawSha='07341b8047de06eb77ceae89dbb5dbc1fa07f48686c0d9ad2de298fa5c50b39f',rawBytes=81379184),
+ 'slicing-android': dict(seal='eb9f643fb24fae66623f2ba18db77e31bf51a57c4c13ac0cb3162cfd8f24f1f8',
+   originSha='6ad55d970ab5dddfecb5011ef51751cf65acaeb652b89bcbbf5368b486991ef1',
+   rawSha='5c5fd410c04678c9a30d955174a55151e0ebb477987663ab5c4552566689a644',rawBytes=704433912)}
+
 HERE = Path(__file__).resolve().parent
 need = a.require
 RECEIPT_LIMIT = 16*1024*1024

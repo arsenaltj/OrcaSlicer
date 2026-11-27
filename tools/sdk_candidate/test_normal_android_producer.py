@@ -92,4 +92,73 @@ class NormalProducerTests(unittest.TestCase):
         self.assertEqual(n.dependencies(text,root),{n.key(Path(root)/'a.o'):{n.key(Path(root)/'input.h')}})
         self.assertEqual(n.dependencies(text.replace('(VALID)','(STALE)'),root),{})
 
+    def test_all_current_retained_objects_need_complete_current_deps(self):
+        root=n.CACHES['model-android'];obj=n.key(Path(root)/'a.o');header=n.key(Path(root)/'changed.h')
+        old={'readInputs':[dict(path=header,bytes=1,sha256='1'*64)]}
+        new={'readInputs':[dict(path=header,bytes=1,sha256='2'*64)]}
+        for after in [{},{obj:set()}]:
+            with self.subTest(after=after),self.assertRaises(ValueError):
+                n.input_rebuilds(old,new,{},after,set(),{obj})
+        with self.assertRaisesRegex(ValueError,'actual rebuild'):
+            n.input_rebuilds(old,new,{}, {obj:{header}},set(),{obj})
+        self.assertEqual(n.input_rebuilds(old,new,{}, {obj:{header}},{obj},{obj})['affectedObjects'],[obj])
+
+    def test_partial_count_empty_duplicate_and_malformed_dependencies_reject(self):
+        root=n.CACHES['model-android']
+        for text in ['a.o: #deps 2, deps mtime 123 (VALID)\n    input.h\n',
+            'a.o: #deps 0, deps mtime 123 (VALID)\n',
+            'a.o: #deps 1, deps mtime 123 (VALID)\n    input.h\n'
+            'a.o: #deps 1, deps mtime 123 (STALE)\n    input.h\n',
+            'a.o: invalid dependency section\n    input.h\n']:
+            with self.subTest(text=text),self.assertRaises(ValueError):n.dependencies(text,root)
+
+    def test_changed_input_cannot_disappear_from_affected_domain(self):
+        root=n.CACHES['model-android'];obj=n.key(Path(root)/'a.o');header=n.key(Path(root)/'changed.h')
+        other=n.key(Path(root)/'other.h')
+        old={'readInputs':[dict(path=header,bytes=1,sha256='1'*64),dict(path=other,bytes=1,sha256='3'*64)]}
+        new={'readInputs':[dict(path=header,bytes=1,sha256='2'*64),dict(path=other,bytes=1,sha256='3'*64)]}
+        with self.assertRaisesRegex(ValueError,'lacks qualified'):
+            n.input_rebuilds(old,new,{}, {obj:{other}},set(),{obj})
+        with self.assertRaisesRegex(ValueError,'missing source graph'):
+            n.input_rebuilds(old,new,{}, {obj:{header,'unknown.h'}},{obj},{obj})
+
+    def test_declared_dependency_occurrences_may_repeat_same_header(self):
+        import io
+        root=n.CACHES['model-android'];text='a.o: #deps 2, deps mtime 123 (VALID)\n    input.h\n    input.h\n'
+        expected={n.key(Path(root)/'a.o'):{n.key(Path(root)/'input.h')}}
+        self.assertEqual(n.dependencies(text,root),expected)
+        self.assertEqual(n.dependencies(io.StringIO(text),root),expected)
+
+    def test_link_only_input_needs_actual_consuming_relink(self):
+        root=n.CACHES['model-android'];obj=n.key(Path(root)/'a.o');header=n.key(Path(root)/'a.h')
+        lib=n.key(Path(root)/'a.a');output=n.key(Path(root)/'sdk.so')
+        old={'readInputs':[dict(path=header,bytes=1,sha256='1'*64),dict(path=obj,bytes=1,sha256='2'*64),dict(path=lib,bytes=1,sha256='3'*64)]}
+        new=copy.deepcopy(old);new['readInputs'][2]['sha256']='4'*64
+        with self.assertRaisesRegex(ValueError,'actual relink'):
+            n.input_rebuilds(old,new,{obj:{header}},{obj:{header}},set(),{obj},{output:{obj,lib}},set())
+        self.assertEqual(n.input_rebuilds(old,new,{obj:{header}},{obj:{header}},set(),{obj},{output:{obj,lib}},{output})['affectedLinkOutputs'],[output])
+        with self.assertRaisesRegex(ValueError,'missing VALID'):
+            n.input_rebuilds(old,new,{}, {},set(),{obj},{output:{obj,lib}},{output})
+
+    def test_exact_approved_tbb_copy_edge_not_generic_same_hash_exemption(self):
+        root=n.CACHES['model-android'];obj=n.key(Path(root)/'a.o');header=n.key(Path(root)/'a.h')
+        src=n.key(Path(root)/'vendor/libtbb.so');dst=n.key(Path(root)/'libtbb.so');out=n.key(Path(root)/'sdk.so')
+        sha='cc093ffa23653600950960121ab5c4261e6586aa14f7dadc91aab6773daaa038'
+        old={'readInputs':[dict(path=header,bytes=1,sha256='1'*64),dict(path=obj,bytes=1,sha256='2'*64),dict(path=src,bytes=726384,sha256=sha)]}
+        new=copy.deepcopy(old);new['readInputs'].append(dict(path=dst,bytes=726384,sha256=sha))
+        args=(old,new,{obj:{header}},{obj:{header}},set(),{obj},{out:{src,obj}},{out})
+        with self.assertRaisesRegex(ValueError,'lacks qualified'):n.input_rebuilds(*args)
+        self.assertTrue(n.input_rebuilds(*args,[(src,dst,out)]))
+        changed=copy.deepcopy(new);changed['readInputs'][-1]['sha256']='f'*64
+        with self.assertRaisesRegex(ValueError,'copy bytes differ'):
+            n.input_rebuilds(old,changed,{obj:{header}},{obj:{header}},set(),{obj},{out:{src,obj}},{out},[(src,dst,out)])
+        with self.assertRaisesRegex(ValueError,'observed consuming link'):
+            n.input_rebuilds(old,new,{obj:{header}},{obj:{header}},set(),{obj},{out:{obj}},{out},[(src,dst,out)])
+
+    def test_target_object_domains_must_match_both_actual_outputs(self):
+        root=n.CACHES['model-android']
+        self.assertEqual(n.target_objects('clang -o a.o -c a.cpp', '"a" [label="a.o"]',root),{n.key(Path(root)/'a.o')})
+        with self.assertRaises(ValueError):n.target_objects('clang -o a.o -c a.cpp','"b" [label="b.o"]',root)
+        with self.assertRaises(ValueError):n.target_objects('clang -o ../a.o -c a.cpp','"a" [label="../a.o"]',root)
+
 if __name__=='__main__':unittest.main()
