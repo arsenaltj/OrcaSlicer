@@ -1,3 +1,11 @@
+## Current Android-only source update (prepared, not qualified)
+
+The current business source is `0a86364f85d807ee24250789b74440b22f74c1b5` / tree `5c4b2e9105e066995408d989f6f8296b55b7a9b2`. `normal_android_producer.py` validates only its exact Root-authorized normal incremental Android producers, using honest cache reuse, actual command returns, new source/object dependencies and the immutable qualified25/549-object metadata baselines. Embedded old object pins remain historical comparisons; only current source/object/dependency pins form live drift coverage. Missing immediate prebuild object observations remain missing. This is not a reproducible-build guarantee.
+
+The original clean/recovery validation bodies below remain intact. The two `ORIGINS` entries are still the prior genuine b5f identities; until the new actual sealed outputs are bound by a later reviewed identity change, current new outputs fail closed. This prepared source does not authorize package execution, SDK loading, Windows native builds, or phone tests. Historical b5f sections below are records, not an execution queue. New Android metadata uses `orca-android-normal-incremental-producer-v1` / `orca-android-normal-incremental-terminal-v1`, with `normalProvenance` in the producer binding holding current beforeDeps/afterDeps/buildLog refs and historicalMetadata JSON refs. New full graph fake integration and actual output binding remain unfinished.
+
+Pure checks: `python -B -m unittest test_normal_android_producer test_updated_android_legacy_profile -v` from this tool directory. The historical29 tests run only in a test-scoped original4bf SOURCE/TREE/ORIGINS context, restored afterwards; a separate default0a test must reject actual oldb5f metadata. These tests never load a SDK or execute a native tool.
+
 # Isolated b5f candidate adapter
 
 SDK source is the clean parent checkout at `b5f078f52a8db9bb8eb3b347b155679c852d5c32`, tree `cd7a99640b2c396917176e1e7e9ee1e356b6915a`. This checkout adds tooling only. Its eventual tool commit must be recorded separately, never advertised as the SDK source.

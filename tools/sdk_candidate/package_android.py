@@ -223,6 +223,15 @@ def commands(plan):
 
 def original_graph(plan, stage, *, verify_all=False):
     item=plan['producers'][stage];expected=ORIGINS[stage]
+    import normal_android_producer
+    if normal_android_producer.selected(item['terminal']):
+        from types import SimpleNamespace
+        api=SimpleNamespace(small_json=a.small_json,verify=a.verify,canonical=typed_json,
+            exact_refs=exact_refs,pins=pins,original_refs=original_refs)
+        result=normal_android_producer.graph(plan,stage,api,expected)
+        if verify_all:
+            for ref in exact_refs(result[2]).values():a.verify(ref)
+        return result
     need(item is not None and item['seal']['sha256']==expected['seal'], 'unqualified Android producer seal')
     sealed=a.small_json(a.verify(item['seal']))
     need(typed_equal(sealed,item['fullIndex']), 'Android seal/fullIndex differs')
@@ -418,7 +427,7 @@ def tool_refs(plan):
     refs=exact_refs(plan['toolFiles'])
     need(len(refs)==len(plan['toolFiles']),'duplicate Android tool pins')
     local=['package_android.py','execution_journal.py','android_elf.py','adapter.py','companion.py','artifact_owner.py','api_context.py',
-           'suspended_root.py','suspended_launch.py']
+           'suspended_root.py','suspended_launch.py','normal_android_producer.py']
     required=[HERE/n for n in local]
     import artifact_owner
     required += [Path(plan['ownerDirectory'])/n for n in artifact_owner.SUPPORT]

@@ -15,8 +15,8 @@ import sys
 import time
 import zipfile
 
-SOURCE = 'b5f078f52a8db9bb8eb3b347b155679c852d5c32'
-TREE = 'cd7a99640b2c396917176e1e7e9ee1e356b6915a'
+SOURCE = '0a86364f85d807ee24250789b74440b22f74c1b5'
+TREE = '5c4b2e9105e066995408d989f6f8296b55b7a9b2'
 STAGES = ('model-windows', 'model-android', 'slicing-windows', 'slicing-android')
 IO_MONITOR = lambda: None  # Installed only after explicit execution GO.
 PUBLIC = {
@@ -82,6 +82,9 @@ def write(path, value):
 
 
 def terminal_ok(stage, terminal, raw):
+    import normal_android_producer
+    if normal_android_producer.selected(terminal):
+        return normal_android_producer.validate_terminal(stage,terminal,raw)
     require(terminal['source'] == raw['source'] == SOURCE, 'wrong SDK source')
     require(raw['cleanBuild'] is True and raw['copiedPredecessorObjects'] == 0
             and raw['priorObjectsReused'] is False, 'not a clean producer')

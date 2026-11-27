@@ -1,3 +1,11 @@
+# Android current-source normal producer binding (2026-11-27)
+
+Mainline: update SDK after desktop7c7298 integration, business source0a86364f, independent tooling checkout.
+This round: add a task-bound normalincremental Android validation branch, preserve legacy clean/recovery assertions and original b5f evidence, distinguish historical metadata from current live source/object dependencies.
+Open: prepared source/pure tests only; actual new ORIGINS, final shape integration, complete binding review/third QA and actual package remain pending. No Windows native/SDK/phone operation.
+Next: frozen prepared-code review, then bind true native results in a small follow-up change and complete qualification before Root package GO.
+Plan change: necessary source/provenance compatibility; no old failure reset, generic owner framework, copied object or fabricated clean-build history.
+
 # NATIVE-HOST-B6-THERMAL-01 empty-map oracle correction (2026-11-25)
 
 Mainline: original Native task and same B6 issue, pre-arbitration3/post-arbitration1 failures preserved; next actual failed verification would be post2.
