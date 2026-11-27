@@ -22,6 +22,45 @@ SPEC.loader.exec_module(GUARDRAILS)
 
 class IntegrationGuardrailTests(unittest.TestCase):
 
+    def assert_native_matching_contract(self, root: Path) -> None:
+        wrapper = root / "src/slic3r/GUI/AI/ModelGeneration/LocalPrintColorMatching.hpp"
+        shared = root / "src/slic3r/AI/Color/LocalPrintColorMatching.hpp"
+        self.assertEqual(
+            [line.strip() for line in wrapper.read_text(encoding="utf-8").splitlines() if line.strip()],
+            ['#pragma once', '#include "slic3r/AI/Color/LocalPrintColorMatching.hpp"'],
+            "GUI matching must forward to the canonical shared implementation",
+        )
+        native_matching = shared.read_text(encoding="utf-8")
+        self.assertIn("AI::is_valid_physical_channel_set(result.physical_channels)", native_matching)
+        self.assertIn("if (!result.physical_channels[p].compatible) continue;", native_matching)
+
+    def test_shared_matching_contract_rejects_empty_or_wrong_forwarder_and_missing_guards(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            wrapper = root / "src/slic3r/GUI/AI/ModelGeneration/LocalPrintColorMatching.hpp"
+            shared = root / "src/slic3r/AI/Color/LocalPrintColorMatching.hpp"
+            wrapper.parent.mkdir(parents=True)
+            shared.parent.mkdir(parents=True)
+            forwarding = '#pragma once\n#include "slic3r/AI/Color/LocalPrintColorMatching.hpp"\n'
+            guards = ["AI::is_valid_physical_channel_set(result.physical_channels)",
+                      "if (!result.physical_channels[p].compatible) continue;"]
+            wrapper.write_text(forwarding, encoding="utf-8")
+            with self.assertRaises(FileNotFoundError):
+                self.assert_native_matching_contract(root)
+            shared.write_text("\n".join(guards), encoding="utf-8")
+            self.assert_native_matching_contract(root)
+            for content in ("", "#pragma once\n", forwarding.replace("AI/Color", "GUI/AI")):
+                with self.subTest(wrapper=content):
+                    wrapper.write_text(content, encoding="utf-8")
+                    with self.assertRaises(AssertionError):
+                        self.assert_native_matching_contract(root)
+            wrapper.write_text(forwarding, encoding="utf-8")
+            for content in ("", guards[0], guards[1]):
+                with self.subTest(shared=content):
+                    shared.write_text(content, encoding="utf-8")
+                    with self.assertRaises(AssertionError):
+                        self.assert_native_matching_contract(root)
+
     def setUp(self) -> None:
         self.document = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
 
@@ -209,7 +248,7 @@ class IntegrationGuardrailTests(unittest.TestCase):
         beauty_view = (REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationBeautyView.cpp").read_text(encoding="utf-8")
         beauty_controls = (REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchControls.cpp").read_text(encoding="utf-8")
         workbench_host = (REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchHost.cpp").read_text(encoding="utf-8")
-        native_matching = (REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/LocalPrintColorMatching.hpp").read_text(encoding="utf-8")
+        self.assert_native_matching_contract(REPO_ROOT)
 
         for member in (
             "m_palette_recommendation_cards",
@@ -234,8 +273,6 @@ class IntegrationGuardrailTests(unittest.TestCase):
         self.assertIn("const auto colors = on_available_colors();", beauty_controls)
         self.assertIn("auto fallback = project_palette();", workbench_host)
         self.assertIn("m_palette_provider.printable_palette().compatible_colors", panel_source)
-        self.assertIn("AI::is_valid_physical_channel_set(result.physical_channels)", native_matching)
-        self.assertIn("if (!result.physical_channels[p].compatible) continue;", native_matching)
 
         self.assertIn("ModelGenerationLegacyState m_legacy_generation_state", panel_header)
         self.assertNotIn("#include <wx/", legacy_state)

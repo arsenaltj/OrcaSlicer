@@ -4714,3 +4714,15 @@ SDK 来源已包含远端 base；以其最终净差为共享 C++ 真值，再按
 本轮状态是源码集成与纯测试自测，尚待不同 Agent review 后第三 QA。只运行轻量 Python、图谱/架构及文档检查，无 Windows/原生编译、服务、手机、VM 服务、AI 或实体打印。旧真机、SDK、APK 与制品报告仍只证明其固定来源，不作为本合流提交的动态资格；GLB/受影响 AI、16KiB 动态资格、实体打印及未完成手机路线继续明确保留。提交不含大型制品、数据库、运行日志或私人配置。
 
 下一步：冻结单一提交与全来源 coverage、验证/首错记录，释放唯一 writer；协调者安排独立 review→QA 后才 push/正式 PR，目标 `codex/team/integration`，不自动合并。原桌面 UX 与 held 专项按下方返回点保留，不恢复执行。
+
+# 2026-11-27 CI shared color guardrail fix1
+
+**主线**　`V102-NATIVE-PR-INTEGRATION-20261127` / `NATIVE-PR-SHARED-GUARD-PATH-01`，PR90 / run46022779649 / job140586381831 原1355项中1失败保留。
+
+**本轮**　只适配测试的GUI转发入口与canonical共享实现联动，保留原physical-channel/兼容性断言；新增缺失/空实现及错误转发负例，完整guardrails59项通过。生产算法/SDK原件未改。
+
+**未结**　fix1独立review/第三QA及更新后的CI待执行，不以本地59项替代全1355或新源码动态资格。
+
+**下一步**　冻结本地测试修复提交并释放writer，交独立复检后由Root普通push更新PR90；不运行Windows/native/服务/设备。
+
+**计划变更**　原CI首失败作为initial0保留，当前fix1尚待独立验证；不删断言、不恢复held流程。
