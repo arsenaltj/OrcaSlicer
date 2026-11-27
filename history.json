@@ -1,6 +1,16 @@
 [
   {
     "pr": 89,
+    "run": 45922457445,
+    "head": "97f1e175374157a923cd9c440a0be17aa0e226f1",
+    "base": "1b268e3bfa3569f2004fd3bc11d6053239ab7e31",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "整合 V1.0.5 打印机设置与高级创作修复",
+    "path": "pr/89/97f1e175374157a923cd9c440a0be17aa0e226f1/45922457445",
+    "created": "2026-11-27T01:29:26+00:00"
+  },
+  {
+    "pr": 89,
     "run": 45850128527,
     "head": "97f1e175374157a923cd9c440a0be17aa0e226f1",
     "base": "1b268e3bfa3569f2004fd3bc11d6053239ab7e31",
