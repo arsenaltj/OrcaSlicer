@@ -204,6 +204,7 @@
 #include "../Utils/UndoRedo.hpp"
 #include "slic3r/Config/Snapshot.hpp"
 #include "Preferences.hpp"
+#include "Redesign/RedesignSettingsDialog.hpp"
 #include "Tab.hpp"
 #include "UpdateDialogs.hpp"
 #include "Mouse3DController.hpp"
@@ -1088,6 +1089,18 @@ public:
             m_message->Wrap(FromDIP(480));
             Layout();
         }
+        paint_now();
+    }
+
+    void paint_first_frame()
+    {
+#ifdef __WXMSW__
+        if (m_buffer && GetHandle()) {
+            clip_siblings();
+            ::RedrawWindow(GetHandle(), nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+            return;
+        }
+#endif
         paint_now();
     }
 
@@ -4441,14 +4454,11 @@ bool GUI_App::on_init_inner()
     mainframe->topbar()->SaveNormalRect();
 #endif
     if (scrn) { scrn->SetText(_L("Showing main window") + dots, 95); wxYield(); }
-    mainframe->Show(true);
-    log_startup_timing("main_window_shown");
-    // Paint the native loading content before handing off from the splash.
-    // This also applies when the user has disabled the splash preference.
-    m_startup_loading->Raise();
-    m_startup_loading->SetFocus();
-    mainframe->Update();
-    static_cast<StartupLoadingPanel*>(m_startup_loading.get())->paint_now();
+    auto* loading = static_cast<StartupLoadingPanel*>(m_startup_loading.get());
+    mainframe->show_startup_loading(*loading, [this, loading] {
+        log_startup_timing("main_window_shown");
+        loading->paint_first_frame();
+    });
     log_startup_timing("loading_content_painted");
     if (scrn) { scrn->Destroy(); scrn = nullptr; }
     BOOST_LOG_TRIVIAL(info) << "main frame firstly shown";
@@ -9244,6 +9254,8 @@ int GUI_App::GetSingleChoiceIndex(const wxString& message,
 bool GUI_App::load_language(wxString language, bool initial)
 {
     BOOST_LOG_TRIVIAL(info) << boost::format("%1%: language %2%, initial: %3%") %__FUNCTION__ %language %initial;
+    const std::string startup_preference = initial ? app_config->get(next_startup_language_key) : std::string{};
+    bool apply_startup_preference = false;
     if (initial) {
     	// There is a static list of lookup path prefixes in wxWidgets. Add ours.
 	    wxFileTranslationsLoader::AddCatalogLookupPathPrefix(from_u8(localization_dir()));
@@ -9296,6 +9308,18 @@ bool GUI_App::load_language(wxString language, bool initial)
 #endif
                 }
             }
+        }
+    }
+
+    // Keep the saved choice separate from the active language until normal startup.
+    if (!startup_preference.empty()) {
+        const auto* info = wxLocale::FindLanguageInfo(from_u8(startup_preference));
+        if (info && !info->CanonicalName.empty() && info->LayoutDirection != wxLayout_RightToLeft &&
+            wxLocale::IsAvailable(info->Language)) {
+            language = info->CanonicalName;
+            apply_startup_preference = true;
+        } else {
+            BOOST_LOG_TRIVIAL(warning) << "The language requested for startup is unavailable. Using the previous language.";
         }
     }
 
@@ -9450,6 +9474,10 @@ bool GUI_App::load_language(wxString language, bool initial)
     wxTranslations::Get()->SetLanguage(language_dict);
     m_wxLocale->AddCatalog(SLIC3R_APP_KEY);
     m_active_language_code = requested_language_code;
+    if (apply_startup_preference)
+        app_config->set("language", into_u8(requested_language_code));
+    if (!startup_preference.empty())
+        app_config->erase("app", next_startup_language_key);
     m_imgui->set_language(into_u8(requested_language_code));
 
     //FIXME This is a temporary workaround, the correct solution is to switch to "C" locale during file import / export only.
@@ -9856,7 +9884,13 @@ void GUI_App::open_exportpresetbundledialog(size_t open_on_tab, const std::strin
     }
 }
 
-void GUI_App::open_preferences() { open_preferences(PreferencesTab::General); }
+void GUI_App::open_preferences()
+{
+    if (mainframe && mainframe->is_redesign_shell_active())
+        open_redesign_settings();
+    else
+        open_preferences(PreferencesTab::General);
+}
 
 void GUI_App::open_preferences(PreferencesTab tab, const std::string& highlight_option)
 {
@@ -9918,22 +9952,26 @@ void GUI_App::open_preferences(PreferencesTab tab, const std::string& highlight_
         this->plater_->get_current_canvas3D()->force_set_focus();
     }
 
-    if (!pending_language.empty()) {
+    if (need_recreate_gui)
+        apply_preference_language(pending_language);
+}
+
+void GUI_App::apply_preference_language(const std::string& canonical)
+{
+    if (!canonical.empty()) {
         const std::string previous_language = app_config->get("language");
-        app_config->set("language", pending_language);
-        if (!load_language(wxString::FromUTF8(pending_language), false)) {
+        app_config->set("language", canonical);
+        if (!load_language(wxString::FromUTF8(canonical), false)) {
             app_config->set("language", previous_language);
-            if (this->plater_)
-                this->plater_->get_current_canvas3D()->force_set_focus();
+            if (plater_)
+                plater_->get_current_canvas3D()->force_set_focus();
             return;
         }
-        // Built-in Speed Dial command titles are copied from the catalog at init and don't follow a
-        // live locale switch; rebuild them in the new language before the GUI (and palette) rebuilds.
+        if (app_config->has(next_startup_language_key))
+            app_config->erase("app", next_startup_language_key);
         m_action_registry->relocalize_builtins();
     }
-
-    if (need_recreate_gui)
-        recreate_GUI(_L("Changing application language"));
+    recreate_GUI(_L("Changing application language"));
 }
 
 bool GUI_App::has_unsaved_preset_changes() const

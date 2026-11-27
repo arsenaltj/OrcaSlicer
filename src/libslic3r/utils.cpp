@@ -1,4 +1,5 @@
 #include "Utils.hpp"
+#include "LogPrivacy.hpp"
 #include "Exception.hpp"
 #include "I18N.hpp"
 
@@ -458,6 +459,20 @@ namespace keywords = boost::log::keywords;
 namespace attrs = boost::log::attributes;
 namespace sinks = boost::log::sinks;
 
+namespace {
+logging::formatter private_path_log_formatter(logging::formatter formatter)
+{
+    return [formatter = std::move(formatter)](const logging::record_view& record,
+                                             logging::formatting_ostream& output) {
+        std::string formatted;
+        logging::formatting_ostream buffer(formatted);
+        formatter(record, buffer);
+        buffer.flush();
+        output << redact_log_user_paths(formatted);
+    };
+}
+} // namespace
+
 void shutdown_console_logging()
 {
 	if (!g_console_log_sink)
@@ -489,14 +504,14 @@ void set_log_path_and_level(const std::string& file, unsigned int level)
 	g_log_sink = boost::log::add_file_log(
 		keywords::file_name = full_path.string() + ".%N",
 		keywords::rotation_size = 100 * 1024 * 1024,
-		keywords::format =
+		keywords::format = private_path_log_formatter(
 		(
 			expr::stream
 			<< "[" << expr::attr< logging::trivial::severity_level >("Severity") << "]\t"
 			<< expr::format_date_time< boost::posix_time::ptime >("TimeStamp", "%Y-%m-%d %H:%M:%S.%f")
 			<<"[Thread " << expr::attr<attrs::current_thread_id::value_type>("ThreadID") << "]"
 			<< ":" << expr::smessage
-		),
+		)),
 		keywords::auto_flush = true
 	);
 
@@ -509,11 +524,12 @@ void set_log_path_and_level(const std::string& file, unsigned int level)
 
 	g_console_log_sink = boost::make_shared<sinks::asynchronous_sink<sinks::text_ostream_backend>>(console_backend);
 	g_console_log_sink->set_formatter(
+		private_path_log_formatter(
 		expr::stream
 		<< "[" << expr::attr< logging::trivial::severity_level >("Severity") << "]\t"
 		<< expr::format_date_time< boost::posix_time::ptime >("TimeStamp", "%Y-%m-%d %H:%M:%S.%f") << " "
 		<<"[Thread " << expr::attr<attrs::current_thread_id::value_type>("ThreadID") << "]"
-		<< ": " << expr::smessage
+		<< ": " << expr::smessage)
 	);
 	boost::log::core::get()->add_sink(g_console_log_sink);
 #endif

@@ -301,10 +301,11 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         modal_root->Add(m_workbench_check_progress, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
         auto* modal_actions = new wxBoxSizer(wxHORIZONTAL);
         m_workbench_check_cancel_button = new WorkbenchButton(m_workbench_check_modal, _L("取消检查"));
+        m_workbench_check_cancel_button->use_centered_label();
         m_workbench_check_continue_button = new WorkbenchButton(m_workbench_check_modal, _L("仍要继续"));
         m_workbench_check_return_button = new WorkbenchButton(m_workbench_check_modal, _L("返回 2D 设计图"));
         m_workbench_check_close_button = new WorkbenchButton(m_workbench_check_modal, _L("保留当前模型"));
-        m_workbench_check_details_button = new WorkbenchButton(m_workbench_check_modal, _L("查看问题详情"));
+        m_workbench_check_details_button = new WorkbenchButton(m_workbench_check_modal, _L("查看详情"));
         for (auto* button : {m_workbench_check_cancel_button, m_workbench_check_continue_button,
                              m_workbench_check_return_button, m_workbench_check_close_button,
                              m_workbench_check_details_button}) {
@@ -329,7 +330,8 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         modal_root->Add(modal_actions, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
         m_workbench_check_modal->SetSizer(modal_root);
         card_root->Add(m_workbench_check_modal, 1, wxEXPAND);
-        m_workbench_check_card->SetSizerAndFit(card_root);
+        m_workbench_check_card->SetSizer(card_root);
+        m_workbench_check_card->Fit();
         apply_workbench_floating_card_shape(m_workbench_check_card, 8, wxColour(45, 45, 49));
         m_workbench_check_card->Hide();
         m_workbench_check_card->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
@@ -369,11 +371,8 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     controls->Add(m_model_preview->build_workbench_palette(scroll), 0, wxEXPAND | wxBOTTOM, FromDIP(8));
     m_workbench_palette_details = command(scroll, controls, _L("色卡详情"), [this](wxCommandEvent&) {
         const auto state = post_generation_ui_state();
-        if (state.can_edit && m_finishing_candidate.empty()) {
+        if (m_workbench_presented && state.can_edit && m_finishing_candidate.empty())
             m_model_preview->show_workbench_palette_details();
-            refresh_model_finishing();
-            refresh_post_generation_workbench();
-        }
     });
     m_model_preview->set_workbench_palette_details_button(m_workbench_palette_details);
     m_workbench_palette_status = new WorkbenchStaticText(scroll, wxID_ANY, wxEmptyString);

@@ -1,5 +1,6 @@
 #pragma once
 class wxWindow;
 namespace Slic3r::GUI {
-void export_diagnostic_logs(wxWindow* parent);
+enum class DiagnosticLogAppearance { Native, Settings };
+void export_diagnostic_logs(wxWindow* parent, DiagnosticLogAppearance appearance = DiagnosticLogAppearance::Native);
 }

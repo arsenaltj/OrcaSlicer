@@ -571,6 +571,7 @@ struct StagedColorPackImport {
 };
 
 struct HonorSuiteCompatibility {
+    bool needs_more_physical_nozzles = false;
     bool compatible {false};
     size_t nozzle_count {0};
     std::string reason;
@@ -601,11 +602,13 @@ inline HonorSuiteCompatibility honor_suite_compatibility(const PresetBundle& bun
         return result;
     }
     if (printer.opt_bool("single_extruder_multi_material")) {
+        result.needs_more_physical_nozzles = true;
         result.reason = "当前打印机为单喷嘴多材料模式，此套装需要 6 个真实独立喷头";
         return result;
     }
     const auto snapshot = capture(bundle);
     if (result.nozzle_count < required || snapshot.physical_capacity < required) {
+        result.needs_more_physical_nozzles = true;
         result.reason = "当前打印机为 " + std::to_string(result.nozzle_count) +
             " 头，此套装需要 6 个实体耗材";
         return result;

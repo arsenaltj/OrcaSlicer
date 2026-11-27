@@ -270,6 +270,7 @@ public:
 
 	// Orca printer settings
     typedef std::map<std::string, std::map<std::string, std::string>> MachineSettingMap;
+    const MachineSettingMap& printer_settings() const { return m_printer_settings; }
     bool has_printer_settings(std::string printer) const {
         return m_printer_settings.find(printer) != m_printer_settings.end();
     }

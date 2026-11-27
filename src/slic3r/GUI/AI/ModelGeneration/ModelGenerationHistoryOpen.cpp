@@ -128,6 +128,8 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
                 refresh_post_generation_workbench();
             };
             m_history_open = request;
+            // Dismiss the floating palette before the transition captures the visible page.
+            m_model_preview->close_workbench_palette_details();
             if (!m_history_model_open({request->generation, request->selected_asset, ModelHistoryOpenEvent::Phase::Begin})) {
                 m_history_open.reset();
                 return false;
@@ -169,7 +171,8 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     reset_beauty_asset();
     if (!m_finishing_candidate.empty()) {
         boost::system::error_code ignored;
-        if (m_finishing_candidate != model_path) boost::filesystem::remove(m_finishing_candidate, ignored);
+        if (m_finishing_candidate != model_path)
+            boost::filesystem::remove(AI::model_io_path(m_finishing_candidate), ignored);
         m_finishing_candidate.clear();
     }
     m_finishing_options.selected_faces.clear();

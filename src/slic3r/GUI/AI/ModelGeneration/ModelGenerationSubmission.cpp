@@ -140,12 +140,13 @@ bool ModelGenerationPanel::request_stop()
     return true;
 }
 
-bool ModelGenerationPanel::request_generate_smart()
+bool ModelGenerationPanel::request_generate_smart(GenerationRejected rejected)
 {
     if (m_advanced_only) return false;
-    if (m_ui_stopping || !can_generate_design_from_shell() || !generation_provider_available("geometry") ||
-        !generation_options_valid() || m_selected_design_provider != "gpt") {
-        show_input_hint(_L("请检查输入、GPT准备服务、3D模型配置及当前工作台状态后重试。")); return false;
+    if (const auto reason = smart_generation_rejection(); !reason.empty()) {
+        if (rejected) rejected(reason);
+        else show_input_hint(_L(generation_rejection_message(reason)));
+        return false;
     }
     // Every user operation starts from the current draft. Network replay within
     // this operation uses its request ID; a previous flow is never re-armed.

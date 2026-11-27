@@ -13,6 +13,7 @@
 #include "AI/ModelGeneration/ModelLibraryApplication.hpp"
 #include "AI/ModelGeneration/ModelLibraryLoader.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationHost.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/GenerationActionFeedback.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp"
 #include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
 #include "slic3r/AI/Contracts/IPrintablePaletteProvider.hpp"
@@ -122,14 +123,14 @@ public:
     void finish_history_model_open(bool accepted, std::function<void()> complete = {});
     void set_ui_state_listener(ModelGenerationUIStateListener listener);
     ModelGenerationUIState ui_state_snapshot() const { return m_ui_state; }
-    bool synchronize_ui_input(const ModelGenerationUIInput& input);
-    bool synchronize_ui_options(const ModelGenerationUIOptions& options);
+    bool synchronize_ui_input(const ModelGenerationUIInput& input, GenerationRejected rejected = {});
+    bool synchronize_ui_options(const ModelGenerationUIOptions& options, GenerationRejected rejected = {});
     void get_provider_catalog(const std::string& role, const std::string& provider,
                               AIModelGenerationClient::CatalogFn on_complete,
                               AIModelGenerationClient::ErrorFn on_error);
     ModelGenerationSubmissionResult request_generate_design();
     ModelGenerationSubmissionResult request_generate_model();
-    bool request_generate_smart();
+    bool request_generate_smart(GenerationRejected rejected = {});
     bool request_retry_model();
     bool request_stop();
     bool request_retry_service();
@@ -144,7 +145,7 @@ public:
     void set_service_retry_handler(std::function<void()> handler);
     void set_prepare_navigation_handler(std::function<void()> handler) { m_prepare_navigation = std::move(handler); }
     void set_color_matching_handler(std::function<void(const AI::GeneratedModelArtifact&)> handler) { m_color_matching = std::move(handler); }
-    void set_workbench_import_handler(std::function<void(const AI::ModelImportRequest&)> handler) { m_workbench_import = std::move(handler); }
+    void set_workbench_import_handler(WorkbenchImportHandler handler) { m_workbench_import = std::move(handler); }
     using LocalImportExecutor = std::function<bool(const AI::ModelImportRequest&,
         std::shared_ptr<WorkbenchImportSession>, WorkbenchImportProgress, WorkbenchImportCompletion, std::function<bool()>)>;
     void set_local_import_executor(LocalImportExecutor executor) { m_local_import_executor = std::move(executor); }
@@ -157,7 +158,7 @@ public:
     void raise_workbench_modal();
     bool request_enter_beauty();
     bool request_return_overview();
-    bool request_workbench_color_matching(const BeautyColorGateResult* prepared_match = nullptr);
+    bool request_workbench_color_matching();
     bool request_enable_portrait(bool enabled);
     bool request_semantic_mode(SemanticMode mode);
     bool request_portrait_optimization(wxString& reason);
@@ -194,7 +195,8 @@ public:
     void set_project_filament_delete_handler(std::function<void(size_t)> handler)
     { m_project_filament_delete = std::move(handler); }
     void set_project_color_sync_suspended(bool suspended);
-    void synchronize_workbench_project_palette(bool activate_preview = false);
+    void synchronize_workbench_project_palette(bool activate_preview = false, bool printer_switched = false);
+    bool settings_printer_switch_blocked() const;
 
 private:
     friend class ModelGenerationFeatureHost;
@@ -252,6 +254,10 @@ private:
     bool restore_native_workbench_partition_checkpoint();
     bool ensure_native_workbench_partition(NativeWorkbenchPartitionConsumers consumers);
     void queue_honor_suite_after_native_partition();
+    const char* workbench_honor_optimization_status() const {
+        return WorkbenchArtifacts::honor_people_optimization_status(m_native_workbench_partition_consumers,
+            m_honor_suite_partition_resume_queued, m_workbench_honor_semantic_active);
+    }
     void cancel_native_workbench_partition();
     void apply_smart_ui_state(ModelGenerationUIState& state);
     bool m_smart_mode {false};
@@ -351,7 +357,7 @@ private:
     void ensure_workbench_check();
     bool can_start_workbench_check() const;
     void queue_workbench_check();
-    void fail_workbench_check(const std::string& message);
+    void fail_workbench_check(const std::string& message, WorkbenchCheckIssue issue = WorkbenchCheckIssue::None);
     bool apply_pending_workbench_ai_palette(const boost::filesystem::path& source, std::uint64_t revision);
     void clear_pending_workbench_ai_palette();
     std::function<void(size_t)> m_project_color_edit;
@@ -391,7 +397,9 @@ private:
     WorkbenchButton* m_workbench_sync_filaments {nullptr};
     void apply_workbench_printer_filaments(bool physical_only = false);
     bool request_beauty_color_gate(bool enter_after_success);
-    bool request_workbench_filament_match(std::function<void(BeautyColorGateResult)> complete);
+    bool request_workbench_filament_match(std::function<void(BeautyColorGateResult)> complete,
+        std::function<void()> discard = {}, std::shared_ptr<WorkbenchImportSession> import = {});
+    bool finish_workbench_color_matching(const BeautyColorGateResult* match, WorkbenchImportPrepared prepared);
     void finish_beauty_color_gate(std::uint64_t request_id, std::uint64_t model_sequence,
                                   boost::filesystem::path source, BeautyColorGateIdentity identity,
                                   BeautyColorGateResult result);
@@ -448,13 +456,16 @@ private:
     void publish_workbench_state();
     std::function<void()> m_prepare_navigation;
     std::function<void(const AI::GeneratedModelArtifact&)> m_color_matching;
-    std::function<void(const AI::ModelImportRequest&)> m_workbench_import;
+    WorkbenchImportHandler m_workbench_import;
     bool input_editable() const;
     void show_input_hint(const wxString& message, wxWindow* focus = nullptr);
     bool set_selected_image(const boost::filesystem::path& path, bool request_recommendation);
     void clear_selected_image();
     void publish_ui_state();
     bool can_generate_design_from_shell() const;
+    bool design_generation_busy() const;
+    std::string smart_generation_rejection() const;
+    std::string generation_provider_rejection(const std::string& role) const;
     void initialize_page(bool require_visible);
     void on_first_visible_idle(wxIdleEvent& event);
     void build_page();

@@ -5,6 +5,7 @@
 #include "slic3r/GUI/Presentation/UiRuntime.hpp"
 #include "slic3r/GUI/Presentation/AsyncPreviewImage.hpp"
 #include "slic3r/GUI/Presentation/WindowCloseController.hpp"
+#include "slic3r/GUI/Redesign/AdvancedCreationWindowEvents.hpp"
 #include "slic3r/GUI/Redesign/RedesignPageCoordinator.hpp"
 #include "slic3r/GUI/Redesign/RedesignSlicingDetails.hpp"
 #include <wx/stattext.h>
@@ -32,6 +33,42 @@ public:
     bool OnInit() override { return true; }
 };
 wxIMPLEMENT_APP_NO_MAIN(LifecycleTestApp);
+
+TEST_CASE("Late native events cannot reach stopped advanced workspace callbacks", "[UiLifecycle][AdvancedWindowEvents]")
+{
+    wxInitializer init;
+    REQUIRE(init.IsOk());
+    auto frame = std::make_unique<wxFrame>(nullptr, wxID_ANY, "advanced-workspace-events-test");
+    auto* page = new wxPanel(frame.get());
+    wxTimer click_timer(page);
+    std::vector<bool> visibility;
+    int dpi_events = 0, selection_events = 0;
+    auto events = std::make_unique<AdvancedCreationWindowEvents>();
+    events->bind(*page, click_timer.GetId(), [&](bool shown) { visibility.push_back(shown); },
+        [&] { ++dpi_events; }, [&] { ++selection_events; });
+    wxShowEvent hidden(page->GetId(), false), shown(page->GetId(), true);
+    wxDPIChangedEvent dpi;
+    wxTimerEvent timer(click_timer);
+    page->ProcessWindowEvent(hidden);
+    page->ProcessWindowEvent(shown);
+    page->ProcessWindowEvent(dpi);
+    page->ProcessWindowEvent(timer);
+    REQUIRE(visibility == std::vector<bool>{false, true});
+    REQUIRE(dpi_events == 1);
+    REQUIRE(selection_events == 1);
+    wxPostEvent(page, hidden);
+    wxPostEvent(page, dpi);
+    wxPostEvent(page, timer);
+    events->stop();
+    events->stop();
+    events.reset();
+    wxTheApp->ProcessPendingEvents();
+    page->Hide();
+    frame.reset();
+    CHECK(visibility == std::vector<bool>{false, true});
+    CHECK(dpi_events == 1);
+    CHECK(selection_events == 1);
+}
 
 TEST_CASE("Slicing labels retain their native control focus and layout for unchanged or equally sized text",
           "[UiLifecycle][SlicingRefresh]")
@@ -147,6 +184,32 @@ TEST_CASE("Preview image preparation keeps aspect ratio cover alpha and cancella
 }
 
 
+TEST_CASE("A preview can center crop without changing existing upper-aligned consumers", "[UiLifecycle][PreviewImage]")
+{
+    wxInitializer init;
+    REQUIRE(init.IsOk());
+    if (!wxImage::FindHandler(wxBITMAP_TYPE_PNG)) wxInitAllImageHandlers();
+    const auto path = wxFileName::CreateTempFileName("orca-preview-center-");
+    struct Remove { wxString name; ~Remove() { wxRemoveFile(name); } } cleanup{path};
+    wxImage source(32, 96);
+    source.SetRGB(wxRect(0, 0, 32, 32), 255, 0, 0);
+    source.SetRGB(wxRect(0, 32, 32, 32), 0, 255, 0);
+    source.SetRGB(wxRect(0, 64, 32, 32), 0, 0, 255);
+    REQUIRE(source.SaveFile(path, wxBITMAP_TYPE_PNG));
+    PreviewImageRequest upper{std::string(path.ToUTF8()), "three-stripes", {32, 32}, 96, 8, true};
+    auto centered = upper;
+    centered.alignment = PreviewCropAlignment::Center;
+    CHECK_FALSE(centered == upper);
+    const auto old_preview = prepare_preview_image(upper, [] { return false; });
+    const auto new_preview = prepare_preview_image(centered, [] { return false; });
+    REQUIRE(old_preview.IsOk());
+    REQUIRE(new_preview.IsOk());
+    CHECK(old_preview.GetRed(16, 16) == 255);
+    CHECK(new_preview.GetGreen(16, 16) == 255);
+    CHECK(new_preview.GetAlpha(0, 0) == 0);
+    CHECK(new_preview.GetAlpha(16, 16) == 255);
+}
+
 TEST_CASE("Cancellation retains request ownership until its completion drains", "[UiLifecycle]")
 {
     TaskScope scope;
@@ -234,8 +297,12 @@ TEST_CASE("Image channels reject stale completions and keep unchanged bitmaps ac
     key.revision="new-resource";
     channel.request(key);
     REQUIRE(channel.bitmap().ConvertToImage().GetRed(5,5)==255);
+    CHECK_FALSE(channel.bitmap_for(key.path, key.revision, key.alignment).IsOk());
+    CHECK(channel.bitmap_for(key.path, "b", key.alignment).IsOk());
     REQUIRE(mailbox.until([&] { return tasks.idle(); }));
     REQUIRE(channel.bitmap().ConvertToImage().GetGreen(5,5)==255);
+    CHECK(channel.bitmap_for(key.path, key.revision, key.alignment).IsOk());
+    CHECK_FALSE(channel.bitmap_for(key.path, key.revision, PreviewCropAlignment::Center).IsOk());
     // The upload path can arrive before its cached bytes. A failed preparation
     // retains the old complete image and accepts the same key once bytes arrive.
     key.path=std::string(delayed.ToUTF8()); key.revision="deferred-cache";

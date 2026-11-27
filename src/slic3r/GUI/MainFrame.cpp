@@ -379,32 +379,6 @@ public:
 };*/
 #endif // __APPLE__
 
-// Load the icon either from the exe, or from the ico file.
-static wxIcon main_frame_icon(GUI_App::EAppMode app_mode)
-{
-#if _WIN32
-    std::wstring path(size_t(MAX_PATH), wchar_t(0));
-    int len = int(::GetModuleFileName(nullptr, path.data(), MAX_PATH));
-    if (len > 0 && len < MAX_PATH) {
-        path.erase(path.begin() + len, path.end());
-        //BBS: remove GCodeViewer as seperate APP logic
-        /*if (app_mode == GUI_App::EAppMode::GCodeViewer) {
-            // Only in case the slicer was started with --gcodeviewer parameter try to load the icon from prusa-gcodeviewer.exe
-            // Otherwise load it from the exe.
-            for (const std::wstring_view exe_name : { std::wstring_view(L"prusa-slicer.exe"), std::wstring_view(L"prusa-slicer-console.exe") })
-                if (boost::iends_with(path, exe_name)) {
-                    path.erase(path.end() - exe_name.size(), path.end());
-                    path += L"prusa-gcodeviewer.exe";
-                    break;
-                }
-        }*/
-    }
-    return wxIcon(path, wxBITMAP_TYPE_ICO);
-#else // _WIN32
-    return wxIcon(Slic3r::var("OrcaSlicer_128px.png"), wxBITMAP_TYPE_PNG);
-#endif // _WIN32
-}
-
 // BBS
 #ifndef __APPLE__
 #define BORDERLESS_FRAME_STYLE (wxRESIZE_BORDER | wxMINIMIZE_BOX | wxMAXIMIZE_BOX | wxCLOSE_BOX)
@@ -531,9 +505,6 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
         break;
     }
 #endif // __APPLE__
-
-    // Load the icon either from the exe, or from the ico file.
-    SetIcon(main_frame_icon(wxGetApp().get_app_mode()));
 
     // Decide the initial surface before the first layout. Once the redesign
     // shell is shown it becomes a one-way navigation boundary; legacy pages

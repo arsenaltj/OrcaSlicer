@@ -23,6 +23,7 @@ namespace {
 struct Calls {
     std::atomic<unsigned> body {0}, face {0};
     std::atomic<bool> hold_body {false}, body_entered {false};
+    bool detect_person {true};
 };
 
 class FakeBody final : public SC::IBodyRegionRecognizer {
@@ -41,9 +42,10 @@ public:
         while (m_calls->hold_body && std::chrono::steady_clock::now() < deadline)
             std::this_thread::sleep_for(1ms);
         SC::Prediction prediction;
-        prediction.labels.assign(size_t(image.width) * image.height, SC::Label::FaceSkin);
+        prediction.labels.assign(size_t(image.width) * image.height,
+            m_calls->detect_person ? SC::Label::FaceSkin : SC::Label::Unknown);
         prediction.confidence.assign(prediction.labels.size(), .95f);
-        prediction.person_detected = true;
+        prediction.person_detected = m_calls->detect_person;
         return prediction;
     }
 };
@@ -60,7 +62,7 @@ public:
         SC::Prediction prediction;
         prediction.labels.assign(size_t(image.width) * image.height, SC::Label::Unknown);
         prediction.confidence.assign(prediction.labels.size(), .95f);
-        prediction.face_detected = true;
+        prediction.face_detected = m_calls->detect_person;
         return prediction;
     }
 };
@@ -355,14 +357,24 @@ TEST_CASE("Explicit portrait optimization no longer requires retired FaRL eviden
     CHECK_FALSE(progress->snapshot().evidence.empty());
 }
 
-TEST_CASE("Unavailable recognition never bypasses canonical portrait source validation", "[ModelSemanticColoring][HonorFilamentSuite][Regression]")
+TEST_CASE("Nearest portrait palette fallback requires a verified source and keeps its color regions",
+          "[ModelSemanticColoring][HonorFilamentSuite][Regression]")
 {
-    // All cases lack a provider. The canonical source must still be checked
-    // before choosing a nearest-color fallback.
-    const int change = GENERATE(0, 1, 2, 3); // valid, missing, changed bytes, changed geometry
-    CAPTURE(change);
+    enum class Recognition { Unavailable, NoPerson, NoMatchingRole };
+    const auto [change, recognition] = GENERATE(table<int, Recognition>({
+        {0, Recognition::Unavailable}, {1, Recognition::Unavailable},
+        {2, Recognition::Unavailable}, {3, Recognition::Unavailable},
+        {0, Recognition::NoPerson}, {0, Recognition::NoMatchingRole}
+    }));
+    CAPTURE(change, static_cast<int>(recognition));
     Fixture fixture;
-    fixture.configure("unregistered.canonical-source.body", "unregistered.canonical-source.face");
+    if (recognition == Recognition::Unavailable) {
+        fixture.configure("unregistered.canonical-source.body", "unregistered.canonical-source.face");
+    } else {
+        auto providers = fixture.add_providers("-nearest-fallback");
+        providers.calls->detect_person = recognition != Recognition::NoPerson;
+        fixture.configure(providers.body, providers.face);
+    }
     struct RestoreData {
         std::string previous = Slic3r::data_dir();
         ~RestoreData() { Slic3r::set_data_dir(previous); }
@@ -433,7 +445,7 @@ TEST_CASE("Unavailable recognition never bypasses canonical portrait source vali
         {1.f, 1.f, 1.f}, blue};
     Coordinator coordinator(fixture.runtime, fixture.cache);
     REQUIRE(coordinator.request(edited, targets, targets, targets, {}, {}, shapes, {},
-        true, {}, {}, {}, 4, false, true, {}, "canonical-source-fallback", native_partition));
+        true, {}, {}, {}, 4, false, true, {{"Lips", 4}}, "canonical-source-fallback", native_partition));
     const auto result = await_result(coordinator);
     REQUIRE(result);
     CAPTURE(result->error);
@@ -442,7 +454,9 @@ TEST_CASE("Unavailable recognition never bypasses canonical portrait source vali
         CHECK(result->verified_original_source);
         CHECK_FALSE(result->source_region_failure);
         CHECK_FALSE(result->semantic_fallback_reason.empty());
+        CHECK(result->person_detected == (recognition == Recognition::NoMatchingRole));
         REQUIRE(result->color_blocks);
+        CHECK(result->color_blocks->role_slot_locks.empty());
         REQUIRE(result->analysis);
         CHECK(result->analysis->content_id == canonical->content_id);
         REQUIRE(result->color_blocks->units.size() == edited->mesh.indices.size());

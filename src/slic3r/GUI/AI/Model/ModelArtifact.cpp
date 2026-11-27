@@ -1,3 +1,4 @@
+#include "slic3r/GUI/AI/Model/ModelFilePath.hpp"
 #include "libslic3r/MeshResourceBudget.hpp"
 #include "ModelArtifact.hpp"
 
@@ -77,14 +78,14 @@ void write_u32(std::ostream& output, uint32_t value) {
     output.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
 nlohmann::json glb_description(const boost::filesystem::path& path) {
-    boost::filesystem::ifstream input(path, std::ios::binary);
+    boost::filesystem::ifstream input(model_io_path(path), std::ios::binary);
     std::array<unsigned char, 20> header {};
     input.read(reinterpret_cast<char*>(header.data()), header.size());
     const uint32_t json_size = read_u32(header.data() + 12);
     if (!input || read_u32(header.data()) != 0x46546c67 || read_u32(header.data() + 4) != 2 ||
-        read_u32(header.data() + 8) != boost::filesystem::file_size(path) ||
+        read_u32(header.data() + 8) != boost::filesystem::file_size(model_io_path(path)) ||
         read_u32(header.data() + 16) != 0x4e4f534a || !json_size || json_size % 4 ||
-        json_size > 32u * 1024 * 1024 || json_size > boost::filesystem::file_size(path) - 20)
+        json_size > 32u * 1024 * 1024 || json_size > boost::filesystem::file_size(model_io_path(path)) - 20)
         throw std::runtime_error("Invalid or incomplete GLB 2.0 file.");
     std::string encoded(json_size, '\0');
     input.read(encoded.data(), encoded.size());
@@ -164,7 +165,7 @@ std::string model_artifact_format(const boost::filesystem::path& path) {
 }
 
 std::string model_artifact_sha256(const boost::filesystem::path& path) {
-    boost::filesystem::ifstream input(path, std::ios::binary);
+    boost::filesystem::ifstream input(model_io_path(path), std::ios::binary);
     if (!input) return {};
     Sha256Digest digest;
     std::array<char, 65536> buffer;
@@ -178,8 +179,8 @@ std::string model_artifact_sha256(const boost::filesystem::path& path) {
 
 bool is_model_artifact(const boost::filesystem::path& path) {
     boost::system::error_code ec;
-    if (model_artifact_format(path).empty() || !boost::filesystem::is_regular_file(path, ec) || ec) return false;
-    const auto size = boost::filesystem::file_size(path, ec);
+    if (model_artifact_format(path).empty() || !boost::filesystem::is_regular_file(model_io_path(path), ec) || ec) return false;
+    const auto size = boost::filesystem::file_size(model_io_path(path), ec);
     return !ec && size > 0 && size <= (model_artifact_format(path) == "obj" ? MeshResourceBudget::local_obj_bytes : max_bytes);
 }
 
@@ -201,13 +202,13 @@ bool load_model_artifact(const boost::filesystem::path& path, TriangleMesh& mesh
         if (!is_model_artifact(path)) throw std::runtime_error("The OBJ/GLB model is missing or exceeds the format resource budget.");
         if (model_artifact_format(path) == "obj") {
             ObjParser::MtlData materials;
-            if (!load_obj(path.string().c_str(), &mesh, info, error, &materials, canceled)) return false;
+            if (!load_obj(model_io_string(path).c_str(), &mesh, info, error, &materials, canceled)) return false;
             if (!MeshResourceBudget::editable(mesh.its.vertices.size(), mesh.its.indices.size()))
                 throw std::runtime_error("OBJ editing resource budget exceeded; source preserved.");
             if (info.has_uv_png) {
                 TexturedMesh textured;
                 if (info.uvs.size() != mesh.its.indices.size() ||
-                    !obj_to_textured_mesh(info, mesh.its, materials, path.parent_path().string(), textured))
+                    !obj_to_textured_mesh(info, mesh.its, materials, model_io_string(path.parent_path()), textured))
                     throw std::runtime_error("OBJ 声明的纹理或 UV 数据缺失，未替换为单色。");
                 for (const auto& entry : info.uv_map_pngs) {
                     if (entry.first < 0 || size_t(entry.first) >= textured.material_ids.size())
@@ -308,7 +309,7 @@ bool load_model_artifact(const boost::filesystem::path& path, TriangleMesh& mesh
                 const auto pbr = material.find("pbrMetallicRoughness");
                 return pbr == material.end() || (pbr->is_object() && !pbr->contains("baseColorTexture"));
             }));
-        if (!load_assimp_textured_model(path.string(), textured, &error, &vertex_colors,
+        if (!load_assimp_textured_model(model_io_string(path), textured, &error, &vertex_colors,
                 raw_fallback_only && !texture_surface ? AssimpRawColorPolicy::FallbackOnly : AssimpRawColorPolicy::Always, &imported_materials)) return false;
         if (stop_if_canceled()) return false;
         if (!MeshResourceBudget::editable(textured.vertices.size(), textured.indices.size()))
@@ -567,17 +568,17 @@ static bool write_model_artifact_impl(const boost::filesystem::path& path, const
     try {
         if (!MeshResourceBudget::editable(mesh.vertices.size(), mesh.indices.size()) || colors.size() != mesh.vertices.size())
             throw std::runtime_error("The edited model has incomplete geometry or colors.");
-        if (boost::filesystem::exists(path) || boost::filesystem::exists(temporary))
+        if (boost::filesystem::exists(model_io_path(path)) || boost::filesystem::exists(model_io_path(temporary)))
             throw std::runtime_error("The output already exists; choose a new model version.");
         if (model_artifact_format(path).empty()) throw std::runtime_error("Choose OBJ or GLB for the model.");
-        if (!path.parent_path().empty()) boost::filesystem::create_directories(path.parent_path());
+        if (!path.parent_path().empty()) boost::filesystem::create_directories(model_io_path(path.parent_path()));
         for (const auto& v : mesh.vertices) for (int c = 0; c < 3; ++c)
             if (!std::isfinite(v[c])) throw std::runtime_error("The edited model contains invalid vertices.");
         for (const auto& color : colors) for (float c : color)
             if (!std::isfinite(c) || c < 0.f || c > 1.f) throw std::runtime_error("The edited model contains invalid colors.");
         for (const auto& f : mesh.indices) for (int c = 0; c < 3; ++c)
             if (f[c] < 0 || size_t(f[c]) >= mesh.vertices.size()) throw std::runtime_error("The edited mesh has invalid indices.");
-        boost::filesystem::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        boost::filesystem::ofstream output(model_io_path(temporary), std::ios::binary | std::ios::trunc);
         if (!output) throw std::runtime_error("Unable to create the model file.");
         owned = true;
         output.imbue(std::locale::classic());
@@ -734,18 +735,18 @@ static bool write_model_artifact_impl(const boost::filesystem::path& path, const
             write_u32(output, uint32_t(binary.size())); write_u32(output, 0x004e4942); output.write(reinterpret_cast<const char*>(binary.data()), binary.size());
         }
         output.close();
-        if (!output || boost::filesystem::file_size(temporary) > (model_artifact_format(path) == "obj" ? MeshResourceBudget::local_obj_bytes : max_bytes)) throw std::runtime_error("Unable to write the complete model.");
+        if (!output || boost::filesystem::file_size(model_io_path(temporary)) > (model_artifact_format(path) == "obj" ? MeshResourceBudget::local_obj_bytes : max_bytes)) throw std::runtime_error("Unable to write the complete model.");
         // Windows OBJ imports already hashed the exact bytes sent to the
         // writer. Other formats/toolchains retain the read-back path.
         if (written_sha256 && prepared_hash.empty()) {
             prepared_hash = model_artifact_sha256(temporary);
             if (prepared_hash.empty()) throw std::runtime_error("Unable to hash the prepared model file.");
         }
-        boost::filesystem::rename(temporary, path);
+        boost::filesystem::rename(model_io_path(temporary), model_io_path(path));
         if (written_sha256) written_sha256->swap(prepared_hash);
         return true;
     } catch (const std::exception& e) {
-        if (owned) { boost::system::error_code ignored; boost::filesystem::remove(temporary, ignored); }
+        if (owned) { boost::system::error_code ignored; boost::filesystem::remove(model_io_path(temporary), ignored); }
         error = e.what(); return false;
     }
 }

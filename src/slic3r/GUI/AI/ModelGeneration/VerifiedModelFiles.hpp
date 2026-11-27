@@ -1,4 +1,6 @@
 #pragma once
+
+#include "slic3r/GUI/AI/Model/ModelFilePath.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include <boost/filesystem.hpp>
 #include <memory>
@@ -47,7 +49,7 @@ public:
             file.missing = true; m_files.push_back(std::move(file)); m_failed = false; return true;
         }
 #ifdef _WIN32
-        file.handle = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+        file.handle = ::CreateFileW(AI::model_io_path(path).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (file.handle == INVALID_HANDLE_VALUE) return false;
 #endif
@@ -55,8 +57,8 @@ public:
         m_files.push_back(std::move(file));
         auto& saved = m_files.back();
         saved.sha256 = expected;
-        saved.size = boost::filesystem::file_size(path, ec); if (ec) return false;
-        saved.modified = boost::filesystem::last_write_time(path, ec); if (ec) return false;
+        saved.size = boost::filesystem::file_size(AI::model_io_path(path), ec); if (ec) return false;
+        saved.modified = boost::filesystem::last_write_time(AI::model_io_path(path), ec); if (ec) return false;
         if (expected.empty() || AI::model_artifact_sha256(path) != expected) return false;
         m_failed = !unchanged(saved);
         return !m_failed;
@@ -86,12 +88,12 @@ private:
     static bool unchanged(const File& file) {
         boost::system::error_code ec;
         if (file.missing) return absent(file.path);
-        const auto size = boost::filesystem::file_size(file.path, ec); if (ec || size != file.size) return false;
-        return boost::filesystem::last_write_time(file.path, ec) == file.modified && !ec;
+        const auto size = boost::filesystem::file_size(AI::model_io_path(file.path), ec); if (ec || size != file.size) return false;
+        return boost::filesystem::last_write_time(AI::model_io_path(file.path), ec) == file.modified && !ec;
     }
     static bool absent(const boost::filesystem::path& path) {
         boost::system::error_code ec;
-        const auto status = boost::filesystem::symlink_status(path, ec);
+        const auto status = boost::filesystem::symlink_status(AI::model_io_path(path), ec);
         // Boost/Windows may retain ENOENT for a file_not_found status. Other
         // errors and dangling symlinks must never count as a missing companion.
         return status.type() == boost::filesystem::file_not_found &&

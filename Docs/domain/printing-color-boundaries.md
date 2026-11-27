@@ -27,6 +27,12 @@
 
 依据：[生成产物](../../src/slic3r/AI/Contracts/GeneratedModelArtifact.hpp)、[请求默认格式](../../src/slic3r/GUI/AIModelGenerationClient.hpp)、[客户端校验](../../src/slic3r/GUI/AIModelGenerationClient.cpp)、[OBJ/GLB载入](../../src/slic3r/GUI/AI/Model/ModelArtifact.cpp)、[候选导出](../../src/slic3r/GUI/AI/ModelGeneration/ModelGenerationBeautyExport.cpp)、[Orca适配器](../../src/slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.cpp)。
 
+## 从工作台更换打印机
+
+从主窗口齿轮打开「设置 → 打印机」，选择目标机型及喷嘴直径。工作台耗材区显示当前配置的摘要。选择荣耀六色套装时，如果实体喷头不足，工作台给出容量和设置路径的文字提示。设置里的机型和喷嘴直径指向本机预设。喷头数是硬件能力，已装载实体耗材和叠色是工程配置。应用后载入目标预设的上次耗材和工艺，初次应用按原生默认配置。切回原规格时恢复其配置。
+
+工程按目标槽位重新核对材料和颜色。若目标缺少已用槽位，提示对应盘及引用位置。成功换机返回原工作台模型。用户在耗材区显式应用荣耀套装，之后按原流程切片。绑定旧机的耗材撤销记录在切回原机后恢复。界面控制和工程规则分别见[设置窗口](../../src/slic3r/GUI/Redesign/RedesignSettingsDialog.cpp)及[预设切换服务](../../src/slic3r/GUI/Redesign/PrinterSettingsService.cpp)。
+
 ## 质量检查能证明什么
 
 [结构分析器](../../tools/ai/printable_model_quality.py) 输入为已归一化的 Z-up OBJ；长度阈值按毫米使用。来源单位、打印尺寸或朝向不明时，先报告未知，不能把默认阈值的结果解释为制造合格。

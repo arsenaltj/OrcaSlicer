@@ -69,6 +69,7 @@ set(ORCA_MODEL_WORKSPACE_SOURCES
     GUI/ModelGenerationPanel.hpp
     GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp
     GUI/AI/ModelGeneration/ModelGenerationHost.hpp
+    GUI/AI/ModelGeneration/GenerationActionFeedback.hpp
     GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp
     GUI/AI/ModelGeneration/ModelGenerationStatusText.hpp
     GUI/AI/ModelGeneration/ModelPreview3D.hpp

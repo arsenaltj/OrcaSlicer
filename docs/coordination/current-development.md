@@ -1,3 +1,11 @@
+# Latest desktop7c7298 + skirt repair2 source combination (2026-11-27)
+
+Mainline: Android nonGLB SDK adaptation; separate repair2 commit0a443086c3, repair1 review failure1 retained.
+This round: merge fixed integration7c7298. Keep both historical plan sections and GUI-free palette wrapper; transfer incoming palette changes into the existing shared implementation (normalized premerge shared equals mergebase GUI). Core printer-route/embedded-selection/log privacy changes retained.
+Open: source-only; Model now has shared palette code changes in addition to source marker, Slicing has incoming shared Core input changes. Old b5f raw remains immutable, new Android normal producer/package/phone qualification not run. No Windows native/held retry.
+Next: independent full combination review, then normal same-owned-cache Android configure/build with new real source identity and unchanged flags/deps, immutable new package and Mobile consumer pair.
+Plan change: explicit latest-desktop integration including relocated shared implementation; not a claim GUI-only0impact or existing binary qualification.
+
 # MOB-LOCAL-MFG-SKIRT-DIRECTIVE-01 repair2 source (2026-11-27)
 
 Mainline: retain repair1 independent review failure1: classic stream accepted leading plus while Native fast_float reader rejects it. Same issue, no counter reset.
@@ -101,15 +109,337 @@ Plan change: original project remains unchanged; device/process/material configu
 
 ## Earlier records retained
 
+## Latest desktop incoming records retained (7c7298ed)
+
+# 2026-11-26 当前 · 高级首次建模已验收，V1.0.5 修复包已构建
+
+**主线**　`UX/ADVANCED-MULTIVIEW-20261107`／`ADV-2D-06`。[首次建模修复、验收与打包](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#advanced-3d-first-submit-race-verified-20261126)
+
+**本轮**　高级模式主图单图、主加左两视角均在首次提交后生成可旋转的 GLB。单图成品通过历史恢复与工作台检查。实单 3 次 2D、2 次 3D。验收后完成 V1.0.5 Windows x64 内部 EXE 和 ZIP，快照 `bbc8e3b2ea`。
+
+**未结**　Program Files 安装后的标准用户模型写入待独立 Windows 环境。原专项其余验收保留原返回点。
+
+**下一步**　用 `.tmp/dev/package-v1.0.5-20261126-r3/` 中的修复包交付转测。后续在独立环境补标准用户安装写入。
+
+**计划变更**　沿原编号登记两条首单实窗、自动回归、两种包的版本及 SHA-256。修复及版本配置已纳入本轮本地提交。前序 r2 包保留原交付证据。[本轮打包收据](../../.tmp/dev/evidence/advanced-first-submit-race-20261126/package-receipt.json)
+
+---
+
+# 2026-11-26 前序 · 远端已合并，V1.0.5 r2 Windows 安装包已构建
+
+**主线**　`DELIVERY/WINDOWS-INSTALLER-20261126`。[合并与交付证据](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#windows-installer-v1.0.5-20261126)
+
+**本轮**　合并远端 `9e40c707f7`，本地合并 `fdddc4bb2b`，兼容修正 `5d43bcaed3`。Windows x64 V1.0.5 内部安装 EXE 和便携 ZIP 已生成并通过内容和哈希检查。包内程序完成启动、模型导入及四头换六头。
+
+**未结**　后续切片实窗停在系统防火墙许可提示。`Program Files` 安装权限验收待补。
+
+**下一步**　可用包位于 `.tmp/dev/package-v1.0.5-20261126-r2/`。按原专项返回点续接补验。
+
+**计划变更**　登记本地合并、修正、完整快照和实窗范围，保留设置 UX 等原专项证据。 [GPT 生图传输失败日志核查](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#installed-gpt-image-transport-20261126)已记录，具体中断点待网关日志确认。
+
+**附加返回点**　[高级“进入工作台”日志定位](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#advanced-workbench-handoff-log-20261126)：测试运行 V1.0.4／`dc76651`／快照 `6a2ecdefd2`，未含 `7b113a2728` 修复。旧历史投影覆盖已准备模型摘要，使交接被静默拒绝；生成、解析与预览已有成功日志。当前 V1.0.5 已包含修复，待测试机用同一历史模型换包复验。本轮仅分析并补记，无产品改动或新增生成。
+
+---
+
+# 2026-11-26 当前 · 设置 UX 核心验收及本地提交
+
+**主线**　`UX/PRINTER-SETTINGS-20261125`。[本次整改与实窗证据](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#printer-settings-ux-polish-20261126)
+
+**本轮**　设置深色黄主题、文字页签、六槽滚动、语言及日志弹框通过实窗核对。工作台三项新增控件已撤掉。齿轮从四头换六头后回到同一模型，完成原生六色切片预览。定向 C++ 18/18。核对构建源码清单后按用户授权形成本地提交。
+
+**未结**　纯键盘焦点、高 DPI 组合及原 38 项专项的剩余分支按用户安排顺延。
+
+**下一步**　核心验收已收尾。后续补测按主计划恢复，优先覆盖原生导入、发送和真实 AI 任务联测。
+
+**计划变更**　原编号内登记本地提交、构建和实窗证据，保留前序专项结果和高级创作返回点。
+
+---
+
+# 2026-11-26 前序 · 高级 3D 按选图生成原候选
+
+**主线**　`UX/ADVANCED-MULTIVIEW-20261107`／`ADV-2D-06`。[开发方案与转测用例索引](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#advanced-3d-selected-design-approval-20261126)
+
+**未结**　候选包及自动测试已完成。自动审批拒绝启动候选，四条核心实窗和 `Program Files` 标准用户安装待验。用户现场核心-02 首单失败，同图重试出模。已离线复现等待动画读任务文件与后台替换同文件的竞态，溯源到 2026-11-17 动效提交 `d36337eccf`。[现场诊断](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#advanced-3d-job-state-save-failure-20261126)
+
+**下一步**　[修复方案及单图、多图首次建模用例](../../Docs/plans/ui-redesign/2026-11-24-advanced-2d-description-preview-development-design.md#advanced-3d-first-submit-race-design-20261126)已在本轮修复候选完成实窗验收和打包，见本文当前焦点。原候选产物和 SHA-256 见 [验证记录](../../.tmp/dev/evidence/advanced-selected-views-20261126/validation.json)。其余工作沿各自返回点。
+
+---
+
+# 2026-11-25 当前 · 高级创作两项高优先级修复已验收
+
+**主线**　`UX/ADVANCED-MULTIVIEW-20261107`。 [两项修复及 Windows 验收](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#advanced-creation-exit-model-gate-verified-20261125)
+
+**本轮**　修复退出崩溃和终态未知辅助图的建模限制。独立实窗 6 次干净退出，两家均完成主图单图实单并能重开成品。C++ 107 + 57 项、Python 147 项通过。Tripo 累计 3/5。
+
+**未结**　本次两项的专项用例已验收。前序点击等待、历史缩略图及原验收缺口仍在主计划。
+
+**下一步**　Windows 内部验收版已备妥，收据 `20261125-213104-384`。
+
+**计划变更**　在原编号记录 11 条专项用例结果、任务回执和退出证据。相关改动已并入本节所在的最后一笔本地提交。
+
+---
+
+# 2026-11-24 此前 · 高级模式可变视角及补修本地提交
+
+**主线**　`UX/ADVANCED-MULTIVIEW-20261107`／`ADV-FLEX-03`补修及文案补充；单代理，`codex/team/integration`。[方案、用例、复核及返回点](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#advanced-flexible-views-review-20261124)
+
+**本轮**　按用户“提交代码，形成代码提交记录”的最新要求，将高级可变视角、首次导航、独立建模选择／草稿、两家单多图、M1～M3、验收日志补修及相关测试／文档形成本地提交，标识以本节所在Git提交为准。构建前清单56份源码／测试／资源逐SHA核对56/56一致，覆盖全部33份变更代码及测试文件；复用C++109/109、Python188/188、LogPrivacy5/5、完整Windows运行树及4路真实任务证据。点击分析8次采样已存档，交互未改。
+
+**未结**　新增24条中的13项分支缺口保留，包括初始Logo瞬时帧、精确竞态及未制造的异常／只读W；不能宣称全部验收通过。用户现场持续2秒尚未复现；新方案同步本地保存是条件风险，当前无秒级归因证据。原92条86齐全／6部分、平台拒绝边界及Toast D5返回点独立保留。
+
+**下一步**　交付本地提交标识及记录。即时反馈／持久化移出反馈关键路径仅为候选建议，待用户明确确认后实施。测试组偏好已恢复，自有PID3608于12:09正常退出；不新增生成或自动续跑历史队列。
+
+**计划变更**　新增本地提交授权，开发范围、验收门槛及返回点不变，优化尚未实施，116仍是定义数。本专项Tripo10/15、YOYOClaw13次（12 ready／1 stopped），本轮2D7次；不新增模型任务、不推送。
+
+---
+
+# 2026-11-24 此前 · 高级模式实施保留，剩余6项验收受阻
+
+**主线**　`UX/ADVANCED-MULTIVIEW-20261107`补充`ADV-FLEX-01`～`03`；单代理，`codex/team/integration`／`d7f04859f65d`。[已确认需求与源码核对](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#advanced-flexible-views-review-20261124)
+
+**本轮**　[开发设计V1.1](../../Docs/plans/ui-redesign/2026-11-24-advanced-flexible-views-development-design.md)及[92条用例V1.1](../../Docs/plans/ui-redesign/2026-11-24-advanced-flexible-views-test-cases.md)已交付并继续验证。两供应商各8种合法集合均真实成功及历史重开；审计86齐全／6部分。r7真实主图后台成功后，以oplock暂缓新缓存正常写入53.844438秒，实窗保持2D；解除后同一次写入成功、SHA匹配，未切Tab或重取即自动3D，NAV-04闭合。21份模型Job逐SHA未变，r6停止保护与r5日志补修证据沿主计划保留。
+
+**未结**　92条尚未完整验收；SEL-13／14、ERR-01／07／10、COMP-08的6项分支见主计划。原UX没有独立模型版本选择器、几何／贴图／格式只读，YOYO空环境回退内置配置，对应实窗口径仍待文本答复。目录故障注入启动被平台执行前拒绝，未产生实例或故障环境，不得换入口重试；原失败及过晚截图保留，不作精确时序证明。
+
+**下一步**　目标转为受阻，等待已提出的现界面／接口分层验收问题答复及其余规定实窗条件，取得后沿原六项恢复。r5身份`487a86cb1085578528ea0a6b3001187ccc268d9f467730201b220d35b4d1c108`，收据`20261124-083045-932`；本轮自有33072及sidecar3280正常退出，缓存辅助27240已释放，无活动生成或未恢复故障，DPI原200%。返回点仍为Toast D5，其余主线不接管。
+
+**计划变更**　授权范围与92条定义不变；r5／r6／r7连续保留的条件缺口在本轮独立NAV-04补验后成为阻塞，不表示用户暂停或取消。本专项Tripo8/15、YOYOClaw3D11次（10 ready、1 stopped），42个operation的2D调用60次。本轮只补原用例证据与文档，未改产品／测试源码或构建，不新增UX。旧Toast账独立，不自动提交／推送。
+
+---
+
+# 2026-11-24 此前 · 生成按钮错误Toast本地提交，验收完整通过12/40项
+
+**主线**　`UX/SMART-GENERATION-CLICK-FEEDBACK-20261123`；单代理，`codex/team/integration`；高级交接修复基线`7b113a2728`。[详细方案与TG-01～TG-40](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smart-generation-click-feedback-20261123)
+
+**本轮**　用户要求先提交当前修改，Toast实现、错误图标、相关测试及维护文档纳入同一本地提交，记录见主计划第11.3节及本次Git提交。核对匹配运行树的56项文件后，仅主计划与本短状态有后续变化，产品／测试／资源源码一致；复用267/267定向自动回归及已有真实链路证据，未新增构建、实窗测试或生成调用。40项业务验收仍完整通过12项（30%）、其余28项部分覆盖，不能记作全部通过。
+
+**未结**　40项尚未全过：完成区、部分配置／竞态及非生成冒烟仍欠G，不能全归为阻塞。第2秒替换／显示中操作受两cell约10秒往返限制，跨屏缺第二显示器；其它DPI尚未切换验证环境，部分非法参数被原UI规则阻断。无需新授权，预算仍Tripo3/5、图像2D11次且不限、YOYOClaw0次且不限。
+
+**下一步**　代码存档后按主计划第11.1节继续可达实窗缺口；短时／跨屏证据待具备对应操作或设备条件。在闭合前不宣称40/40。自有补测实例39716／2484正常关闭，不新增3D调用补截图。
+
+**计划变更**　按用户最新要求，当前Toast改动先形成本地提交；已授权功能范围与验收门槛不变，D5保留剩余。模型信息面板继续取消，非生成操作只冒烟；不推送，不接管原切片返回点。
+
+---
+
+# 2026-11-23 此前 · 其余未提交改动已回退，仅保留高级交接修复
+
+**主线**　`UX/LOCAL-CHANGE-REVIEW-20261123`评审决定执行；单代理，`codex/team/integration`／`918c137399`，独立保留原`MI-03c`高级“进入工作台”修复。[决定与验证](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#advanced-workbench-handoff-only-20261123)
+
+**本轮**　按用户项目会议结论回退四项面板、左对齐、相关构建／测试，移除已盘点的Windows验收工具及转测说明；产品代码只保留高级资产准备身份修复及4项回归，架构说明同步。增量编译与62/62定向回归通过，[本轮收据](../../.tmp/dev/logs/20261123-170115-616/result.json)。最终仅5个文件差异，索引为空、无未跟踪交付文件。
+
+**未结**　本次回退范围已完成；现有运行目录未刷新，未新增实窗结论。原切片工作台、SS-01／SS-36、REQ-08等返回点不接管。
+
+**下一步**　交付已核对的源码范围；后续按用户明确指令执行，不自动提交／推送／打包／新增生成或启动用户实例。
+
+**计划变更**　面板及剩余验收取消并回退；未实施的智能按钮3秒Toast需求随其余范围取消。旧方案／证据仅作历史，保留交接修复独立状态。
+
+---
+
+# MAINLINE-BUGFIX-001｜人像配色回退与取消（2026-11-26）
+
+`task/mainline-bugfix` 的 Windows Release 已同步到原运行目录，并通过原快捷方式启动验证。
+
+狮子手办自动应用近色回退并显示 `5/6 色`。人像样本成功应用人物套装。164 项定向回归通过，200% 最大化和 125% 窄窗均确认「取消优化」居中可点，任务退出后保留原配色、耗材和检查记录。[验收记录](/D:/TEST/artifacts/mainline-bugfix/evidence/workbench-portrait-cancel-20261126/validation.json)
+
+运行中从 125% 改到 200% 时，进度卡曾异常放大。在 200% 下重启后尺寸恢复。[实窗截图](/D:/TEST/artifacts/mainline-bugfix/evidence/workbench-portrait-cancel-20261126/cancel-200-after-dpi-change.jpg)
+
+应用内复核以原快捷方式启动的 Release 为准。
+
+实窗验收补充了窄窗进度卡留边和近色回退状态换行。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-portrait-cancel-20261126)
+
+---
+
+# MAINLINE-BUGFIX-001｜人像优化提示与默认六色首帧（2026-11-26）
+
+**主线** `task/mainline-bugfix` 固定 Windows Release 已从原入口启动。
+
+**本轮** 244 项定向回归通过。带贴图 GLB 在工作台切入前提交配色帧，六色减到五色后重置，六个色值与顺序恢复。899×701 的 125% 窄窗显示人物六色优化提示。[验收记录](/D:/TEST/artifacts/mainline-bugfix/evidence/workbench-first-palette-portrait-20261126/validation.json)
+
+**未结** 人像首次分区与取消由定向回归覆盖，实窗核对了缓存命中的识别阶段。
+
+**下一步** 原运行窗口已恢复 200% 缩放和最大化，可查看人物六色结果。
+
+**计划变更** 未配色模型的默认匹配在首帧前提交，后续分区只更新仍在使用此次默认配色的模型。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-workbench-first-palette-portrait-20261126)
+
+---
+
+# MAINLINE-BUGFIX-001｜去切片配色不匹配卡片（2026-11-25）
+
+**主线** `task/mainline-bugfix` 去切片交接已本地提交 `e0984a8b34`。
+
+**本轮** 配色不匹配改用工作台详情卡，在 125% 的 905×703 窄窗验证长表滚动及按钮可达。187 项定向回归通过。[验收记录](/D:/TEST/artifacts/mainline-bugfix/evidence/workbench-import-color-comparison-20261125/validation.json)
+
+**未结** 配色卡保留在本地工作树。实窗验收到两项配色操作可达。
+
+**下一步** 新版已从原入口启动并停在多色测试模型工作台。
+
+**计划变更** 表格沿用色卡详情的深色滚动条，表头和操作按钮固定。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-workbench-import-color-comparison-20261125)
+
+---
+
+# MAINLINE-BUGFIX-001｜去切片画面交接（2026-11-25）
+
+**主线** `task/mainline-bugfix` 固定 Windows Release 已同步原运行目录并使用原配置启动。
+
+**本轮** 小模型 200% 最大化逐帧核对通过，300 项定向测试通过。[验收记录](/D:/TEST/artifacts/mainline-bugfix/evidence/workbench-slicing-handoff-20261125/validation.json)
+
+**未结** 狮子手办切页与 125% 窄窗实测待验。
+
+**下一步** 用户接手当前新版窗口验证切页。
+
+**计划变更** 实窗验收由用户接续。Windows 进度卡与保留画面同步撤下。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-workbench-slicing-handoff-20261125)
+
+---
+
+# MAINLINE-BUGFIX-001｜手动试色保留与启动首帧（2026-11-25）
+
+**主线** `task/mainline-bugfix` 固定 Windows Release 已同步到原运行目录。
+
+**本轮** 小模型与狮子手办均通过手动保留和减色验证。200% 最大化与 125% 窄窗上，主窗从深色加载页开始显示。237 项定向回归通过。[验收记录](/D:/TEST/artifacts/mainline-bugfix/evidence/workbench-manual-retain-startup-20261125/validation.json)
+
+**未结** 实窗覆盖本机 DWM 路径。同次拖动内回拉由自动回归覆盖。
+
+**下一步** 按 PR #85 合入后的集成基线提交模型库、工作台和启动修复。正式修复验证入口使用本轮产物。
+
+**计划变更** 冷启动沿用恢复窗口的绘制交接，手动试色沿用 AI 配色的保留行落位规则。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-workbench-manual-retain-startup-20261125)
+
+---
+
+# MAINLINE-BUGFIX-001｜色卡换色、六色重置与加载弹框（2026-11-25）
+
+**主线** `task/mainline-bugfix` 通过固定 Windows Release 构建和 53 项定向回归。
+
+**本轮** 手动试色可点色块或色值换色，重置恢复默认六色 AI 配色。工作台加载弹框跨阶段保留打开时的位置。小模型、狮子手办和 Windows 125% 的 894×700 窄窗已实测。[验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-palette-picker-20261125/validation.json)
+
+**未结** 原运行目录仍有旧进程占用，桌面验证入口使用固定 Release 产物和原配置。
+
+**下一步** 通过「Honor Forge 正式修复验证」使用本轮构建。
+
+**计划变更** 重置目标改为当前模型的默认六色。增补模型加载弹框定位修复。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-workbench-palette-picker-20261125)
+
+---
+
+# MAINLINE-BUGFIX-001｜色卡重置与 Windows 任务栏（2026-11-25）
+
+**主线** `task/mainline-bugfix` 已用固定 Windows Release 编译和实窗验证。
+
+**本轮** 保留即时反馈、尾部保留色顺序、完整初始试色恢复已验证。任务栏品牌图标、色卡最小化恢复重绘和窄窗历史栏收起后的左侧归位已修复。[验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-palette-reset-20261125/validation.json)
+
+**未结** 旧进程 PID 23744 仍占用原运行文件。运行中切换系统缩放时曾显示通用图标，原 200% 下重新启动已恢复品牌图标。
+
+**下一步** 桌面「Honor Forge 正式修复验证」已启动新版，使用原配置，实窗停留在工作台色卡详情。
+
+**计划变更** 补测 Windows 主窗口与浮窗的最小化、恢复和任务栏表现。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-workbench-palette-reset-20261125)
+
+---
+
+# MAINLINE-BUGFIX-001｜色卡详情与实时调色（2026-11-25）
+
+**主线** `task/mainline-bugfix` 使用固定 Windows Release 构建和原配置。
+
+**本轮** 色卡详情可从标题拖动，滑杆同时可用。固定 Release 与 622 项回归通过。小模型和「狮子手办」均记录到松手前更新。125% 的 891×699 窄窗核对了长列表、颜色保留和关闭重开。[验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-palette-live-20261125/validation.json)
+
+**未结** 原运行目录仍有旧进程占用。实窗已改用同一 checkout 的固定 Release 产物，并沿用原运行目录和配置。
+
+**下一步** Windows 缩放已恢复为 200%，新版停留在「狮子手办」色卡详情。
+
+**计划变更** 在历史切换截取过渡画面前关闭色卡，并让色数限制提示在窄窗内完整显示。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-workbench-palette-20261125)
+
+---
+
+# MAINLINE-BUGFIX-001｜工作台拓扑明细（2026-11-24）
+
+**主线** `task/mainline-bugfix` 复用固定 Windows Release 构建和原运行配置。
+
+**本轮** 「检查修复详情」显示异常计数、连通组件和自交状态。手动检查浮层显示一句拓扑结论。Windows Release 和 82 项定向回归通过。125% 缩放的 901×700 实窗已验证明细分行、定位高亮和关闭。重复面立方体修复后从历史重开，最终 Release 复验了「狮子手办」历史重开和手动检查。[验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-topology-details-20261124/validation.json)
+
+**未结** Windows 的运行目录检查仍列出旧进程 PID 23744。线上网关实际限速配置仍待核对。
+
+**下一步** 新版使用固定 Release 产物及原工作目录和配置，窗口留在「狮子手办」检查修复详情。系统缩放已回读为原 200%。
+
+**计划变更** 补回拓扑明细，统一详情展示与问题面定位的模型摘要校验。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-model-library-20261124)
+
+---
+
+# MAINLINE-BUGFIX-001｜工作台修复详情与模型库响应（2026-11-24）
+
+**主线** `task/mainline-bugfix` 已在固定目录增量编译 Windows Release。
+
+**本轮** 检查修复详情使用工作台浮层，显示简短结果、面数和下一步。实窗覆盖「狮子手办」修复保存、历史重开、取消、失败及问题面高亮。125% 的约 896×698 窄窗中可点击定位和关闭，验收后已恢复 200%。原生 274 项和网页 28 项通过。[验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-repair-details-20261124/validation.json)
+
+**未结** 线上网关的实际限速配置待核对。旧进程仍占用原运行入口，`dev.ps1` 的同步检查报出 PID 23744。
+
+**下一步** 新版从固定 Release 产物使用原工作目录与原配置启动，窗口留在「狮子手办」工作台。
+
+**计划变更** 顶部、侧栏和详情共用检查结果。公开列表复测 0.68–1.99 秒，单张 2.38 MB PNG 封面 15.54 秒。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-model-library-20261124)
+
+---
+
+# MAINLINE-BUGFIX-001｜工作台修复提示与独立暂存（2026-11-24）
+
+**主线** `task/mainline-bugfix` 的已验收 Release 产物已同步到原运行目录。
+
+**本轮** 原目录和原配置启动新版，「狮子手办」的修复版从历史重开显示「检查通过」。EXE 与 DLL 的 SHA-256 匹配受测构建，345 项定向回归通过。[验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-repair-short-staging-20261124/validation.json)
+
+**未结** Windows 仍列出退出挂起的旧试用进程，原 DLL 已移出并保留为备份。
+
+**下一步** 新版窗口保留在已重开修复版的工作台。
+
+**计划变更** 工作台修复使用用户临时目录和短文件名，校验后登记至现有模型库。实窗验收到工作台历史重开为止。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-model-library-20261124)
+
+---
+
+# MAINLINE-BUGFIX-001｜模型库四页与下载交接（2026-11-24）
+
+**主线** `task/mainline-bugfix` 已使用原 Windows 运行目录与数据启动右栏进度版。
+
+**本轮** 50.6 MB OBJ 续期前持续写入约 95 秒，后台续期后同页自动重传并完成登记。复验了版本与三维视角、125% 缩放、工作台打开和两份 3MF 直达切片。网页 28 项和原生 183 项通过，另有 1 项环境跳过。[验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/model-library-download-feedback-20261124/validation.json)
+
+**未结** 3MF 实窗未捕捉到读取中的取消时机。真实换号与平台上传、评论和关注写入仍待已确认的测试账号。
+
+**下一步** 用更长读取样本补验原生导入取消，有测试账号后核对平台操作。
+
+**计划变更** 进度与操作并入右侧详情卡片，超时以连续 20 秒未收到文件数据判定。
+
+---
+
+# MAINLINE-BUGFIX-001｜模型库四页（2026-11-24）
+
+**主线** `task/mainline-bugfix` 基线为 `e098a95028`。固定运行目录已使用原配置启动新版。
+
+**本轮** 四页改版、下载后打开或导入、缺失原件重试已实现。实窗确认已下载按钮禁用，3MF 采用页内进度直达切片准备。网页 27 项和原生 148 项通过，原生 1 项环境跳过。[验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/model-library-20261124/validation.json)
+
+**未结** 读取中的实窗取消及测试账号的换号和线上写入待验。
+
+**下一步** 用测试账号补验线上操作，并补齐原生导入取消的实窗用例。
+
+**计划变更** 按用户反馈加入重复下载拦截、缺失重试和页内导入进度。[主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-model-library-20261124)
+
+---
+
+# MAINLINE-BUGFIX-001｜工作台底座和模型信息（2026-11-24）
+
+**主线** `task/mainline-bugfix` 已推送 `e098a95028`。PR #85 指向集成分支 `918c137399`。 [PR #85](https://github.com/arsenaltj/OrcaSlicer/pull/85)
+
+**本轮** 底座保留主体尺寸，模型信息显示组合尺寸，耗材提示收拢。固定 Windows Release、304 项工作台回归、602 项切片核心回归及 3MF 对照通过。
+
+**未结** GitHub 显示可合并，已运行的检查均通过。团队候选构建处于停用状态，PR 等待非作者复核。 [验证记录](D:/TEST/artifacts/mainline-bugfix/evidence/remote-pr-20261124/validation.json)
+
+**下一步** 维护者在复核后处理合入。桌面「Honor Forge 正式修复验证」可用原配置启动本版。
+
+**计划变更** 按用户反馈将「模型信息」按钮改为「关闭」。 [主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-workbench-round-base-20261124)
+
+---
+
 # MAINLINE-BUGFIX-001｜同步团队切片工作台（2026-11-23）
 
-**主线** `task/mainline-bugfix` 合入 `origin/codex/team/integration` 的 `918c137399`。
+**主线** `task/mainline-bugfix` 在 `16b3108ad5` 合入 `origin/codex/team/integration` 的 `918c137399`。
 
-**本轮** 先提交本地 `d3ef60b5a8`。两份进度文档的冲突已合并双方记录。
+**本轮** 先提交本地 `d3ef60b5a8`。两份进度文档冲突已解决。Windows Release、431 项定向回归、智能切片实窗和 3MF 往返通过。
 
-**未结** Windows Release 与功能验证进行中。
+**未结** 原配置实窗复验待做。此前用验收配置完成智能切片和重开重切。 [验证记录](D:/TEST/artifacts/mainline-bugfix/evidence/integration-918c137399-20261123/validation.json)
 
-**下一步** 复核原生工艺编辑、智能试切、工作台历史恢复和切片视角。
+**下一步** 桌面「Honor Forge 正式修复验证」已指向合并版 `16b3108ad5`。退出旧窗口后可通过同一入口使用原配置启动。
 
 **计划变更** 承接团队切片工作台的新实现。 [主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#mainline-bugfix-integration-20261123)
 

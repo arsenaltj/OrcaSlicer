@@ -695,6 +695,7 @@ public:
     void            update_ui_from_settings();
 
     bool            load_language(wxString language, bool initial);
+    void            apply_preference_language(const std::string& canonical);
 
     Tab*            get_tab(Preset::Type type);
     Tab*            get_plate_tab();

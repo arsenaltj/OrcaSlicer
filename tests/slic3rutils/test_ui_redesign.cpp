@@ -11,6 +11,7 @@
 #include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
 #include "slic3r/GUI/Redesign/ImageDesignDraft.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/DesignGenerationAvailability.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/GenerationActionFeedback.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
 #include "slic3r/GUI/AIModelGenerationClient.hpp"
 #include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
@@ -21,6 +22,7 @@
 #include "slic3r/GUI/Redesign/RedesignPreviewPresentation.hpp"
 #include "slic3r/GUI/Redesign/RedesignWorkspaceNavigation.hpp"
 #include "slic3r/GUI/Redesign/ModelGenerationStarfield.hpp"
+#include "slic3r/GUI/Redesign/GenerationCompletionToast.hpp"
 #include "slic3r/GUI/Redesign/PrinterWorkspaceState.hpp"
 #include "slic3r/GUI/CanvasNotificationLayout.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportPresentation.hpp"
@@ -817,6 +819,60 @@ TEST_CASE("Redesign page transitions reject overlap and ignore late readiness ca
     CHECK_FALSE(transition.current(*second));
 }
 
+TEST_CASE("Workbench import reveals only a new frame at the fitted layout",
+          "[UiRedesign][WorkbenchNavigation][WorkbenchImportPresentation]")
+{
+    using Status = WorkbenchImportFrameGate::Status;
+    WorkbenchImportFrameGate gate;
+    Presentation::PresentationStamp layout {4, 1, 3, 1000, 700, 192};
+    gate.reset(20);
+    CHECK(gate.observe(layout, true, 20) == Status::Waiting);
+    CHECK(gate.observe(layout, false, 21) == Status::Waiting);
+    REQUIRE(gate.observe(layout, true, 22) == Status::FitCamera);
+    gate.camera_fitted(layout, 22);
+    CHECK(gate.observe(layout, true, 22) == Status::Waiting);
+
+    SECTION("the viewport resizes") { ++layout.width; }
+    SECTION("the scale changes at the same size") { layout.dpi = 120; }
+    SECTION("the window is restored at the same size and DPI") { ++layout.layout; }
+
+    CHECK(gate.observe(layout, true, 23) == Status::Waiting);
+    CHECK(gate.observe(layout, true, 23) == Status::Waiting);
+    REQUIRE(gate.observe(layout, true, 24) == Status::FitCamera);
+    gate.camera_fitted(layout, 24);
+    CHECK(gate.observe(layout, true, 24) == Status::Waiting);
+    CHECK(gate.observe(layout, true, 25) == Status::Ready);
+}
+
+TEST_CASE("Leaving an import blocks late presentation and a view retry needs new frames",
+          "[UiRedesign][WorkbenchNavigation][WorkbenchImportPresentation]")
+{
+    using Status = WorkbenchImportFrameGate::Status;
+    RedesignPageTransition route;
+    WorkbenchImportFrameGate gate;
+    const auto initial = route.begin({2, 0}, {2, 1});
+    REQUIRE(initial);
+    CHECK_FALSE(route.begin({2, 0}, {2, 1}));
+    const Presentation::PresentationStamp initial_layout {4, *initial, 3, 1000, 700, 192};
+    gate.reset(10);
+    REQUIRE(gate.observe(initial_layout, true, 11) == Status::FitCamera);
+    gate.camera_fitted(initial_layout, 11);
+    REQUIRE(route.rollback(*initial));
+
+    const auto retry = route.begin({2, 0}, {2, 1});
+    REQUIRE(retry);
+    CHECK_FALSE(route.mark_ready(*initial));
+    CHECK_FALSE(route.commit(*initial));
+    const Presentation::PresentationStamp retry_layout {6, *retry, 3, 1000, 700, 192};
+    gate.reset(12);
+    CHECK(gate.observe(retry_layout, true, 12) == Status::Waiting);
+    REQUIRE(gate.observe(retry_layout, true, 13) == Status::FitCamera);
+    gate.camera_fitted(retry_layout, 13);
+    REQUIRE(gate.observe(retry_layout, true, 14) == Status::Ready);
+    REQUIRE(route.mark_ready(*retry));
+    CHECK(route.commit(*retry));
+}
+
 TEST_CASE("Model and printer pages share workbench navigation without taking the account route",
           "[UiRedesign][WorkbenchNavigation]")
 {
@@ -1126,6 +1182,93 @@ TEST_CASE("A retained model candidate permits a new design but active work and u
     input.custom_style = "clay";
     CHECK(design_generation_available(input, true, false, workbench, true));
     CHECK_FALSE(design_generation_available(input, true, false, workbench, false));
+}
+
+TEST_CASE("Smart input and configuration errors accept clicks while workbench activity still blocks them",
+          "[UiRedesign][GenerationClickFeedback]")
+{
+    ModelGenerationUIInput input;
+    PostGenerationUiState workbench;
+    REQUIRE(design_generation_clickable(false, workbench));
+    CHECK_FALSE(design_generation_available(input, false, false, workbench, true));
+    CHECK(design_generation_rejection(input, true, false, workbench, true) == "empty_input");
+    input.prompt.assign(2000, 'a');
+    REQUIRE(design_generation_available(input, true, false, workbench, true));
+    input.prompt += "猫";
+    CHECK(design_generation_rejection(input, true, false, workbench, true) == "prompt_too_long");
+    CHECK(design_generation_clickable(false, workbench));
+    input.prompt = "猫"; input.style = "custom";
+    CHECK(design_generation_rejection(input, true, false, workbench, true) == "custom_style_empty");
+    input.custom_style = "clay";
+    CHECK(design_generation_rejection(input, true, false, workbench, false) == "palette_unavailable");
+    CHECK(design_generation_available(input, true, false, workbench, true));
+    CHECK_FALSE(design_generation_clickable(true, workbench));
+    for (auto status : {PostGenerationUiState::Status::Loading, PostGenerationUiState::Status::Processing}) {
+        workbench.status = status;
+        CHECK_FALSE(design_generation_clickable(false, workbench));
+        CHECK_FALSE(design_generation_available(input, false, false, workbench, false));
+    }
+}
+
+TEST_CASE("Provider click feedback distinguishes cached configuration facts and hides raw diagnostics",
+          "[UiRedesign][GenerationClickFeedback]")
+{
+    AIModelGenerationClient::ProviderCatalog catalog {"image", "gpt", "not_configured", "", {}, "", "secret/private/path", false};
+    CHECK(generation_catalog_rejection(catalog, "") == "gpt_not_configured");
+    catalog.role = "geometry";
+    CHECK(generation_catalog_rejection(catalog, "") == "geometry_not_configured");
+    catalog.state = "checking";
+    CHECK(generation_catalog_rejection(catalog, "") == "provider_checking");
+    catalog.state = "empty";
+    CHECK(generation_catalog_rejection(catalog, "") == "provider_empty");
+    catalog.state = "error";
+    CHECK(generation_catalog_rejection(catalog, "") == "service_unavailable");
+    catalog.state = "ready"; catalog.models = {{"supported", "supported", true}};
+    CHECK(generation_catalog_rejection(catalog, "unsupported") == "geometry_model_unavailable");
+    CHECK(generation_catalog_rejection(catalog, "supported").empty());
+    const std::string fallback = generation_rejection_message("secret/private/path");
+    CHECK_FALSE(fallback.empty());
+    CHECK(fallback.find("secret") == std::string::npos);
+    auto state = ModelGenerationUIState();
+    auto changed = state; changed.can_click_generate_smart = true;
+    CHECK_FALSE(state.same_content(changed));
+    CHECK_FALSE(changed.can_generate_design);
+    CHECK_FALSE(changed.can_generate_model);
+}
+
+TEST_CASE("Replacing a toast restarts its full interval and dismissing cancels queued events",
+          "[UiRedesign][GenerationClickFeedback]")
+{
+    using namespace std::chrono;
+    GenerationToastTiming timing;
+    const GenerationToastTiming::Clock::time_point start {};
+    CHECK(timing.remaining_ms(start) == 0);
+    timing.restart(start);
+    CHECK(timing.remaining_ms(start) == 3000);
+    timing.restart(start + seconds(2));
+    // This is the old timer's deadline, one second into the new presentation.
+    CHECK(timing.remaining_ms(start + seconds(3)) == 2000);
+    CHECK(timing.remaining_ms(start + seconds(5) - nanoseconds(1)) == 1);
+    CHECK(timing.remaining_ms(start + seconds(5)) == 0);
+    timing.restart(start + seconds(6)); timing.cancel();
+    CHECK(timing.remaining_ms(start + seconds(7)) == 0);
+}
+
+TEST_CASE("Toast wrapping preserves complete Chinese and English text within narrow lines",
+          "[UiRedesign][GenerationClickFeedback]")
+{
+    const wxString message = wxString::FromUTF8("图片或风格已修改PleaseRegenerate对应设计图。");
+    const auto measure = [](const wxString& text) { return static_cast<int>(text.length()); };
+    const auto lines = generation_toast_lines(message,5,measure);
+    wxString restored;
+    REQUIRE(lines.size() > 1);
+    for (const auto& line : lines) {
+        CHECK_FALSE(line.empty()); CHECK(measure(line) <= 5); restored += line;
+    }
+    CHECK(restored == message);
+    const auto explicit_break = generation_toast_lines(wxString("one\r\ntwo"),20,measure);
+    REQUIRE(explicit_break.size() == 2);
+    CHECK(explicit_break[0] == "one"); CHECK(explicit_break[1] == "two");
 }
 
 TEST_CASE("An oversized UTF-8 draft disables design generation even with an image and recovers after editing", "[UiRedesign][ImageDesignDraft]")

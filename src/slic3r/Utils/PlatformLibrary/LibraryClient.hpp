@@ -56,20 +56,24 @@ struct DownloadSpec {
     std::string model, version, file, sha256, filename, title;
     int version_number {0};
     std::uint64_t size {0};
+    static std::uint64_t listed_size(const Json& file);
     static DownloadSpec from_detail(const Json&, const std::string& file);
     void validate() const;
     std::string extension() const;
     std::string key() const;
+    bool registered_original_missing(const boost::filesystem::path& root) const;
 };
 // Worker prepares bytes only. The GUI commits after rechecking account/request identity.
 class StagedDownload {
 public:
+    enum class Phase { Transfer, Verify };
+    using Progress = std::function<void(Phase, std::size_t written, std::size_t total)>;
     ~StagedDownload();
     StagedDownload(const StagedDownload&)=delete;
     StagedDownload& operator=(const StagedDownload&)=delete;
     static std::shared_ptr<StagedDownload> prepare(const Client&, const DownloadSpec&,
         const boost::filesystem::path& root, Cancellation,
-        std::function<void(std::size_t,std::size_t)> progress = {},
+        Progress progress = {},
         std::function<std::uintmax_t(const boost::filesystem::path&)> available_bytes = {});
     std::string commit(Cancellation);
 private:

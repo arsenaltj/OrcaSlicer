@@ -16,6 +16,7 @@
 #include "../AI/ModelGeneration/ModelHistoryOpen.hpp"
 #include "../AI/ModelGeneration/PortraitWorkbenchEntry.hpp"
 #include "../AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
+#include "../AI/ModelGeneration/WorkbenchImportPresentation.hpp"
 #include "../AI/ModelGeneration/WorkbenchImportSession.hpp"
 #include "../AI/SmartSlicing/SmartSlicingWorkbenchState.hpp"
 #include "../AI/Text/AITextClient.hpp"
@@ -121,6 +122,8 @@ public:
     void present_restore_frame();
     void show_printer_media();
     void refresh_printer_state();
+    bool settings_printer_switch_blocked() const;
+    void settings_printer_switch_applied();
 
 private:
     enum class ImageState { Empty, Loading, Ready, Failed };
@@ -133,6 +136,7 @@ private:
     void update_navigation();
     wxPanel* m_assets_page {nullptr};
     AssetsWorkspace* m_assets_workspace {nullptr};
+    wxWindow* m_navigation_rail {nullptr};
     void connect_model_generation_host();
     void apply_advanced_model_state(const ModelGenerationUIState& state, bool new_generation = false);
     void on_advanced_model_job(const AdvancedCreation::ModelJobEvent& event);
@@ -143,6 +147,7 @@ private:
     void recover_smart_generation();
     void open_creation_artifact(CreationSource source);
     void show_generation_completion();
+    void show_generation_error(const std::string& reason);
     void mount_smart_model_history();
     void restore_smart_model_history();
     void sync_smart_model_history();
@@ -218,6 +223,8 @@ private:
     wxPanel* create_slicing_recommendation_source(wxWindow* parent);
     void set_slicing_recommendation_source_selection(int selection);
     void on_slicing_recommendation_source_changed(int selection);
+    bool begin_workbench_import(WorkbenchImportPreparation prepare);
+    bool begin_import_presentation(WorkbenchImportPhase phase);
     void confirm_workbench_import(const AI::ModelImportRequest& request);
     void select_slicing_tab(bool native);
     void start_workbench_slice();
@@ -226,12 +233,13 @@ private:
     void stage_import_target_view();
     void rollback_import_target_view();
     void commit_import_target_view();
-    void retry_import_target_view();
+    bool retry_import_target_view();
     void finish_import_loading(bool retain_view_retry = false);
     void layout_import_loading();
     void layout_import_transition_cover();
-    void restore_import_source_page();
-    void check_import_first_frame();
+    void retain_import_source_page();
+    void release_import_source_page();
+    void check_import_first_frame(RedesignPageTransition::Token token);
     bool can_open_print_preparation(bool gcode_ready) const;
     void refresh_print_preparation_action();
     void open_print_preparation();
@@ -357,6 +365,7 @@ private:
     uint64_t m_history_open_request {0};
     std::string m_history_open_asset;
     wxDialog* m_history_loading {nullptr};
+    WorkbenchLoadingCardAnchor m_history_loading_anchor;
     wxActivityIndicator* m_history_activity {nullptr};
     WorkbenchLabel *m_history_stage {nullptr}, *m_history_elapsed {nullptr};
     wxWindow* m_history_cancel {nullptr};
@@ -365,23 +374,24 @@ private:
     bool m_workbench_source_reparented {false};
     wxFrame* m_workbench_transition_cover {nullptr};
     wxWindow* m_workbench_transition_source {nullptr};
-    Presentation::WindowMountLease m_workbench_source_mount, m_import_source_mount;
+    Presentation::WindowMountLease m_workbench_source_mount;
     std::unique_ptr<wxEventFilter> m_workbench_transition_input_filter;
     wxSize m_workbench_prepared_size;
     wxTimer m_workbench_transition_timer;
     RedesignPresentationDeadline m_workbench_presentation_deadline;
     bool m_import_in_progress {false};
-    bool m_import_awaiting_frame {false};
     bool m_import_target_staged {false};
-    bool m_import_target_presenting {false};
-    bool m_import_waiting_post_fit_frame {false};
+    bool m_import_source_retained {false};
+    bool m_import_frame_paused {false};
     bool m_import_project_committed {false};
-    bool m_import_view_retry_available {false};
-    size_t m_import_frame_baseline {0};
-    wxSize m_import_fitted_viewport;
+    std::size_t m_import_committed_object_id {0};
+    std::uint64_t m_import_layout_generation {0};
+    WorkbenchImportFrameGate m_import_frame_gate;
     std::shared_ptr<WorkbenchImportSession> m_import_session;
     wxDialog* m_import_loading {nullptr};
+    WorkbenchLoadingCardAnchor m_import_loading_anchor;
     wxFrame* m_import_transition_cover {nullptr};
+    std::unique_ptr<wxEventFilter> m_import_input_filter;
     wxActivityIndicator* m_import_activity {nullptr};
     WorkbenchLabel* m_import_stage {nullptr};
     WorkbenchLabel* m_import_elapsed {nullptr};
@@ -390,8 +400,9 @@ private:
     wxTimer m_slice_camera_retry_timer;
     int m_slice_camera_retry_attempts {0};
     std::chrono::steady_clock::time_point m_import_started;
-    std::chrono::steady_clock::time_point m_import_view_started;
+    RedesignPresentationDeadline m_import_presentation_deadline;
     boost::filesystem::path m_import_committed_model_path;
+    std::string m_import_committed_model_sha256;
     RedesignPageCoordinator m_page_coordinator;
     Presentation::RefreshScheduler m_surface_refresh;
     bool m_presentation_stopping {false};
@@ -503,6 +514,8 @@ private:
     bool m_image_page_view_only { false };
     bool m_input_sync_ok { false };
     bool m_option_sync_ok { false };
+    bool m_generation_input_rejected { false };
+    bool m_generation_options_rejected { false };
     bool m_submit_in_progress { false };
     bool m_applying_model_generation_state { false };
 };

@@ -8,6 +8,7 @@
 
 ## 专项需求基线
 
+- [高级模式2D描述与预览需求清单](2026-11-24-advanced-2d-description-preview-requirements.md)已获用户整体确认；配套[软件架构设计](2026-11-24-advanced-2d-description-preview-architecture.md)、[详细开发方案](2026-11-24-advanced-2d-description-preview-development-design.md)与[112条测试用例](2026-11-24-advanced-2d-description-preview-test-cases.md)。限定全视角描述、主图约束、2D两种预览及严格单图局部直提；已有模型后的改选采用原确认窗方案A，替代旧返回2D选图。已获授权实施，代码接线及Windows运行树已完成，正在逐项验收；实际通过、部分覆盖及证据只在[主计划当前项](../2026-09-25-product-convergence-and-lightweight-plan.md#advanced-2d-description-preview-alignment-20261124)维护，不将112条定义数视为全部通过。
 - [创作页内3D生成与工作台直达编辑需求文档V1.0](2026-11-12-inline-3d-generation-requirements.md)：2026-11-12最新需求，将智能／高级的生成等待与成果留在各自中央区，完成后双按钮和顶部提示，显式进入唯一编辑工作台。替代旧文档中等待／结果页属于工作台的规则，保留原编辑→导入切片→切片→打印链路；提示条时长等建议单列，实施与验证状态仍见主计划。
 - 配套[软件开发方案V1.0](2026-11-12-inline-3d-generation-development-design.md)：基于072f52d5e8调用链，定义共用展示、两模式状态归属、有效首帧、显式资产事务、Result清理、文件范围、六阶段实施顺序及41条用例追溯；仅为开发输入，不代表产品实施或验收完成。
 - [四项实测反馈修改方案与测试用例V1.0](2026-11-13-inline-3d-generation-feedback-fix-plan.md)：用户已确认实施并验证；限定智能输入空态恢复按钮、重新生成原图标、高级3D中文提示及智能准备阶段说明，列明必要恢复兼容、候选文件范围和30条补充测试；执行结果见原主计划及原41条证据表，不改变验收口径或扩展无关UX／业务。

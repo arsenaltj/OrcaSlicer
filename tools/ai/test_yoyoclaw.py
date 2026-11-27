@@ -257,26 +257,39 @@ class YoYoClawCatalogTests(unittest.TestCase):
                 path = Path(directory) / (view + ".png")
                 path.write_bytes(b"\x89PNG\r\n\x1a\n" + view.encode())
                 views[view] = path
-            for source in ({"front": views["front"]}, views):
-                task = (client.submit_multiview_3d("fixture-model", source) if len(source) == 4
+            for mask in range(8):
+                selected = ["front"] + [v for slot,v in enumerate(("left","back","right")) if mask & (1 << slot)]
+                source = {v:views[v] for v in reversed(selected)}
+                task = (client.submit_multiview_3d("fixture-model", source) if len(source) > 1
                         else client.submit_3d("fixture-model", source["front"]))
                 self.assertEqual(task, "fixture-task")
                 payload = client._submit_3d_payload.call_args.args[0]
-                self.assertEqual(set(payload), {"model", "image_base64", "multi_view_images"} if len(source) == 4
+                self.assertEqual(set(payload), {"model", "image_base64", "multi_view_images"} if len(source) > 1
                                  else {"model", "image_base64"})
                 self.assertEqual(base64.b64decode(payload["image_base64"]), views["front"].read_bytes())
                 self.assertEqual([row["view_type"] for row in payload.get("multi_view_images", [])],
-                                 ["left", "right", "back"] if len(source) == 4 else [])
+                                 [v for v in ("left", "right", "back") if v in source])
                 for row in payload.get("multi_view_images", []):
                     self.assertEqual(base64.b64decode(row["view_image_base64"]), views[row["view_type"]].read_bytes())
                 client._submit_3d_payload.assert_called_once()
                 client._submit_3d_payload.reset_mock()
             with self.assertRaises(YoYoClawError):
                 client.submit_multiview_3d("fixture-model", {"front": views["front"]})
-            views["left"].unlink()
-            with self.assertRaises(YoYoClawError):
-                client.submit_multiview_3d("fixture-model", views)
-            client._submit_3d_payload.assert_not_called()
+            for mask in range(8):
+                selected = ["front"] + [v for slot, v in enumerate(("left", "back", "right")) if mask & (1 << slot)]
+                for missing in selected:
+                    with self.subTest(selected=selected, missing=missing):
+                        original = views[missing].read_bytes()
+                        views[missing].unlink()
+                        try:
+                            with self.assertRaises(YoYoClawError):
+                                if len(selected) == 1:
+                                    client.submit_3d("fixture-model", views["front"])
+                                else:
+                                    client.submit_multiview_3d("fixture-model", {v: views[v] for v in selected})
+                            client._submit_3d_payload.assert_not_called()
+                        finally:
+                            views[missing].write_bytes(original)
 
     def test_geometry_does_not_guess_size_limits_or_repeat_a_rejected_create(self):
         client = YoYoClawClient(session=_TransportSession([]))
@@ -827,20 +840,29 @@ class YoYoClawTaskQueryTests(unittest.TestCase):
         self.assertEqual(session.requests[0][2]["timeout"], (0.5, 0.5))
 
     def test_failed_generation_submission_remains_single_and_ambiguous(self):
-        for status in (200, 408, 503):
-            with self.subTest(status=status):
-                client, session, clock = self.client([_TransportResponse(status, ValueError("not JSON"))])
-                with tempfile.TemporaryDirectory() as directory:
-                    reference = Path(directory) / "confirmed.png"
-                    reference.write_bytes(b"confirmed-design")
-                    with self.assertRaises(YoYoClawError) as raised:
-                        client.submit_3d("model", reference)
-                self.assertTrue(raised.exception.ambiguous)
-                self.assertFalse(raised.exception.retryable)
-                self.assertEqual(len(session.requests), 1)
-                self.assertEqual(session.requests[0][0], "POST")
-                self.assertTrue(session.requests[0][1].endswith("/model/chat/completions"))
-                self.assertEqual(clock.sleeps, [])
+        from tools.ai.yoyoclaw_client import requests
+
+        failures = [_TransportResponse(status, ValueError("not JSON")) for status in (200, 408, 503)]
+        failures += [requests.ConnectionError("private connection detail"), requests.Timeout("private timeout detail")]
+        failures += [_TransportResponse(200, payload) for payload in ({}, {"id": " "}, {"id": 42}, {"id": []})]
+        with tempfile.TemporaryDirectory() as directory:
+            paths = {view: Path(directory) / f"{view}.png" for view in ("front", "left", "back", "right")}
+            for path in paths.values(): path.write_bytes(b"confirmed-design")
+            for mask in range(8):
+                selected = {"front": paths["front"], **{view: paths[view]
+                    for slot, view in enumerate(("left", "back", "right")) if mask & (1 << slot)}}
+                for failure in failures:
+                    with self.subTest(views=list(selected), failure=type(failure).__name__):
+                        client, session, clock = self.client([failure])
+                        with self.assertRaises(YoYoClawError) as raised:
+                            if mask == 0: client.submit_3d("model", paths["front"])
+                            else: client.submit_multiview_3d("model", selected)
+                        self.assertTrue(raised.exception.ambiguous)
+                        self.assertFalse(raised.exception.retryable)
+                        self.assertEqual(len(session.requests), 1)
+                        self.assertEqual(session.requests[0][0], "POST")
+                        self.assertTrue(session.requests[0][1].endswith("/model/chat/completions"))
+                        self.assertEqual(clock.sleeps, [])
 
     def test_diagnostics_include_context_and_bounded_metadata_without_private_content(self):
         client, session, clock = self.client([

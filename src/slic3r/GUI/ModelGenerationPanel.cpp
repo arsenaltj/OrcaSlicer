@@ -125,15 +125,38 @@ bool ModelGenerationPanel::can_generate_design_from_shell() const
     input.prompt = m_prompt->GetValue().ToStdString(wxConvUTF8);
     input.style = current_style();
     input.custom_style = current_custom_style();
-    const bool busy = (m_asset_replace_guard && !m_asset_replace_guard()) ||
+    const bool palette_ready = !use_printable_colors() || m_palette_source->GetSelection() == 2 || !m_palette.empty();
+    return design_generation_available(input, generation_provider_available("image"), design_generation_busy(), post_generation_ui_state(), palette_ready);
+}
+
+bool ModelGenerationPanel::design_generation_busy() const
+{
+    return m_shutdown || !m_page_initialized || (m_asset_replace_guard && !m_asset_replace_guard()) ||
         m_busy || m_ui_stopping || m_preview_download_in_flight || m_saving_generation_options ||
         m_preview_loading || m_design_history_loading || m_finishing_running ||
         m_workbench_check_running || m_workbench_import_running ||
         (m_beauty_transactions && m_beauty_transactions->processing()) ||
         m_model_preview->semantic_processing() ||
         (m_finishing_workbench && m_model_preview->selection_busy());
+}
+
+std::string ModelGenerationPanel::smart_generation_rejection() const
+{
+    if (m_shutdown || !m_page_initialized || m_advanced_only) return "workbench_guard";
+    if (!design_generation_clickable(design_generation_busy(), post_generation_ui_state()))
+        return "workbench_guard";
+    if (auto reason = generation_provider_rejection("image"); !reason.empty()) return reason;
+    ModelGenerationUIInput input;
+    if (has_image_input()) input.image_path = wxString(m_selected_image_path.wstring()).ToStdString(wxConvUTF8);
+    input.prompt = m_prompt->GetValue().ToStdString(wxConvUTF8);
+    input.style = current_style(); input.custom_style = current_custom_style();
     const bool palette_ready = !use_printable_colors() || m_palette_source->GetSelection() == 2 || !m_palette.empty();
-    return design_generation_available(input, generation_provider_available("image"), busy, post_generation_ui_state(), palette_ready);
+    if (auto reason = design_generation_rejection(input, true, false, post_generation_ui_state(), palette_ready);
+        !reason.empty()) return reason;
+    if (auto reason = generation_provider_rejection("geometry"); !reason.empty()) return reason;
+    if (!generation_options_valid()) return "face_quality_mismatch";
+    if (m_selected_design_provider != "gpt") return "gpt_required";
+    return {};
 }
 
 bool ModelGenerationPanel::input_editable() const
@@ -187,30 +210,31 @@ bool ModelGenerationPanel::request_refresh_history()
     return true;
 }
 
-bool ModelGenerationPanel::synchronize_ui_input(const ModelGenerationUIInput& input)
+bool ModelGenerationPanel::synchronize_ui_input(const ModelGenerationUIInput& input, GenerationRejected rejected)
 {
+    const auto reject = [&rejected](const char* reason) { if (rejected) rejected(reason); return false; };
     if (m_shell_smart_creation && !(input == m_ui_state.input)) m_smart_restore_guard.input_changed();
     if (m_shutdown || !m_page_initialized || m_busy || m_preview_download_in_flight ||
         m_finishing_running || m_design_history_loading || m_saving_generation_options)
-        return false;
+        return reject("workbench_guard");
     if (!ModelGenerationPresentation::is_supported_style(input.style))
-        return false;
+        return reject("unsupported_style");
 
     const wxString prompt = wxString::FromUTF8(input.prompt);
     if (!input.prompt.empty() && prompt.empty())
-        return false;
+        return reject("sync_failed");
     const wxString custom_style = wxString::FromUTF8(input.custom_style);
-    if ((!input.custom_style.empty() && custom_style.empty()) || custom_style.length() > 240)
-        return false;
+    if (!input.custom_style.empty() && custom_style.empty()) return reject("sync_failed");
+    if (custom_style.length() > 240) return reject("custom_style_too_long");
 
     boost::filesystem::path image_path;
     if (!input.image_path.empty()) {
         const wxString path = wxString::FromUTF8(input.image_path);
         if (path.empty())
-            return false;
+            return reject("invalid_image");
         image_path = boost::filesystem::path(path.ToStdWstring());
         if (!is_supported_image(image_path))
-            return false;
+            return reject("invalid_image");
     }
 
     const bool changed = m_prompt->GetValue() != prompt || m_selected_image_path != image_path ||
@@ -219,7 +243,7 @@ bool ModelGenerationPanel::synchronize_ui_input(const ModelGenerationUIInput& in
         if (!m_selected_image_path.empty())
             clear_selected_image();
     } else if (image_path != m_selected_image_path && !set_selected_image(image_path, false)) {
-        return false;
+        return reject("invalid_image");
     }
     // Keep the settled failure's presentation identity while editing its next
     // input. Clearing it makes the Shell reject the synchronized snapshot as
@@ -245,12 +269,13 @@ bool ModelGenerationPanel::synchronize_ui_input(const ModelGenerationUIInput& in
     return true;
 }
 
-bool ModelGenerationPanel::synchronize_ui_options(const ModelGenerationUIOptions& options)
+bool ModelGenerationPanel::synchronize_ui_options(const ModelGenerationUIOptions& options, GenerationRejected rejected)
 {
+    const auto reject = [&rejected](const char* reason) { if (rejected) rejected(reason); return false; };
     if (m_shell_smart_creation && !(options == m_ui_state.options)) m_smart_restore_guard.input_changed();
     if (m_shutdown || !m_page_initialized || m_busy || m_preview_download_in_flight ||
         m_finishing_running || m_design_history_loading || m_saving_generation_options)
-        return false;
+        return reject("workbench_guard");
     const bool tripo = options.provider == "tripo";
     const bool yoyoclaw = options.provider == "yoyoclaw";
     const bool valid_face_limit = (yoyoclaw && options.face_limit == 0) || options.face_limit == 300000 || options.face_limit == 1000000 ||
@@ -264,7 +289,8 @@ bool ModelGenerationPanel::synchronize_ui_options(const ModelGenerationUIOptions
     if ((options.design_provider != "gpt" && options.design_provider != "yoyoclaw") ||
         (!tripo && !yoyoclaw) || !valid_face_limit || !valid_geometry || !valid_texture || !valid_format ||
         (options.face_limit == 2000000 && options.geometry_quality != "detailed"))
-        return false;
+        return reject(options.face_limit == 2000000 && options.geometry_quality != "detailed" ?
+            "face_quality_mismatch" : "invalid_model_options");
 
     const auto previous = current_generation_options();
     if (previous.provider == options.provider && previous.design_provider == options.design_provider &&
@@ -307,7 +333,7 @@ bool ModelGenerationPanel::synchronize_ui_options(const ModelGenerationUIOptions
         restore.output_format = previous.output_format;
         apply(restore);
         refresh_controls();
-        return false;
+        return reject("sync_failed");
     }
 
     m_legacy_generation_defaults = false;
@@ -363,6 +389,7 @@ void ModelGenerationPanel::publish_ui_state()
     state.service_availability_known = m_service_availability_known;
     state.busy = m_busy || m_ui_stopping || m_preview_download_in_flight || m_saving_generation_options;
     state.can_generate_design = can_generate_design_from_shell();
+    state.can_click_generate_smart = design_generation_clickable(design_generation_busy(), post_generation_ui_state());
     state.inputs_match_job = job_inputs_match();
     state.model_options_match = model_options_match_job();
     const bool can_reuse_model = can_reuse_ready_model_design() && !state.busy &&
@@ -563,6 +590,12 @@ void ModelGenerationPanel::set_service_availability(bool available, bool generat
     if (available)
         BOOST_LOG_TRIVIAL(info) << "AI local service ready; online generation available: " << m_generation_available;
     if (!m_page_initialized) return;
+    // The smart page only exposes the geometry picker, so it never requests
+    // the GPT catalog through that picker. Read the existing local catalog
+    // once per service connection to distinguish missing GPT configuration
+    // from an in-flight check. This endpoint does not call the GPT provider.
+    if (available && m_role == Role::SmartCreation && m_provider_catalogs.count("image:gpt") == 0)
+        get_provider_catalog("image", "gpt", {}, {});
     if (available && !m_busy) {
         m_status->SetLabel(m_generation_available
             ? _L("本地 3D 生成服务已就绪。")

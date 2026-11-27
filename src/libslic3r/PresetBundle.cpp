@@ -3943,6 +3943,32 @@ static void load_mixed_filament_settings(DynamicPrintConfig &project_config, App
     }
 }
 
+namespace {
+constexpr std::array<const char*, 4> remembered_route_options = {
+    "filament_map", "filament_nozzle_map", "filament_volume_map", "filament_map_mode"
+};
+
+void restore_printer_routes(DynamicPrintConfig& project, AppConfig& config,
+                            const std::string& printer, size_t filament_count)
+{
+    for (const char* key : remembered_route_options) {
+        if (!config.has_printer_setting(printer, key))
+            continue;
+        const std::string saved = config.get_printer_setting(printer, key);
+        const auto* existing = project.option(key);
+        if (saved.empty() || !existing)
+            continue;
+        std::unique_ptr<ConfigOption> option(existing->clone());
+        if (!option->deserialize(saved))
+            continue;
+        if (const auto* values = dynamic_cast<const ConfigOptionInts*>(option.get());
+            values && values->values.size() != filament_count)
+            continue;
+        project.set_key_value(key, option.release());
+    }
+}
+}
+
 void PresetBundle::update_selections(AppConfig &config)
 {
     std::string initial_printer_profile_name    = printers.get_selected_preset_name();
@@ -4026,6 +4052,7 @@ void PresetBundle::update_selections(AppConfig &config)
     // No global fallback here: on a printer change the legacy shared keys describe another
     // printer's filament list, so absent per-printer keys must clear the mixes, not revive them.
     load_mixed_filament_settings(project_config, config, initial_printer_profile_name, filament_presets.size(), false);
+    restore_printer_routes(project_config, config, initial_printer_profile_name, filament_presets.size());
 
     // Update visibility of presets based on their compatibility with the active printer.
     // Always try to select a compatible print and filament preset to the current printer preset,
@@ -4187,6 +4214,7 @@ void PresetBundle::load_selections(AppConfig &config, const PresetPreferences& p
         project_config.option<ConfigOptionFloats>("flush_multiplier")->values = std::vector<double>(flush_multipliers.begin(), flush_multipliers.end());
     }
     load_mixed_filament_settings(project_config, config, initial_printer_profile_name, filament_presets.size(), true);
+    restore_printer_routes(project_config, config, initial_printer_profile_name, filament_presets.size());
 
     // Update visibility of presets based on their compatibility with the active printer.
     // Always try to select a compatible print and filament preset to the current printer preset,
@@ -4261,7 +4289,7 @@ void PresetBundle::load_selections(AppConfig &config, const PresetPreferences& p
 
 // Export selections (current print, current filaments, current printer) into config.ini
 // BBS: change directories by design
-void PresetBundle::export_selections(AppConfig &config)
+void PresetBundle::export_selections(AppConfig &config, bool remember_routes)
 {
     if (m_selection_export_blockers > 0)
         return;
@@ -4280,7 +4308,13 @@ void PresetBundle::export_selections(AppConfig &config)
         return;
     }
 
+    // Profiles opted in by Settings keep their logical routes on subsequent native exports.
+    remember_routes = remember_routes || config.has_printer_setting(printer_name, "filament_map");
     config.clear_printer_settings(printer_name);
+    if (remember_routes)
+        for (const char* key : remembered_route_options)
+            if (const auto* option = project_config.option(key))
+                config.set_printer_setting(printer_name, key, option->serialize());
     config.set_printer_setting(printer_name, PRESET_PRINTER_NAME, printer_name);
     config.set_printer_setting(printer_name, PRESET_PRINT_NAME, prints.get_selected_preset_name());
     config.set_printer_setting(printer_name, PRESET_FILAMENT_NAME,     filament_presets.front());
@@ -6022,17 +6056,20 @@ DynamicPrintConfig PresetBundle::config_from_gcode(const std::string &path, Forw
     return config;
 }
 
-std::optional<PresetBundle::Selection> PresetBundle::selection() const
+std::optional<PresetBundle::Selection> PresetBundle::selection(bool retain_embedded) const
 {
-    auto capture = [](const PresetCollection &presets, Selection::Collection &out) {
-        if (std::any_of(presets.m_presets.begin(), presets.m_presets.end(), [](const Preset &preset) { return preset.is_project_embedded; }))
+    auto capture = [retain_embedded](const PresetCollection &presets, Selection::Collection &out) {
+        if (!retain_embedded && std::any_of(presets.m_presets.begin(), presets.m_presets.end(), [](const Preset &preset) { return preset.is_project_embedded; }))
             return false;
         out.selected = presets.get_selected_preset_name();
         out.edited   = presets.get_edited_preset().config;
         out.saved    = presets.m_saved_preset.config;
         out.visible.reserve(presets.m_presets.size());
-        for (const Preset &preset : presets.m_presets)
+        for (const Preset &preset : presets.m_presets) {
             out.visible.push_back(preset.is_visible);
+            if (retain_embedded)
+                out.visibility_by_name.emplace(preset.name, preset.is_visible);
+        }
         return true;
     };
     Selection selection;
@@ -6044,14 +6081,22 @@ std::optional<PresetBundle::Selection> PresetBundle::selection() const
     return selection;
 }
 
-void PresetBundle::restore_selection(const Selection &selection)
+void PresetBundle::restore_selection(const Selection &selection, bool retain_embedded)
 {
-    auto restore = [](PresetCollection &presets, const Selection::Collection &saved) {
-        presets.reset_project_embedded_presets();
+    auto restore = [retain_embedded](PresetCollection &presets, const Selection::Collection &saved) {
+        if (retain_embedded) {
+            for (auto& preset : presets.m_presets) {
+                const auto visibility = saved.visibility_by_name.find(preset.name);
+                if (visibility != saved.visibility_by_name.end())
+                    preset.is_visible = visibility->second;
+            }
+        } else {
+            presets.reset_project_embedded_presets();
+            assert(presets.m_presets.size() == saved.visible.size());
+            for (size_t i = 0; i < std::min(presets.m_presets.size(), saved.visible.size()); ++i)
+                presets.m_presets[i].is_visible = saved.visible[i];
+        }
         // Before selecting: select_preset_by_name() passes over a hidden preset.
-        assert(presets.m_presets.size() == saved.visible.size());
-        for (size_t i = 0; i < std::min(presets.m_presets.size(), saved.visible.size()); ++i)
-            presets.m_presets[i].is_visible = saved.visible[i];
         presets.select_preset_by_name(saved.selected, true);
         presets.m_saved_preset.config      = saved.saved;
         presets.get_edited_preset().config = saved.edited;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "slic3r/GUI/AI/Model/ModelFilePath.hpp"
+
 #include "PostGenerationWorkbenchState.hpp"
 #include "WorkbenchArtifactValidation.hpp"
 #include "PortraitNativeCheckpoint.hpp"
@@ -49,7 +51,7 @@ inline bool apply_native_workbench_evidence(const TriangleMesh& mesh, const nloh
     result.self_intersections = t.at("self_intersects").get<bool>() ? 1 : 0;
     result.native_repair_acceptance = evidence.at("receipt");
     result.native_repair_evidence = evidence;
-    result.summary = "已按 Orca 原生修复结果接收；拓扑检查事实与几何变化已记录，原件保留。";
+    result.summary = "高级修复已通过复检，原模型保留。";
     return true;
 }
 
@@ -63,7 +65,7 @@ inline WorkbenchCheckResult inspect_native_repair_candidate(const boost::filesys
         !apply_native_workbench_evidence(mesh, native_repair_evidence(*repair.repair_evidence), result) ||
         AI::model_artifact_sha256(path) != repair.output_sha256) {
         result = {}; result.status = WorkbenchCheckStatus::Failed;
-        result.summary = error.empty() ? "原生修复成果身份无法验证，原件保留。" : error;
+        result.summary = error.empty() ? "修复成果无法验证，原模型保留。" : error;
     } else result.model_sha256 = repair.output_sha256;
     return result;
 }
@@ -286,10 +288,10 @@ inline bool decode_native_publication_certificate(
         };
         const auto verify_files = [&] {
             checkpoint();
-            require(boost::filesystem::is_regular_file(candidate) &&
-                    !boost::filesystem::is_symlink(candidate) &&
-                    boost::filesystem::is_regular_file(source) &&
-                    !boost::filesystem::is_symlink(source),
+            require(boost::filesystem::is_regular_file(AI::model_io_path(candidate)) &&
+                    !boost::filesystem::is_symlink(AI::model_io_path(candidate)) &&
+                    boost::filesystem::is_regular_file(AI::model_io_path(source)) &&
+                    !boost::filesystem::is_symlink(AI::model_io_path(source)),
                     "Native publication files are unavailable.");
             require(AI::model_artifact_sha256(candidate) == proof.candidate_sha256 &&
                     AI::model_artifact_sha256(source) == proof.carrier_sha256,
@@ -423,10 +425,10 @@ inline bool restore_workbench_appearance_topology(TriangleMesh& mesh,
         };
         const auto read = [&](const boost::filesystem::path& path) {
             checkpoint();
-            if (boost::filesystem::is_symlink(path) || !boost::filesystem::is_regular_file(path) ||
-                boost::filesystem::file_size(path) > 128ULL * 1024 * 1024)
+            if (boost::filesystem::is_symlink(AI::model_io_path(path)) || !boost::filesystem::is_regular_file(AI::model_io_path(path)) ||
+                boost::filesystem::file_size(AI::model_io_path(path)) > 128ULL * 1024 * 1024)
                 throw std::runtime_error("Appearance source metadata is unavailable.");
-            boost::filesystem::ifstream input(path, std::ios::binary);
+            boost::filesystem::ifstream input(AI::model_io_path(path), std::ios::binary);
             return nlohmann::json::parse(input);
         };
         const auto same_corners = [&](const indexed_triangle_set& left, const indexed_triangle_set& right) {
@@ -456,7 +458,7 @@ inline bool restore_workbench_appearance_topology(TriangleMesh& mesh,
         // cycles; new saved certificates avoid this work on normal reopen.
         for (size_t depth = 0; depth < 64; ++depth) {
             checkpoint();
-            if (!visited.insert(current.generic_string()).second || boost::filesystem::is_symlink(current)) return false;
+            if (!visited.insert(current.generic_string()).second || boost::filesystem::is_symlink(AI::model_io_path(current))) return false;
             const auto hash = AI::model_artifact_sha256(current);
             const auto metadata_path = AI::beauty_metadata_path(current, root);
             const auto metadata_hash = AI::model_artifact_sha256(metadata_path);
@@ -507,7 +509,7 @@ inline bool restore_workbench_appearance_topology(TriangleMesh& mesh,
                 checkpoint();
                 for (const auto& item : ancestry) {
                     checkpoint();
-                    if (boost::filesystem::is_symlink(item.model) || boost::filesystem::is_symlink(item.metadata) ||
+                    if (boost::filesystem::is_symlink(AI::model_io_path(item.model)) || boost::filesystem::is_symlink(AI::model_io_path(item.metadata)) ||
                         AI::model_artifact_sha256(item.model) != item.model_hash ||
                         AI::model_artifact_sha256(item.metadata) != item.metadata_hash) return false;
                 }

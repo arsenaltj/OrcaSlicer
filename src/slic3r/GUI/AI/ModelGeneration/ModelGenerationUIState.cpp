@@ -31,6 +31,7 @@ bool ModelGenerationUIState::same_content(const ModelGenerationUIState& other) c
            service_available == other.service_available &&
            service_availability_known == other.service_availability_known && busy == other.busy &&
            can_generate_design == other.can_generate_design && can_generate_model == other.can_generate_model &&
+           can_click_generate_smart == other.can_click_generate_smart &&
            can_stop == other.can_stop && can_retry_service == other.can_retry_service &&
            can_retry_model == other.can_retry_model &&
            can_restore_latest == other.can_restore_latest && can_import == other.can_import &&

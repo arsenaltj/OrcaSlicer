@@ -64,6 +64,11 @@ void RedesignShell::refresh_inline_generation()
     if (!m_smart_generation_view) return;
     const bool content = m_smart_generation_view->has_content();
     const bool complete = content && m_smart_generation_view->ready();
+    if (m_smart_creation && m_generate_button) {
+        const bool enabled = m_image_page_view_only || (m_model_generation_state.can_click_generate_smart &&
+            generation_input_editable() && !m_prompt_polish_state.active() && !m_smart_generation_view->loading());
+        if (m_generate_button->IsEnabled() != enabled) m_generate_button->Enable(enabled);
+    }
     bool layout = false;
     const auto show = [&layout](wxWindow* window, bool visible) {
         if (window && window->IsShown() != visible) { window->Show(visible); layout = true; }
@@ -135,5 +140,13 @@ void RedesignShell::show_generation_completion()
     if (m_page_coordinator.page() != Page::Image || m_page_coordinator.transition().active()) return;
     if (!m_generation_toast) m_generation_toast = new GenerationCompletionToast(this);
     m_generation_toast->present();
+}
+
+void RedesignShell::show_generation_error(const std::string& reason)
+{
+    if (reason.empty()) { if (m_generation_toast) m_generation_toast->dismiss(); return; }
+    if (m_page_coordinator.page() != Page::Image || m_page_coordinator.transition().active() || m_presentation_stopping) return;
+    if (!m_generation_toast) m_generation_toast = new GenerationCompletionToast(this);
+    m_generation_toast->present_error(wxGetTranslation(wxString::FromUTF8(generation_rejection_message(reason))));
 }
 } // namespace Slic3r::GUI

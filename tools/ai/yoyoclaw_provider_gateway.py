@@ -307,6 +307,7 @@ class YoYoClawModelProviderGateway:
         error = catalog.get("error") or {}
         return {"available": supported, "model": selected,
                 "named_four_view_model": "supported" if source == "multiview" and supported else "unknown",
+                "supported_image_counts": [1, 2, 3, 4] if supported else [],
                 "reason": "" if supported else "unsupported_input" if present else
                           error.get("code", "model_unavailable")}
 
@@ -380,9 +381,13 @@ class YoYoClawModelProviderGateway:
         existing = existing_task_id.strip()
         if existing:
             return ProviderTaskRef("yoyoclaw", existing, True)
-        if request.source == "image" and request.image_path is not None and Path(request.image_path).is_file():
+        if (request.source == "image" and isinstance(request.image_path, (str, Path))
+                and Path(request.image_path).is_file()):
             views = {"front": Path(request.image_path)}
-        elif request.source == "multiview" and request.image_paths and set(request.image_paths) == {"front", "left", "right", "back"}:
+        elif (request.source == "multiview" and isinstance(request.image_paths, Mapping) and request.image_paths
+              and "front" in request.image_paths and 2 <= len(request.image_paths) <= 4
+              and set(request.image_paths).issubset({"front", "left", "right", "back"})
+              and all(isinstance(path, (str, Path)) and Path(path).is_file() for path in request.image_paths.values())):
             views = request.image_paths
         else:
             raise ProviderGatewayError(

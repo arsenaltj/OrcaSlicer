@@ -59,6 +59,51 @@ TEST_CASE("Smart preparation retains its flow when the final model job arrives",
     CHECK(view.consume_completion(true));
 }
 
+TEST_CASE("Local model loading protects generation until a current frame or failure", "[InlineModelGeneration][GenerationClickFeedback]") {
+    for (bool smart : {false, true}) {
+        DYNAMIC_SECTION((smart ? "smart" : "advanced")) {
+            InlineModelGenerationState view;
+            auto snapshot = generating(smart);
+            const GenerationBinding source {smart ? CreationSource::Smart : CreationSource::Advanced, "group", 1};
+            REQUIRE(view.apply(source, snapshot, {}));
+            CHECK_FALSE(view.loading());
+            snapshot.stage = ModelGenerationUIStage::ModelReady;
+            snapshot.model_ready = true; snapshot.busy = false; ++snapshot.revision;
+            REQUIRE(view.apply(source, snapshot, artifact()));
+            CHECK(view.loading());
+            const auto generation = view.generation();
+            REQUIRE(view.advance(generation, InlinePreviewPhase::Preparing));
+            CHECK(view.loading());
+            REQUIRE(view.advance(generation, InlinePreviewPhase::AwaitingFirstFrame));
+            CHECK(view.loading());
+            REQUIRE(view.advance(generation, InlinePreviewPhase::Ready));
+            CHECK_FALSE(view.loading()); CHECK(view.ready());
+
+            view.retry();
+            CHECK(view.loading());
+            CHECK_FALSE(view.advance(generation, InlinePreviewPhase::Ready));
+            CHECK(view.loading());
+            REQUIRE(view.advance(view.generation(), InlinePreviewPhase::Preparing));
+            REQUIRE(view.advance(view.generation(), InlinePreviewPhase::Failed));
+            CHECK_FALSE(view.loading()); CHECK_FALSE(view.ready());
+
+            view.retry();
+            REQUIRE(view.advance(view.generation(), InlinePreviewPhase::Preparing));
+            REQUIRE(view.advance(view.generation(), InlinePreviewPhase::AwaitingFirstFrame));
+            REQUIRE(view.advance(view.generation(), InlinePreviewPhase::Failed));
+            CHECK_FALSE(view.loading());
+
+            REQUIRE(view.apply(source, snapshot, artifact("replacement")));
+            CHECK(view.loading());
+            const auto replacement = view.generation();
+            view.invalidate();
+            CHECK_FALSE(view.loading());
+            CHECK_FALSE(view.advance(replacement, InlinePreviewPhase::Ready));
+            CHECK_FALSE(view.loading());
+        }
+    }
+}
+
 TEST_CASE("Smart dispatch retains feedback through confirmed design and option saving only", "[InlineModelGeneration]") {
     InlineModelGenerationState view;
     auto snapshot = generating();

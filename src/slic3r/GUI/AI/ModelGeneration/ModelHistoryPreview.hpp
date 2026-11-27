@@ -1,4 +1,6 @@
 #pragma once
+
+#include "slic3r/GUI/AI/Model/ModelFilePath.hpp"
 #include "ModelHistoryOpen.hpp"
 #include "ModelHistoryRepairIndex.hpp"
 #include "ModelLibraryRepository.hpp"
@@ -88,7 +90,7 @@ inline bool prepare_history_preview(std::shared_ptr<ModelPreview3D::PreparedMode
         ? request->repairs->candidates(original.model_path) : std::vector<ModelHistoryRepairIndex::Node>{};
     bool might_be_certified = false;
     if (!candidates.empty()) {
-        boost::filesystem::ifstream input(record_path(original), std::ios::binary);
+        boost::filesystem::ifstream input(AI::model_io_path(record_path(original)), std::ios::binary);
         const auto summary = nlohmann::json::parse(input, [](int depth, nlohmann::json::parse_event_t event,
                                                             nlohmann::json& value) {
             return event != nlohmann::json::parse_event_t::key || depth != 1 ||
@@ -127,7 +129,7 @@ inline bool prepare_history_preview(std::shared_ptr<ModelPreview3D::PreparedMode
                 const auto path = root / relative;
                 boost::system::error_code ec;
                 return !relative.empty() && ModelGenerationPresentation::path_is_inside(root, path) &&
-                    boost::filesystem::is_regular_file(path, ec) && !ec ? path : boost::filesystem::path{};
+                    boost::filesystem::is_regular_file(AI::model_io_path(path), ec) && !ec ? path : boost::filesystem::path{};
             };
             entry.reference_image_path = path_field("reference_image_path");
             entry.ai_image_path = path_field("ai_image_path");
@@ -176,7 +178,7 @@ inline ModelPreviewLoadResult prepare_model_preview_load(const boost::filesystem
     const boost::filesystem::path& metadata_path,
     const std::shared_ptr<ModelHistoryMetadata>& history_metadata,
     const std::shared_ptr<ModelHistoryOpenRequest>& history_open,
-    const std::function<bool()>& stopped, bool share_exact_vertices)
+    const std::function<bool()>& stopped, bool share_exact_vertices, bool workbench_entry = false)
 {
     ModelPreviewLoadResult result;
     result.prepared = std::make_shared<ModelPreview3D::PreparedModel>();
@@ -191,10 +193,12 @@ inline ModelPreviewLoadResult prepare_model_preview_load(const boost::filesystem
         }
         const bool reused = result.prepared->reuse_history_scene;
         if (history_open && !reused && !history_open->generated && !result.prepared->color_trial) {
-            auto& prepared = *result.prepared;
-            auto& colors = prepared.history_colors.emplace();
             const auto& saved = history_metadata->restoration_fields();
-            if (saved.is_object() && saved.contains("palette") && saved["palette"].is_array() &&
+            const auto source = saved.is_object() ? saved.value("source", std::string{}) : std::string{};
+            const bool generation_palette = source == "text" || source == "image" || source == "text_image";
+            std::vector<PreviewPalette::Color> colors;
+            if ((!workbench_entry || !generation_palette) && saved.is_object() &&
+                saved.contains("palette") && saved["palette"].is_array() &&
                 saved["palette"].size() <= PreviewPalette::max_preview_colors) {
                 for (const auto& item : saved["palette"]) {
                     const wxColour color(item.is_string() ? wxString::FromUTF8(item.get_ref<const std::string&>()) : wxString{});
@@ -202,12 +206,17 @@ inline ModelPreviewLoadResult prepare_model_preview_load(const boost::filesystem
                     colors.push_back({color.Red() / 255.f, color.Green() / 255.f, color.Blue() / 255.f});
                 }
             }
-            if (colors.empty()) colors = std::move(prepared.discrete_colors);
+            if (!workbench_entry && colors.empty()) colors = std::move(result.prepared->discrete_colors);
+            if (!colors.empty() || !workbench_entry) result.prepared->history_colors = std::move(colors);
         }
         result.stage = "render_geometry";
         if (history_open && history_open->progress && !stopped())
             history_open->progress(ModelHistoryOpenEvent::Stage::Preview);
         if (!reused) result.prepared->prepare_render_geometry(stopped, share_exact_vertices);
+        if (workbench_entry && !reused && !stopped()) {
+            result.stage = "default_palette";
+            result.prepared->prepare_default_workbench_palette();
+        }
         if (stopped()) { result.error = "模型预览准备已取消。"; return result; }
         if (history_open) {
             result.stage = "file_validation";

@@ -501,8 +501,11 @@ struct ModelSemanticColoring::Impl {
                     result->analysis = analysis;
                     result->person_detected = analysis->person_detected;
                     result->error = analysis->error;
-                    if (analysis->error.empty() && !analysis->canceled) {
-                        cached_analysis = analysis;
+                    const bool analysis_ready = analysis->error.empty() && !analysis->canceled;
+                    if (analysis_ready) cached_analysis = analysis;
+                    const bool native_suite_miss = !task->request.analysis_only && task->request.native_partition &&
+                        !task->request.fixed_role_slots.empty() && !result->person_detected;
+                    if (analysis_ready && !native_suite_miss) {
                         // The V2 portrait allocator is opt-in and bounded to
                         // four, five or six automatic colors. Ordinary semantic
                         // requests must keep using the palette matcher.
@@ -869,12 +872,16 @@ struct ModelSemanticColoring::Impl {
             // independent. Preserve the exact same source regions on a
             // nearest-color fallback; a region/budget error is never hidden
             // behind a successful unrefined shader fallback.
+            const bool lacks_trusted_roles = task->request.native_partition && result->person_detected &&
+                result->color_blocks && !task->request.fixed_role_slots.empty() &&
+                PortraitColorBlocks::reliable_fixed_role_blocks(*result->color_blocks, task->request.fixed_role_slots) == 0;
             if (!cancel() && task->request.native_partition && !result->source_region_failure &&
-                (!result->error.empty() || !result->analysis || !result->person_detected)) {
+                (!result->error.empty() || !result->analysis || !result->person_detected || lacks_trusted_roles)) {
                 result->semantic_fallback_reason = !result->error.empty() ? "本地识别器不可用，近色回退：" + result->error :
+                    lacks_trusted_roles ? "近色回退：缺少可信的人像区域。" :
                     "未检测到人物，保留 AI 源色区域并近色匹配。";
                 try {
-                    if (!result->color_blocks || result->geometry.is_empty()) {
+                    if (!result->error.empty() || !result->color_blocks || result->geometry.is_empty() || lacks_trusted_roles) {
                         const auto& source = original_source ? *original_source : *task->request.source;
                         auto analysis=std::make_shared<SC::Analysis>();
                         analysis->geometry_id=source.geometry_id;
@@ -895,7 +902,8 @@ struct ModelSemanticColoring::Impl {
                         result->color_blocks=PortraitColorBlocks::build(input,cancel);
                         result->color_blocks->appearance(result->automatic,result->automatic_subfaces);
                         result->geometry=build_semantic_colored_geometry(*task->request.source,result->automatic,result->automatic_subfaces,cancel);
-                        result->analysis=std::move(analysis);result->error.clear();
+                        if (!result->analysis) result->analysis = std::move(analysis);
+                        result->error.clear();
                         result->source_region_failure=false;
                     }
                 } catch (const std::exception& error) {result->error=error.what();}

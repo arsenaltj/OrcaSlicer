@@ -289,10 +289,12 @@ function installedPage() {
   const directory = path.resolve(__dirname, "../../resources/web/model_library");
   const html = fs.readFileSync(path.join(directory, "index.html"), "utf8");
   const ids = new Map([...html.matchAll(/id="([^"]+)"/g)].map(x => [x[1], new Element()]));
+  ids.get("detail").hidden = true;
   const scopes = ["mine", "library"].map(scope => { const node = new Element("button"); node.dataset.scope = scope; return node; });
   const frames = [], timers = [], sent = [];
   const window = { libraryState: require("../../resources/web/model_library/library-state.js"),
-    wx: {postMessage: text => sent.push(JSON.parse(text))}, libraryViewer: { close() {} } };
+     wx: {postMessage: text => sent.push(JSON.parse(text))},
+     libraryViewer: { close() {}, async open() { return {vertices: 3, triangles: 1}; } } };
   window.requestAnimationFrame = function(callback) {
     assert.equal(this, window, "the browser frame API requires its Window receiver");
     frames.push(callback);
@@ -302,7 +304,7 @@ function installedPage() {
     querySelectorAll: selector => selector === "[data-scope]" ? scopes : []};
   vm.runInNewContext(fs.readFileSync(path.join(directory, "library.js"), "utf8"), {
     window, document, innerWidth: 1440, innerHeight: 860,
-    requestAnimationFrame: window.requestAnimationFrame,
+     requestAnimationFrame: window.requestAnimationFrame, atob,
     setTimeout: callback => { timers.push(callback); return timers.length; }, clearTimeout() {},
   }, {filename: "installed-library.js"});
   let doc = 1, account = "anonymous", generation = 0;
@@ -318,7 +320,7 @@ function installedPage() {
     receive({type: "account", signedIn: tag !== "anonymous", name: "用户", projectAvailable: true, avatarData});
   }
   function flush() { let budget = 20; while (frames.length && budget--) frames.shift()(); assert.ok(budget > 0); }
-  return {ids, scopes, sent, receive, handshake, login, flush};
+  return {ids, scopes, sent, receive, handshake, login, flush, viewer: window.libraryViewer};
 }
 
 const scriptCard = {id: "model-one", versionId: "version-one", version: 1,
@@ -328,6 +330,10 @@ function scriptDetail() {
     version: {id: "version-one", version: 1, licenseName: "CC0", licenseDescription: "许可说明"},
     versions: [{id: "version-one", version: 1, status: "published"}], access: {allowed: true},
     files: [{id: "file-one", filename: "model.glb", size: 8}] };
+}
+function downloadState(page, command, phase, update, fields = {}) {
+  page.receive({type: "downloadState", key: command.key, file: command.file,
+    downloadRequest: command.requestGeneration, downloadUpdate: update, phase, done: 0, total: 8, ...fields});
 }
 
 test("installed page renders its first empty state and then a populated catalog in browser frames", () => {
@@ -360,34 +366,268 @@ test("installed page handshakes before rendering public and owned catalogs and k
   assert.equal(page.ids.get("grid").children.length, 1);
 });
 
-test("installed download and cancel buttons send exact identities and always recover their busy state", () => {
+test("a single file starts directly with manifest bytes and can be cancelled and retried in place", () => {
   const page=installedPage();page.handshake();page.login();
   page.receive({type: "catalog", items: [scriptCard], replace: true});page.flush();
   page.ids.get("grid").querySelector("button").onclick();
   assert.equal(page.sent.at(-1).command, "detail");
   assert.equal(page.sent.at(-1).key, "model-one:version-one");
-  page.receive({type: "detail", key: "model-one:version-one", value: scriptDetail()});
-  page.ids.get("files").querySelector("button").onclick();
+  const value = scriptDetail();
+  value.versions.push({id: "version-two", version: 2, status: "published"});
+  value.files[0].size = String(22.5 * 1048576);
+  page.receive({type: "detail", key: "model-one:version-one", value});
+  assert.equal(page.ids.get("downloadDetail").disabled, true);
+  page.receive({type: "fileActions", key: "model-one:version-one", files: {}});
+  page.ids.get("downloadDetail").onclick();
   const download=page.sent.at(-1);assert.equal(download.command, "download");assert.equal(download.file, "file-one");
   assert.equal(download.nonce, "nonce-1");assert.equal(download.accountTag, "account");
-  page.receive({type: "loading", active: true, cancelable: true, stage: "正在下载并校验模型…"});
-  assert.equal(page.ids.get("app").inert, true);
-  page.ids.get("cancel").onclick();assert.equal(page.sent.at(-1).command, "cancel");
-  page.receive({type: "loading", active: true, requestGeneration: download.requestGeneration, cancelable: true});
-  page.receive({type: "loading", active: false});assert.equal(page.ids.get("app").inert, false);
-  for (const message of ["下载队列暂不可用", "登录已失效", "当前账号没有下载资格", "文件已下架", "网络连接中断", "文件校验失败"]) {
-    page.receive({type: "loading", active: true, cancelable: true});
-    page.receive({type: "error", message});assert.equal(page.ids.get("app").inert, false);
-    assert.equal(page.ids.get("loading").hidden, true);assert.match(page.ids.get("notice").textContent, new RegExp(message));
-  }
-  page.receive({type: "loading", active: true, cancelable: true});page.login("anonymous", 2);
+  assert.equal(download.key, "model-one:version-one");
+  assert.equal(page.ids.get("downloadBytes").textContent, "0.0MB/22.5MB");
+  downloadState(page, download, "transfer", 1, {done: Math.round(12.1 * 1048576), total: 22.5 * 1048576});
+  page.receive({type: "loading", active: false});
+  assert.equal(page.ids.get("downloadBytes").textContent, "12.1MB/22.5MB");
+  assert.equal(page.ids.get("downloadFeedback").hidden, false);
   assert.equal(page.ids.get("app").inert, false);
-  page.receive({type: "detail", value: scriptDetail(), key: "model-one:version-one"});
-  page.ids.get("files").querySelector("button").onclick();
-  assert.equal(page.sent.at(-1).file, "file-one"); // Preserve selection across native login.
+  page.ids.get("cancelDownload").onclick();
+  assert.equal(page.sent.at(-1).command, "cancelDownload");
+  assert.equal(page.sent.at(-1).downloadRequest, download.requestGeneration);
+  downloadState(page, download, "cancelled", 3, {done: Math.round(12.1 * 1048576), total: 22.5 * 1048576});
+  downloadState(page, download, "verify", 2);
+  assert.equal(page.ids.get("downloadPhase").textContent, "已取消下载");
+  page.ids.get("retryDownload").onclick();
+  const retry = page.sent.at(-1);
+  assert.equal(retry.file, download.file);
+  assert.ok(retry.requestGeneration > download.requestGeneration);
+  downloadState(page, download, "complete", 4, {actions: {open:true, import:true}});
+  assert.equal(page.ids.get("openDownloaded").disabled, true);
+  downloadState(page, retry, "failed", 1, {message:"网络连接中断"});
+  assert.equal(page.ids.get("downloadPhase").textContent, "网络连接中断");
+  assert.equal(page.ids.get("retryDownload").hidden, false);
+  page.login("anonymous", 2);
+  assert.equal(page.ids.get("downloadFeedback").hidden, true);
   page.handshake(2);page.login("anonymous", 2);
   page.receive({type: "catalog", documentGeneration: 1, items: [scriptCard], replace: true});page.flush();
   assert.equal(page.ids.get("grid").children.length, 0);
+});
+
+test("the page waits for the selected file size and keeps the preview during same-account refresh", async () => {
+  const page = installedPage();page.handshake();page.login();
+  const key = "model-one:version-one";
+  const value = scriptDetail();delete value.files[0].size;
+  let closed = 0;
+  page.viewer.close = () => ++closed;
+  page.receive({type: "detail", key, value});
+  page.receive({type: "fileActions", key, files: {}});
+  page.receive({type: "geometryBegin", key, epoch: 3, total: 20});
+  page.receive({type: "geometryChunk", key, epoch: 3, offset: 0, data: Buffer.alloc(20).toString("base64")});
+  page.receive({type: "geometryEnd", key, epoch: 3});
+  await Promise.resolve();
+  assert.equal(page.ids.get("viewer").hidden, false);
+  const before = closed;
+  page.ids.get("detailSidebar").scrollTop = 230;
+  page.ids.get("detailContent").scrollTop = 130;
+  page.ids.get("downloadPreview").onclick();
+  const download = page.sent.at(-1);
+  assert.equal(page.ids.get("downloadPhase").textContent, "正在获取文件大小…");
+  assert.equal(page.ids.get("downloadBytes").textContent, "");
+  assert.equal(page.ids.get("downloadProgress").getAttribute("value"), null);
+  const size = 32 * 1048576;
+  downloadState(page, download, "transfer", 1, {total: size});
+  page.receive({type: "account", signedIn: false, refreshing:true});
+  downloadState(page, download, "refreshing", 2, {total: size});
+  page.receive({type: "account", signedIn: true});
+  downloadState(page, download, "checking", 3, {total: size});
+  assert.equal(page.ids.get("downloadBytes").textContent, "0.0MB/32.0MB");
+  downloadState(page, download, "registering", 4, {done: size, total: size});
+  page.receive({type: "account", signedIn: false, refreshing:true});
+  assert.equal(page.ids.get("downloadBytes").textContent, "32.0MB/32.0MB");
+  assert.equal(page.ids.get("downloadPhase").textContent, "正在登记本地模型…");
+  page.receive({type: "account", signedIn: true});
+  page.ids.get("recommendationsTab").onclick();
+  downloadState(page, download, "complete", 5, {done: size, total: size, actions: {open:true, import:true}});
+  assert.equal(page.ids.get("downloadPhase").textContent, "下载完成");
+  assert.equal(page.ids.get("openDownloaded").disabled, false);
+  assert.equal(page.ids.get("detail").hidden, false);
+  assert.equal(page.ids.get("detailSidebar").scrollTop, 230);
+  assert.equal(page.ids.get("detailContent").scrollTop, 130);
+  assert.equal(page.ids.get("viewer").hidden, false);
+  assert.equal(closed, before);
+  page.receive({type: "account", signedIn: false, loginRequired:true});
+  assert.equal(page.ids.get("downloadLogin").hidden, false);
+  page.login("another-account", 2);
+  assert.equal(page.ids.get("detail").hidden, true);
+  assert.equal(page.ids.get("downloadFeedback").hidden, true);
+});
+
+test("downloaded detail restores actions only for registered files in the selected version", () => {
+  const page = installedPage();
+  page.handshake();page.login();
+  const key = "model-one:version-one";
+  const value = scriptDetail();
+  value.files.push({id: "file-two", filename: "model.3mf", size: 10});
+  page.receive({type: "detail", key, value});
+  page.receive({type: "fileActions", key, files: {}});
+  page.ids.get("files").querySelector("button").onclick();
+  assert.equal(page.sent.at(-1).file, "file-one");
+  const download = page.sent.at(-1);
+  downloadState(page, download, "registering", 1, {done:8});
+  assert.equal(page.ids.get("app").inert, false);
+  assert.equal(page.ids.get("openDownloaded").disabled, true);
+  assert.equal(page.ids.get("downloadComplete").hidden, true);
+  page.receive({type: "fileActions", key: "model-one:other-version", files: {"file-one": {open:true, import:true}}});
+  assert.equal(page.ids.get("openDownloaded").disabled, true);
+  downloadState(page, download, "complete", 2, {done:8, actions: {open:true, import:true}});
+  assert.equal(page.ids.get("openDownloaded").disabled, false);
+  assert.equal(page.ids.get("app").inert, false);
+  page.ids.get("openDownloaded").onclick();
+  assert.equal(page.sent.at(-1).command, "fileAction");
+  assert.equal(page.sent.at(-1).file, "file-one");
+  assert.equal(page.sent.at(-1).action, "open");
+
+  page.ids.get("back").onclick();
+  page.receive({type: "detail", key, value});
+  page.receive({type: "fileActions", key, files: {"file-two": {open:false, import:true}}});
+  assert.equal(page.ids.get("openDownloaded").disabled, true);
+  assert.equal(page.ids.get("importDownloaded").disabled, false);
+  page.ids.get("importDownloaded").onclick();
+  assert.equal(page.sent.at(-1).file, "file-two");
+  assert.equal(page.sent.at(-1).action, "import");
+  page.receive({type: "fileActions", key, files: {}, missing: ["file-two"]});
+  assert.equal(page.ids.get("importDownloaded").disabled, true);
+  assert.equal(page.ids.get("downloadComplete").hidden, true);
+  assert.equal(page.ids.get("downloadDetail").disabled, false);
+  assert.match(page.ids.get("downloadIssue").textContent, /文件缺失/);
+});
+
+test("downloaded files disable downloads and keep version and file selection available", () => {
+  const page = installedPage();
+  page.handshake();page.login();
+  const key = "model-one:version-one";
+  const value = scriptDetail();
+  value.versions.push({id: "version-two", version: 2, status: "published"});
+  value.files.push({id: "file-two", filename: "model.3mf", size: 10});
+  page.receive({type: "detail", key, value});
+  const files = page.ids.get("files");
+  page.receive({type: "fileActions", key, files: {"file-one": {open:true, import:true}}});
+  assert.equal(files.children[0].querySelector("button"), null);
+  assert.equal(files.children[0].querySelector(".file-status").textContent, "已下载");
+  assert.equal(files.children[1].querySelector("button").disabled, false);
+  assert.equal(page.ids.get("downloadDetail").disabled, false);
+  assert.equal(page.ids.get("downloadDetail").textContent, "选择文件");
+  const beforeChoose = page.sent.length;
+  page.ids.get("downloadDetail").onclick();
+  assert.equal(page.sent.length, beforeChoose);
+  assert.equal(page.ids.get("filePanel").hidden, false);
+  files.children[1].querySelector("button").onclick();
+  assert.equal(page.sent.at(-1).file, "file-two");
+  downloadState(page, page.sent.at(-1), "complete", 1, {done:10, total:10, actions: {open:false, import:true}});
+  const sent = page.sent.length;
+  for (const id of ["downloadPreview", "downloadDetail"]) {
+    const button = page.ids.get(id);
+    assert.equal(button.disabled, true);
+    assert.equal(button.textContent, "已下载");
+    button.onclick();
+  }
+  assert.equal(page.sent.length, sent);
+  assert.equal(page.ids.get("filePanel").hidden, false);
+  files.children[0].querySelector("button").onclick();
+  assert.equal(page.sent.length, sent);
+  page.ids.get("openDownloaded").onclick();
+  assert.equal(page.sent.at(-1).file, "file-one");
+  assert.equal(page.sent.at(-1).command, "fileAction");
+  const versions = page.ids.get("versions");
+  versions.value = "version-two";
+  versions.onchange();
+  assert.equal(page.sent.at(-1).key, "model-one:version-two");
+  assert.equal(page.ids.get("openDownloaded").disabled, true);
+});
+
+test("native model import shows page progress and allows another attempt after cancellation", () => {
+  const page = installedPage();
+  page.handshake();page.login();
+  const key = "model-one:version-one";
+  const value = scriptDetail();
+  value.files[0].filename = "model.3mf";
+  page.receive({type: "detail", key, value});
+  page.receive({type: "fileActions", key, files: {"file-one": {open:false, import:true}}});
+  const action = page.ids.get("importDownloaded");
+  action.onclick();
+  assert.equal(page.sent.at(-1).action, "import");
+  page.receive({type: "loading", active: true, importPercent: 40, cancelable: true, stage: "正在导入切片…"});
+  assert.equal(page.ids.get("bytes").textContent, "40%");
+  assert.equal(page.ids.get("app").inert, true);
+  page.ids.get("cancel").onclick();
+  assert.equal(page.sent.at(-1).command, "cancel");
+  page.receive({type: "loading", active: false});
+  assert.equal(page.ids.get("app").inert, false);
+  assert.equal(action.disabled, false);
+  action.onclick();
+  assert.equal(page.sent.at(-1).file, "file-one");
+  page.receive({type: "loading", active: true, importPercent: 99, cancelable: false, stage: "正在放置到打印盘…"});
+  assert.equal(page.ids.get("app").inert, true);
+  assert.equal(page.ids.get("cancel").hidden, true);
+});
+
+test("more results and a detail round trip keep the current library scroll position", () => {
+  const page = installedPage();
+  page.handshake();page.login();
+  page.receive({type: "catalog", replace: true, hasMore: true, offset: 0, items: [scriptCard]});
+  page.flush();
+  const list = page.ids.get("listing");
+  list.scrollTop = 640;
+  page.ids.get("more").onclick();
+  assert.equal(page.sent.at(-1).query.offset, "24");
+  page.receive({type: "error", message: "请重试"});
+  page.ids.get("more").onclick();
+  assert.equal(page.sent.at(-1).query.offset, "24");
+  page.receive({type: "catalog", replace: false, offset: 24, items: []});
+  page.flush();
+  assert.equal(list.scrollTop, 640);
+  page.ids.get("grid").querySelector("button").onclick();
+  page.receive({type: "detail", key: "model-one:version-one", value: scriptDetail()});
+  list.scrollTop = 0;
+  page.ids.get("back").onclick();
+  assert.equal(list.scrollTop, 640);
+  page.ids.get("format").value = "3mf";
+  page.ids.get("format").onchange();
+  assert.equal(page.sent.at(-1).query.format, "3mf");
+  assert.equal(list.scrollTop, 0);
+});
+
+test("recommendation tabs retain the preview and route the selected recommendation", () => {
+  const page = installedPage();
+  page.handshake();page.login();
+  const key = "model-one:version-one";
+  page.receive({type: "detail", key, value: scriptDetail()});
+  page.receive({type: "recommendations", key, value: {items: [
+    { ...scriptCard, id: "recommended", versionId: "specific-version", title: "推荐模型" },
+  ]}});
+  const preview = page.ids.get("viewer");
+  preview.hidden = false;
+  page.ids.get("recommendationsTab").onclick();
+  assert.equal(preview.hidden, false);
+  assert.equal(page.ids.get("recommendationsPanel").hidden, false);
+  page.ids.get("recommendations").querySelector("button").onclick();
+  assert.equal(page.sent.at(-1).command, "detail");
+  assert.equal(page.sent.at(-1).key, "recommended:specific-version");
+});
+
+test("the live preview replaces its cover and the image toggle restores it", async () => {
+  const page = installedPage();
+  page.handshake();page.login();
+  const key = "model-one:version-one";
+  page.receive({type: "detail", key, value: scriptDetail()});
+  const cover = page.ids.get("hero");
+  assert.equal(cover.hidden, false);
+  page.receive({type: "geometryBegin", key, epoch: 6, total: 20});
+  page.receive({type: "geometryChunk", key, epoch: 6, offset: 0, data: Buffer.alloc(20).toString("base64")});
+  page.receive({type: "geometryEnd", key, epoch: 6});
+  await Promise.resolve();
+  assert.equal(cover.hidden, true);
+  assert.equal(page.ids.get("viewer").hidden, false);
+  page.ids.get("closeGeometry").onclick();
+  assert.equal(cover.hidden, false);
+  assert.equal(page.ids.get("viewer").hidden, true);
 });
 
 test("local card menus expose only opening and server-confirmed direct slicing", () => {

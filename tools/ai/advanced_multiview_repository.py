@@ -17,7 +17,7 @@ from PIL import Image, ImageOps
 
 from advanced_multiview_contracts import (
     CREATION_KIND, GROUP_SCHEMA, MAX_GROUP_BYTES, MAX_RECORD_BYTES, VERSION_SCHEMA,
-    VIEWS, display_name, draft_fields, fingerprint, identity, new_id,
+    VIEWS, design_targets, display_name, draft_fields, fingerprint, identity, new_id,
 )
 from model_contracts import MAX_IMAGE_BYTES, MIN_SOURCE_IMAGE_EDGE, RequestError
 from model_request import _validate_image_data
@@ -237,13 +237,18 @@ class AdvancedMultiviewRepository:
                 "width": info.width, "height": info.height, "bytes": len(data)}
 
     def replace_inputs(self, group: dict[str, Any], draft: Mapping[str, Any],
-                       images: Mapping[str, bytes]) -> dict[str, Any]:
+                       images: Mapping[str, bytes], replaced_views: tuple[str, ...] = ()) -> dict[str, Any]:
         """Replace current upload pointers while preserving every prior asset and design version."""
         validated = self._validate_images(images)
+
         if images and "front" not in images:
-            raise RequestError("missing_front", "A front reference is required when uploading images.", 400)
-        if not images and not draft["prompt"]:
-            raise RequestError("invalid_request", "An image or description is required.", 400)
+            # Removing front may preserve/delete auxiliary inputs, but cannot
+            # introduce or replace one before the main reference is restored.
+            for view, data in images.items():
+                previous = group["uploads"].get(view)
+                if (previous is None or view in replaced_views
+                        or previous["sha256"] != hashlib.sha256(data).hexdigest()):
+                    raise RequestError("missing_front", "Upload the main reference before changing auxiliary images.", 400)
 
         uploads: dict[str, Any] = dict.fromkeys(VIEWS)
         changed = []
@@ -257,6 +262,8 @@ class AdvancedMultiviewRepository:
             digest = hashlib.sha256(data).hexdigest()
             if previous is not None and previous["sha256"] == digest:
                 uploads[view] = previous
+                if view in replaced_views:
+                    changed.append(view)
             else:
                 uploads[view] = self._store_upload(group["id"], view, data, validated[view])
                 changed.append(view)
@@ -267,19 +274,27 @@ class AdvancedMultiviewRepository:
         if not changed and not draft_changed:
             return group
 
+        text_targets_reset = not images and (group["source"] == "image" or not design_targets(group))
         group["source"] = "image" if images else "text"
         group["uploads"] = uploads
         group["saved_draft"] = dict(draft)
-        if changed or style_changed:
+        # A source edit invalidates only the current relationship, never its
+        # immutable design/operation records or a model's frozen input files.
+        for view in changed:
+            group["views"][view] = {"current_version_id": None, "latest_attempt": None}
+        if changed or style_changed or text_targets_reset:
             group["input_epoch"] = new_id()
             pending = set(group["pending_views"])
             pending.update(changed)
-            if style_changed:
-                pending.update(VIEWS)
+            # Clearing the last upload starts the text workflow's full target
+            # set on the next explicit generation, even with an old card selection.
+            if style_changed or text_targets_reset:
+                pending.update(design_targets(group))
             changed_uploads = set(group["changed_upload_views"])
             changed_uploads.update(changed)
-            group["pending_views"] = [view for view in VIEWS if view in pending]
-            group["changed_upload_views"] = [view for view in VIEWS if view in changed_uploads]
+            allowed = design_targets(group)
+            group["pending_views"] = [view for view in allowed if view in pending]
+            group["changed_upload_views"] = [view for view in allowed if view in changed_uploads]
         group["input_fingerprint"] = fingerprint({
             "draft": draft, "source": group["source"],
             "uploads": {view: uploads[view]["sha256"] for view in VIEWS if uploads[view]},
@@ -357,6 +372,7 @@ class AdvancedMultiviewRepository:
                     except RequestError as error:
                         state["unavailable_reason"] = error.code
             group["all_views_available"] = all(group["views"][v]["current"] for v in VIEWS)
+            group["design_targets"] = list(design_targets(group))
             return group
 
     def list_groups(self, *, before: float | None = None, limit: int = 24) -> list[dict[str, Any]]:

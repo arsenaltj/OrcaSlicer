@@ -106,6 +106,10 @@ public:
         m_phase = phase; return true;
     }
     bool ready() const { return m_artifact && m_phase == InlinePreviewPhase::Ready; }
+    bool loading() const {
+        return m_artifact && (m_phase == InlinePreviewPhase::Empty ||
+            m_phase == InlinePreviewPhase::Preparing || m_phase == InlinePreviewPhase::AwaitingFirstFrame);
+    }
     bool consume_completion(bool visible) {
         if (!visible || !ready() || !m_generated.count({m_binding.source, m_binding.context, m_task})) return false;
         const auto& request = m_artifact->request;

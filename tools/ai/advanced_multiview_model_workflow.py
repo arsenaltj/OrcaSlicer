@@ -1,4 +1,4 @@
-"""One explicitly approved four-image model task over existing artifact ports."""
+"""One explicitly approved named-input model task over existing artifact ports."""
 from __future__ import annotations
 
 from advanced_multiview_model_contracts import CREATION_KIND, approved_paths
@@ -31,15 +31,18 @@ class AdvancedMultiviewModelWorkflow:
                 self.ports.record_attempt(job, 1, provider=job.provider, provider_operation="model_generation",
                     provider_request_id=authorization.request_id, provider_model=job.geometry_model, status="creating",
                     approved_snapshot=job.approved_multiview_snapshot["fingerprint"],
+                    input_mode="image" if len(paths) == 1 else "multiview", selected_views=list(paths),
                     submitted_views={v: r["sha256"] for v, r in job.approved_multiview_snapshot["views"].items()})
                 self.ports.persist(job, required=True)
             with self.ports.lock:
                 job.state, job.phase, job.progress = "running", "generating", 20
-                job.message = "Generating one model from the four approved design views."
+                job.message = f"Generating one model from {len(paths)} approved design view(s)."
                 self.ports.persist(job, required=True)
             gateway = self.ports.gateway(job.provider)
             task = gateway.start_or_reuse_model_task(ModelTaskRequest(
-                source="multiview", image_paths=paths, face_limit=job.face_limit,
+                source="image" if len(paths) == 1 else "multiview",
+                image_path=paths["front"] if len(paths) == 1 else None,
+                image_paths=paths if len(paths) > 1 else None, face_limit=job.face_limit,
                 generation_profile=job.generation_profile, geometry_quality=job.geometry_quality,
                 texture_quality=job.texture_quality, output_format=job.output_format, model_id=job.geometry_model),
                 existing_task_id=task_id, authorization=authorization)
@@ -61,7 +64,7 @@ class AdvancedMultiviewModelWorkflow:
             with self.ports.lock:
                 job.artifact_path, job.artifact_format = artifact, artifact.suffix.lower().lstrip(".")
                 job.state = job.phase = "ready"
-                job.progress, job.message = 100, "The four-view model is ready for the advanced workbench."
+                job.progress, job.message = 100, "The model is ready for the advanced workbench."
                 self.ports.record_attempt(job, 1, status="accepted", error="")
                 self.ports.persist(job, required=True)
         except SidecarRestart:

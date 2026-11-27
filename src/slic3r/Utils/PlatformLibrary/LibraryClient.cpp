@@ -1,4 +1,5 @@
 #include "LibraryClient.hpp"
+#include "DownloadIdleTimeout.hpp"
 #include "slic3r/Utils/HonorAccount/HonorOAuth.hpp"
 #include "slic3r/Utils/HonorAccount/HonorClient.hpp"
 #include <boost/filesystem.hpp>
@@ -42,6 +43,16 @@ void directory(const boost::filesystem::path& root,const char* name) {
     const auto path=root/name;boost::filesystem::create_directories(path);
     if(boost::filesystem::canonical(path)!=path) throw Error(0,"模型目录指向了其他位置");
 }
+boost::filesystem::path download_marker(const boost::filesystem::path& root, const DownloadSpec& spec)
+{
+    return root / "downloads" / ("orcaslicer-ai-" + spec.key() + ".json");
+}
+
+boost::filesystem::path download_original(const boost::filesystem::path& root, const DownloadSpec& spec)
+{
+    return root / "website" / spec.key() / ("model" + spec.extension());
+}
+
 // Only the explicit, verified download transaction may restore its history
 // card. Ordinary library scans never clear removal receipts.
 void restore_download_history(const boost::filesystem::path& root, const DownloadSpec& spec) {
@@ -57,7 +68,7 @@ void restore_download_history(const boost::filesystem::path& root, const Downloa
         if (!input) throw Error(0, "下载成果已保留，但无法读取历史删除记录，请检查文件权限后重试");
         const auto record = Json::parse(input, nullptr, false);
         input.close();
-        const auto asset = (root / "website" / spec.key() / ("model" + spec.extension())).lexically_relative(root).generic_string();
+        const auto asset = download_original(root, spec).lexically_relative(root).generic_string();
         if (!record.is_object() || record.value("schema", "") != "orca.model-library-removal/v1" ||
             record.value("job_id", "") != spec.key() || record.value("design_only", false) ||
             record.value("asset", "") != asset) return;
@@ -73,26 +84,34 @@ struct Receiver {
     Cancellation cancel; Binary value; std::size_t limit, received {0};
     std::function<bool(const char*,std::size_t)> sink;
     std::function<void(std::size_t,std::size_t)> progress;
-    bool limit_exceeded {false},write_failed {false};
+    bool limit_exceeded {false},write_failed {false},download_stalled {false};
+    DownloadIdleTimeout idle_timeout{};
 };
 size_t receive(char* data,size_t size,size_t count,void* opaque) noexcept {
     auto& r=*static_cast<Receiver*>(opaque); const auto n=size*count;
     try { if(r.cancel && *r.cancel) return 0;
         if(n>r.limit-r.received) {r.limit_exceeded=true;return 0;}
-        if(r.sink) { if(!r.sink(data,n)) {r.write_failed=true;return 0;} } else r.value.bytes.append(data,n);
+        if(r.sink) {
+            if(!r.sink(data,n)) {r.write_failed=true;return 0;}
+            if (n) r.idle_timeout.bytes_written(DownloadIdleTimeout::Clock::now());
+        } else r.value.bytes.append(data,n);
         r.received+=n; return n;
     } catch(...) { return 0; }
 }
 int progress(void* opaque,curl_off_t total,curl_off_t done,curl_off_t,curl_off_t) noexcept {
     auto& r=*static_cast<Receiver*>(opaque);
     if(r.cancel && *r.cancel) return 1;
+    if (r.sink && r.idle_timeout.expired(DownloadIdleTimeout::Clock::now())) {
+        r.download_stalled = true;
+        return 1;
+    }
     try { if(r.progress) r.progress(std::size_t(std::max<curl_off_t>(0,done)),std::size_t(std::max<curl_off_t>(0,total))); }
     catch(...) { return 1; } return 0;
 }
 std::string filters(const Json& q) {
     if(!q.is_object()) throw Error(0,"查询条件无效");
     std::string result="?limit=24";
-    for(const char* key:{"q","category","sort","offset"}) {
+    for(const char* key:{"q","category","format","sort","offset"}) {
         const auto it=q.find(key); if(it==q.end()) continue;
         if(!it->is_string() || it->get_ref<const std::string&>().size()>160) throw Error(0,"查询条件无效");
         result+="&"+std::string(key)+"="+escaped(it->get<std::string>());
@@ -133,8 +152,13 @@ Binary transfer(const Identity& identity,const std::string& path,const std::stri
 #endif
     curl_easy_setopt(curl.get(),CURLOPT_PROTOCOLS,CURLPROTO_HTTPS);
     curl_easy_setopt(curl.get(),CURLOPT_FOLLOWLOCATION,0L);
-    curl_easy_setopt(curl.get(),CURLOPT_CONNECTTIMEOUT,8L); curl_easy_setopt(curl.get(),CURLOPT_TIMEOUT,limit<=4*1024*1024?20L:180L);
-    curl_easy_setopt(curl.get(),CURLOPT_LOW_SPEED_LIMIT,64L); curl_easy_setopt(curl.get(),CURLOPT_LOW_SPEED_TIME,20L);
+    if (r.sink) curl_easy_setopt(curl.get(),CURLOPT_FAILONERROR,1L);
+    curl_easy_setopt(curl.get(),CURLOPT_CONNECTTIMEOUT,8L);
+    if (!r.sink) {
+        curl_easy_setopt(curl.get(),CURLOPT_TIMEOUT,limit<=4*1024*1024?20L:180L);
+        curl_easy_setopt(curl.get(),CURLOPT_LOW_SPEED_LIMIT,64L);
+        curl_easy_setopt(curl.get(),CURLOPT_LOW_SPEED_TIME,20L);
+    }
     curl_easy_setopt(curl.get(),CURLOPT_NOSIGNAL,1L);
     curl_easy_setopt(curl.get(),CURLOPT_WRITEFUNCTION,receive); curl_easy_setopt(curl.get(),CURLOPT_WRITEDATA,&r);
     curl_easy_setopt(curl.get(),CURLOPT_NOPROGRESS,0L); curl_easy_setopt(curl.get(),CURLOPT_XFERINFOFUNCTION,progress);
@@ -156,9 +180,11 @@ Binary transfer(const Identity& identity,const std::string& path,const std::stri
     if((code==CURLE_OK && status<200) || status>=300) throw Error(unsigned(status),status==401?"登录已失效，请重新登录":status==403?"当前账号没有此操作资格":status==404?"模型或文件已不可用":"平台暂时无法完成请求");
     if(code!=CURLE_OK) {
         BOOST_LOG_TRIVIAL(warning) << "PlatformLibrary transfer failed: curl=" << int(code) << ", status=" << status
-            << ", received=" << r.received << ", write_failed=" << r.write_failed << ", limit_exceeded=" << r.limit_exceeded;
+            << ", received=" << r.received << ", write_failed=" << r.write_failed << ", limit_exceeded=" << r.limit_exceeded
+            << ", download_stalled=" << r.download_stalled;
         const char* message=r.limit_exceeded?"文件超出允许大小":r.write_failed?"无法写入下载文件，请检查磁盘空间及目录权限":
-            code==CURLE_OPERATION_TIMEDOUT?"连接或下载超时，请检查网络后重试":
+            r.download_stalled?"下载已停止接收数据，请检查网络后重试":
+            code==CURLE_OPERATION_TIMEDOUT?"连接超时，请检查网络后重试":
             code==CURLE_COULDNT_RESOLVE_HOST?"无法解析平台地址，请检查网络后重试":
             code==CURLE_PEER_FAILED_VERIFICATION?"平台安全证书校验失败，请检查系统时间与网络环境":
             "网络连接中断，请检查网络后重试";
@@ -196,6 +222,18 @@ std::string Client::image(const std::string& path,Cancellation c) const {
     // SVG is rendered as an image document under a restrictive local CSP, never as HTML.
     return "data:"+mime+";base64,"+base64(r.bytes);
 }
+std::uint64_t DownloadSpec::listed_size(const Json& file)
+{
+    const auto size = file.find("size");
+    if (size == file.end()) return 0;
+    if (size->is_number_unsigned()) return size->get<std::uint64_t>();
+    if (size->is_string()) {
+        const auto& digits = size->get_ref<const std::string&>();
+        if (!digits.empty() && digits.size() <= 12 && digits.find_first_not_of("0123456789") == std::string::npos)
+            return std::stoull(digits);
+    }
+    return 0;
+}
 DownloadSpec DownloadSpec::from_detail(const Json& detail,const std::string& file) {
     if(!detail.is_object() || !uuid(file) || !detail.contains("version") || !detail.value("access",Json::object()).value("allowed",false))
         throw Error(403,"当前账号没有下载资格");
@@ -206,12 +244,9 @@ DownloadSpec DownloadSpec::from_detail(const Json& detail,const std::string& fil
         found=true;
         if(f.value("status","")!="ready") throw Error(0,"模型文件尚未处理完成");
         s.filename=f.value("filename","");s.sha256=f.value("sha256","");
-        const auto size=f.find("size");
-        if(size!=f.end()) {
-            if(size->is_string() && std::regex_match(size->get<std::string>(),std::regex("^[0-9]{1,12}$"))) s.size=std::stoull(size->get<std::string>());
-            else if(size->is_number_unsigned()) s.size=size->get<std::uint64_t>();
-        } break;}
+        s.size=listed_size(f);break;}
     if(!found) throw Error(404,"选中的文件已不可用，请重新读取模型详情");
+    if (!s.size) throw Error(0,"平台暂未提供文件大小，请稍后重试。");
     if(s.sha256.empty()) throw Error(0,"平台尚未提供该文件的校验摘要，暂不能安全下载，请稍后重试");
     s.validate();
     return s;
@@ -229,21 +264,42 @@ void DownloadSpec::validate() const {
         throw Error(0,"下载文件清单无效或格式暂不支持");
 }
 std::string DownloadSpec::key() const {return "web-"+model+"-"+version+"-"+file;}
+bool DownloadSpec::registered_original_missing(const boost::filesystem::path& root) const
+{
+    boost::system::error_code error;
+    if (!boost::filesystem::is_regular_file(download_marker(root, *this), error) || error) return false;
+    const auto original_status = boost::filesystem::symlink_status(download_original(root, *this), error);
+    return original_status.type() == boost::filesystem::file_not_found;
+}
+
 StagedDownload::~StagedDownload() {if(!m_staging.empty()) {boost::system::error_code ec;boost::filesystem::remove_all(m_staging,ec);}}
 std::shared_ptr<StagedDownload> StagedDownload::prepare(const Client& client,const DownloadSpec& spec,
-    const boost::filesystem::path& root,Cancellation cancel,std::function<void(std::size_t,std::size_t)> notify,
+    const boost::filesystem::path& root,Cancellation cancel,Progress notify,
     std::function<std::uintmax_t(const boost::filesystem::path&)> available_bytes) {
     check(cancel);spec.validate();auto staged=std::shared_ptr<StagedDownload>(new StagedDownload);
+    const auto total = std::size_t(spec.size);
     boost::filesystem::create_directories(root);const auto canonical_root=boost::filesystem::canonical(root);
     staged->m_spec=spec;staged->m_root=canonical_root;staged->m_final=canonical_root/"website"/spec.key();
     directory(canonical_root,"website");directory(canonical_root,"downloads");
     const auto ext=spec.extension();
     const auto file=staged->m_final/("model"+ext);
-    if(boost::filesystem::exists(staged->m_final)) {
-        if(boost::filesystem::canonical(staged->m_final)!=staged->m_final || boost::filesystem::canonical(file)!=file ||
-           !boost::filesystem::is_regular_file(file) || boost::filesystem::file_size(file)!=spec.size || file_digest(file,cancel.get())!=spec.sha256)
-            throw Error(0,"已有下载内容变化，请保留该文件后重试");
-        staged->m_reused=true;return staged;
+    const auto final_status = boost::filesystem::symlink_status(staged->m_final);
+    if (boost::filesystem::exists(final_status)) {
+        if (!boost::filesystem::is_directory(final_status) || boost::filesystem::canonical(staged->m_final) != staged->m_final)
+            throw Error(0, "下载目录已变化，请检查目录后重试");
+        const auto original_status = boost::filesystem::symlink_status(file);
+        if (boost::filesystem::exists(original_status)) {
+            if (!boost::filesystem::is_regular_file(original_status) || boost::filesystem::canonical(file) != file ||
+                boost::filesystem::file_size(file) != spec.size)
+                throw Error(0, "已有下载内容变化，请保留该文件后重试");
+            if (notify) notify(Phase::Verify, total, total);
+            if (file_digest(file, cancel.get()) != spec.sha256)
+                throw Error(0, "已有下载内容变化，请保留该文件后重试");
+            staged->m_reused = true;
+            return staged;
+        }
+        if (!boost::filesystem::is_empty(staged->m_final))
+            throw Error(0, "本地模型文件缺失，请将下载目录中的其他文件移至安全位置后重试");
     }
     const auto available=available_bytes?available_bytes(canonical_root):boost::filesystem::space(canonical_root).available;
     if(available<spec.size+1048576) throw Error(0,"磁盘空间不足");
@@ -251,11 +307,20 @@ std::shared_ptr<StagedDownload> StagedDownload::prepare(const Client& client,con
     boost::filesystem::create_directory(staged->m_staging);
     boost::filesystem::ofstream out(staged->m_staging/("model"+ext),std::ios::binary);
     if(!out) throw Error(0,"无法创建下载临时文件");
+    std::size_t written = 0;
+    if (notify) notify(Phase::Transfer, written, total);
     client.bytes("/v1/library/models/"+spec.model+"/files/"+spec.file+"/download?version="+std::to_string(spec.version_number),
-        cancel,std::size_t(spec.size),[&](const char* b,std::size_t n) {out.write(b,n);return bool(out);},std::move(notify));
+        cancel,total,[&](const char* bytes,std::size_t size) {
+            out.write(bytes,size);
+            if (!out) return false;
+            written += size;
+            if (notify) notify(Phase::Transfer, written, total);
+            return true;
+        });
     out.close();if(!out) throw Error(0,"下载文件写入失败");check(cancel);
     const auto part=staged->m_staging/("model"+ext);
     if(boost::filesystem::file_size(part)!=spec.size) throw Error(0,"下载文件大小不符，残缺文件未登记，请重新下载");
+    if (notify) notify(Phase::Verify, written, total);
     if(file_digest(part,cancel.get())!=spec.sha256) throw Error(0,"下载文件 SHA-256 校验失败，文件未登记，请重新下载");
     return staged;
 }
@@ -263,27 +328,40 @@ std::string StagedDownload::commit(Cancellation cancel) {
     check(cancel);if(m_committed) {restore_download_history(m_root,m_spec);return m_spec.key();}
     if(boost::filesystem::canonical(m_root)!=m_root) throw Error(0,"模型目录已经变化");
     directory(m_root,"website");directory(m_root,"downloads");
-    const auto marker=m_root/"downloads"/("orcaslicer-ai-"+m_spec.key()+".json");
-    const auto ext=m_spec.extension();
-    if(boost::filesystem::exists(marker)) {
+    const auto marker = download_marker(m_root, m_spec);
+    const auto relative_original = download_original(m_root, m_spec).lexically_relative(m_root).generic_string();
+    const auto publish_original = [&] {
+        const auto status = boost::filesystem::symlink_status(m_final);
+        if (boost::filesystem::exists(status) &&
+            (!boost::filesystem::is_directory(status) || boost::filesystem::canonical(m_final) != m_final ||
+             !boost::filesystem::is_empty(m_final) || !boost::filesystem::remove(m_final)))
+            throw Error(0, "下载目录已变化，请重新读取后重试");
+        boost::filesystem::rename(m_staging, m_final);
+        m_staging.clear();
+    };
+    const auto marker_status = boost::filesystem::symlink_status(marker);
+    if (boost::filesystem::exists(marker_status)) {
+        if (!boost::filesystem::is_regular_file(marker_status) || boost::filesystem::canonical(marker) != marker)
+            throw Error(0, "已有登记位置变化，已保留原件");
         boost::filesystem::ifstream input(marker);const auto record=Json::parse(input,nullptr,false);
-        if(!m_reused || boost::filesystem::canonical(marker)!=marker || record.is_discarded() ||
+        if(!record.is_object() ||
            record.value("source","")!="website_download" || record.value("job_id","")!=m_spec.key() ||
            record.value("website_sha256","")!=m_spec.sha256 || record.value("website_model_id","")!=m_spec.model ||
            record.value("website_version_id","")!=m_spec.version || record.value("website_file_id","")!=m_spec.file ||
-           record.value("model_path","")!=(m_final/("model"+ext)).lexically_relative(m_root).generic_string())
+           record.value("model_path","")!=relative_original)
             throw Error(0,"已有登记与下载版本不一致，已保留原件");
+        if (!m_reused) publish_original();
         m_committed=true;restore_download_history(m_root,m_spec);return m_spec.key();
     }
     const auto pending=marker.parent_path()/boost::filesystem::unique_path(".register-%%%%%%%%.tmp");
     Json metadata={{"source","website_download"},{"job_id",m_spec.key()},{"prompt",m_spec.title},
-        {"model_path",(m_final/("model"+ext)).lexically_relative(m_root).generic_string()},
+        {"model_path",relative_original},
         {"generated_at",std::time(nullptr)},{"website_model_id",m_spec.model},{"website_version_id",m_spec.version},
         {"website_file_id",m_spec.file},{"website_sha256",m_spec.sha256}};
     try {
         boost::filesystem::ofstream output(pending,std::ios::binary);output<<metadata.dump(2);output.close();
         if(!output) throw Error(0,"无法登记下载模型");check(cancel);
-        if(!m_reused) {boost::filesystem::rename(m_staging,m_final);m_staging.clear();}
+        if (!m_reused) publish_original();
         boost::filesystem::rename(pending,marker);m_committed=true;
         restore_download_history(m_root,m_spec);return m_spec.key();
     } catch(...) {

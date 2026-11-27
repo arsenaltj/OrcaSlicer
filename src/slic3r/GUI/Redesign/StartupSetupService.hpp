@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+
 #include "libslic3r/AppConfig.hpp"
 #include "libslic3r/PresetBundle.hpp"
 
@@ -19,6 +21,10 @@ struct StartupSetupFilament {
     std::string label;
     std::string type;
     std::string colour;
+};
+
+inline constexpr std::array<const char*, 4> startup_printer_models = {
+    "WonderMaker ZR", "WonderMaker ZR Ultra", "WonderMaker ZR Ultra S", "Honor Forge"
 };
 
 struct StartupSetupPrinter {

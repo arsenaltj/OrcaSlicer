@@ -4,7 +4,7 @@ namespace {
 constexpr const wchar_t* redesign_restore_pending = L"HonorForge.RestorePresentationPending";
 constexpr const wchar_t* redesign_iconized = L"HonorForge.Iconized";
 
-bool cloak_redesign_restore(HWND hwnd, bool cloak)
+bool set_redesign_window_cloaked(HWND hwnd, bool cloak)
 {
     using SetAttribute = HRESULT (WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
     static const auto set_attribute = [] {
@@ -16,6 +16,16 @@ bool cloak_redesign_restore(HWND hwnd, bool cloak)
     return set_attribute && SUCCEEDED(set_attribute(hwnd, cloak_attribute, &value, sizeof(value)));
 }
 
+bool flush_redesign_composition()
+{
+    using FlushComposition = HRESULT (WINAPI*)();
+    static const auto flush = reinterpret_cast<FlushComposition>(
+        ::GetProcAddress(::GetModuleHandleW(L"dwmapi.dll"), "DwmFlush"));
+    if (!flush) return false;
+    flush();
+    return true;
+}
+
 void finish_redesign_restore(wxWindow* root)
 {
     const auto hwnd = root->GetHandle();
@@ -23,16 +33,13 @@ void finish_redesign_restore(wxWindow* root)
     const auto started = std::chrono::steady_clock::now();
     ::GdiFlush();
     const auto gdi_done = std::chrono::steady_clock::now();
-    using FlushComposition = HRESULT (WINAPI*)();
-    static const auto flush = reinterpret_cast<FlushComposition>(
-        ::GetProcAddress(::GetModuleHandleW(L"dwmapi.dll"), "DwmFlush"));
-    if (flush) flush();
+    const bool flushed = flush_redesign_composition();
     const auto dwm_done = std::chrono::steady_clock::now();
-    cloak_redesign_restore(hwnd, false);
+    set_redesign_window_cloaked(hwnd, false);
     ::RemovePropW(hwnd, redesign_restore_pending);
     if (redesign_restore_trace_enabled())
         BOOST_LOG_TRIVIAL(info) << "[UiRedesignRestore] id=" << redesign_restore_snapshot_count()
-            << " phase=final_commit final_gdi_flushes=1 dwm_flushes=" << (flush ? 1 : 0)
+            << " phase=final_commit final_gdi_flushes=1 dwm_flushes=" << (flushed ? 1 : 0)
             << " final_gdi_ms=" << std::chrono::duration<double, std::milli>(gdi_done - started).count()
             << " dwm_ms=" << std::chrono::duration<double, std::milli>(dwm_done - gdi_done).count()
             << " reveal_ms=" << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - dwm_done).count();
@@ -81,6 +88,53 @@ void present_redesign_workspace(wxWindow* root, RedesignShell* shell, double que
 
 }
 
+void MainFrame::show_startup_loading(wxWindow& loading, const std::function<void()>& paint_loading)
+{
+    const auto prepare_loading = [&] {
+        const auto bounds = GetClientRect();
+        if (loading.GetRect() != bounds) loading.SetSize(bounds);
+        loading.Layout();
+        loading.Raise();
+    };
+    prepare_loading();
+
+#ifdef __WXMSW__
+    const auto hwnd = GetHandle();
+    const bool cloaked = m_redesign_shell_active && hwnd && set_redesign_window_cloaked(hwnd, true);
+    const bool hide_workspace = m_redesign_shell_active && !cloaked && m_redesign_shell->IsShown();
+    // The uncloaked fallback keeps the workspace out of the initial native paint.
+    if (hide_workspace) m_redesign_shell->Hide();
+    ScopeGuard uncloak([hwnd, cloaked] {
+        if (cloaked && ::IsWindow(hwnd)) set_redesign_window_cloaked(hwnd, false);
+    });
+#endif
+
+    Show(true);
+    // The native first show can apply the remembered maximized size or DPI.
+    prepare_loading();
+    loading.SetFocus();
+#ifndef __WXMSW__
+    Update();
+#else
+    if (!m_redesign_shell_active) Update();
+#endif
+    paint_loading();
+
+#ifdef __WXMSW__
+    if (m_redesign_shell_active) {
+        ::GdiFlush();
+        if (cloaked) flush_redesign_composition();
+        if (hide_workspace) {
+            m_redesign_shell->Show();
+            Layout();
+            prepare_loading();
+        }
+        BOOST_LOG_TRIVIAL(info) << "Startup loading presentation: cloaked=" << cloaked
+            << " client=" << GetClientSize().x << "x" << GetClientSize().y;
+    }
+#endif
+}
+
 void MainFrame::bind_workspace_window_events()
 {
     if (m_redesign_shell_requested && wxGetApp().is_editor()) {
@@ -92,6 +146,18 @@ void MainFrame::bind_workspace_window_events()
         m_tabpanel->SetBackgroundColour(RedesignTheme::background_colour());
         m_plater->SetBackgroundColour(RedesignTheme::background_colour());
     }
+#ifdef __WXMSW__
+    if (GetTitle().empty()) SetTitle(wxString::FromUTF8(SLIC3R_APP_NAME));
+    if (HWND hwnd = GetHandle()) {
+        // Apply the taskbar style after wx has applied the workspace styles above.
+        const LONG_PTR extended_style = ::GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+        ::SetWindowLongPtr(hwnd, GWL_EXSTYLE, extended_style | WS_EX_APPWINDOW);
+    }
+    // OrcaSlicer.rc embeds icon group 2 in the executable at several sizes.
+    SetIcons(wxIconBundle(wxS("#2"), ::GetModuleHandleW(nullptr)));
+#else
+    SetIcon(wxIcon(Slic3r::var("OrcaSlicer_128px.png"), wxBITMAP_TYPE_PNG));
+#endif
     const auto pending = std::make_shared<bool>(false);
     const auto present_workspace = [this, pending] {
         if (!m_redesign_shell || IsIconized() || *pending) return;
@@ -277,9 +343,9 @@ WXLRESULT MainFrame::MSWWindowProc(WXUINT nMsg, WXWPARAM wParam, WXLPARAM lParam
     const bool restoring_size = position && (::IsIconic(hWnd) || ::GetPropW(hWnd, redesign_iconized)) &&
         !(position->flags & (SWP_NOSIZE | SWP_HIDEWINDOW)) && position->cx > 160 && position->cy > 160;
     if (m_redesign_shell_active && (nMsg == WM_QUERYOPEN || restoring_size)) {
-        if (!::GetPropW(hWnd, redesign_restore_pending) && cloak_redesign_restore(hWnd, true)) {
+        if (!::GetPropW(hWnd, redesign_restore_pending) && set_redesign_window_cloaked(hWnd, true)) {
             if (!::SetPropW(hWnd, redesign_restore_pending, reinterpret_cast<HANDLE>(1))) {
-                cloak_redesign_restore(hWnd, false);
+                set_redesign_window_cloaked(hWnd, false);
             } else {
                 BOOST_LOG_TRIVIAL(info) << "[UiRedesignRestore] preparing restored content, message=" << nMsg;
                 // wx size/iconize events share the single presentation queue,
@@ -607,6 +673,17 @@ void MainFrame::update_layout()
 #endif
 
     Layout();
+}
+
+bool MainFrame::settings_printer_switch_blocked() const
+{
+    return m_redesign_shell && m_redesign_shell->settings_printer_switch_blocked();
+}
+
+void MainFrame::settings_printer_switch_applied()
+{
+    if (m_redesign_shell)
+        m_redesign_shell->settings_printer_switch_applied();
 }
 
 void MainFrame::show_redesign_shell(bool show)

@@ -1,5 +1,7 @@
 #include "slic3r/Utils/PlatformLibrary/LibraryClient.hpp"
+#include "slic3r/Utils/PlatformLibrary/DownloadIdleTimeout.hpp"
 #include "slic3r/Utils/PlatformLibrary/LibraryWorker.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/LibraryDownloadRequest.hpp"
 #include "slic3r/GUI/Redesign/LibraryPresentationChannel.hpp"
 #include "slic3r/Utils/HonorAccount/HonorOAuth.hpp"
 #include "slic3r/Utils/HonorAccount/HonorSession.hpp"
@@ -18,6 +20,7 @@
 #include <condition_variable>
 #include <chrono>
 #include <future>
+#include <tuple>
 #include <wx/init.h>
 
 using namespace Slic3r::PlatformLibrary;
@@ -175,6 +178,45 @@ TEST_CASE("Uncommitted verified downloads remain invisible and clean their tempo
     REQUIRE(boost::filesystem::is_empty(root.path/"downloads"));
     REQUIRE(boost::filesystem::is_empty(root.path/"website")==false);
     staged.reset();REQUIRE(boost::filesystem::is_empty(root.path/"website"));
+}
+
+TEST_CASE("Download progress counts staged writes when the transfer has no content length", "[PlatformLibrary][LibraryDownload]") {
+    using Phase = StagedDownload::Phase;
+    Directory root;
+    const std::string bytes = "complete";
+    const auto spec = DownloadSpec::from_detail(detail(bytes), file);
+    const Client client({"https://platform.example.test","native-only-token","account",4},
+        [&](const Identity&, const std::string&, const std::string&, const std::string&, Cancellation, std::size_t limit,
+            std::function<bool(const char*,std::size_t)> sink, std::function<void(std::size_t,std::size_t)> transport_progress) {
+            REQUIRE(limit == bytes.size());
+            if (transport_progress) transport_progress(0, 0);
+            REQUIRE(sink(bytes.data(), 3));
+            if (transport_progress) transport_progress(3, 0);
+            REQUIRE(sink(bytes.data() + 3, bytes.size() - 3));
+            return Binary{200, "", "application/octet-stream"};
+        });
+    std::vector<std::tuple<Phase, std::size_t, std::size_t>> progress;
+    auto staged = StagedDownload::prepare(client,spec,root.path,cancellation(),
+        [&](Phase phase, std::size_t done, std::size_t total) {progress.emplace_back(phase,done,total);});
+    const decltype(progress) expected = {
+        {Phase::Transfer,0,bytes.size()}, {Phase::Transfer,3,bytes.size()},
+        {Phase::Transfer,bytes.size(),bytes.size()}, {Phase::Verify,bytes.size(),bytes.size()},
+    };
+    REQUIRE(progress == expected);
+    REQUIRE(staged->commit(cancellation()) == spec.key());
+}
+
+TEST_CASE("An active download expires only after a continuous gap between writes", "[PlatformLibrary][LibraryDownload]") {
+    using namespace std::chrono_literals;
+    auto now = DownloadIdleTimeout::Clock::time_point{};
+    DownloadIdleTimeout idle(now);
+    for (int chunk = 0; chunk < 60; ++chunk) {
+        now += 19s;
+        REQUIRE_FALSE(idle.expired(now));
+        idle.bytes_written(now);
+    }
+    REQUIRE_FALSE(idle.expired(now + 19s));
+    REQUIRE(idle.expired(now + 20s));
 }
 TEST_CASE("A verified download atomically registers without overwriting source or repair history", "[PlatformLibrary]") {
     Directory root;const std::string bytes="complete";boost::filesystem::create_directories(root.path/"downloads");
@@ -358,6 +400,39 @@ TEST_CASE("Changed registration cannot overwrite an existing download history", 
     REQUIRE(file_digest(root.path/"website"/spec.key()/"model.glb")==spec.sha256);
     boost::filesystem::ifstream input(marker);Json record;input>>record;REQUIRE(record.at("source")=="user-edited");
 }
+TEST_CASE("A missing registered model can be downloaded again without changing its history", "[PlatformLibrary]") {
+    const bool keep_empty_directory = GENERATE(false, true);
+    Directory root;
+    const auto spec = DownloadSpec::from_detail(detail("complete"), file);
+    StagedDownload::prepare(fixture_client("complete"), spec, root.path, cancellation())->commit(cancellation());
+    const auto model = root.path / "website" / spec.key() / "model.glb";
+    const auto marker = root.path / "downloads" / ("orcaslicer-ai-" + spec.key() + ".json");
+    const auto marker_digest = file_digest(marker);
+    REQUIRE(boost::filesystem::remove(model));
+    if (!keep_empty_directory) REQUIRE(boost::filesystem::remove(model.parent_path()));
+    CHECK(spec.registered_original_missing(root.path));
+
+    const auto retry = StagedDownload::prepare(fixture_client("complete"), spec, root.path, cancellation());
+    CHECK_FALSE(boost::filesystem::exists(model));
+    REQUIRE(retry->commit(cancellation()) == spec.key());
+    CHECK(file_digest(model) == spec.sha256);
+    CHECK(file_digest(marker) == marker_digest);
+    CHECK_FALSE(spec.registered_original_missing(root.path));
+}
+
+TEST_CASE("A missing original retry preserves a file that arrives before the download is committed", "[PlatformLibrary]") {
+    Directory root;
+    const auto spec = DownloadSpec::from_detail(detail("complete"), file);
+    StagedDownload::prepare(fixture_client("complete"), spec, root.path, cancellation())->commit(cancellation());
+    const auto model = root.path / "website" / spec.key() / "model.glb";
+    REQUIRE(boost::filesystem::remove(model));
+
+    const auto retry = StagedDownload::prepare(fixture_client("complete"), spec, root.path, cancellation());
+    { boost::filesystem::ofstream output(model); output << "user edit"; }
+    REQUIRE_THROWS_AS(retry->commit(cancellation()), Error);
+    CHECK(file_digest(model) == Slic3r::HonorAccount::digest("user edit"));
+}
+
 TEST_CASE("A new website version keeps an independently edited older download", "[PlatformLibrary]") {
     Directory root;const auto old_spec=DownloadSpec::from_detail(detail("complete"),file);
     StagedDownload::prepare(fixture_client("complete"),old_spec,root.path,cancellation())->commit(cancellation());
@@ -567,20 +642,61 @@ TEST_CASE("A rejected library queue never executes its download command", "[Plat
 TEST_CASE("Cancelled library progress and partial results cannot contaminate the next request", "[PlatformLibrary][LibraryDownload]") {
     Worker worker;std::promise<void> entered,release;const auto released=release.get_future().share();
     Cancellation old;
-    REQUIRE(worker.submit(1,"old","",[&](Cancellation cancel) {
-        old=cancel;worker.progress(10,100,cancel);entered.set_value();released.wait();
-        worker.progress(99,100,cancel);worker.publish(1,"catalog","partial",Worker::Value{1,{}},cancel);
+    REQUIRE(worker.submit(1,"download","old",[&](Cancellation cancel) {
+        old=cancel;worker.publish(1,"download","old",Worker::Value{10,{}},cancel);entered.set_value();released.wait();
+        worker.publish(1,"download","old",Worker::Value{99,{}},cancel);
         return Worker::Value{};
     }));
     const auto started=entered.get_future().wait_for(std::chrono::seconds(2));
     if(started!=std::future_status::ready) release.set_value();
     REQUIRE(started==std::future_status::ready);
-    REQUIRE(worker.bytes().first==10);worker.cancel();release.set_value();
-    REQUIRE(worker.submit(2,"new","",[&](Cancellation cancel) {worker.progress(5,50,cancel);return Worker::Value{2,{}};}));
+    const auto intermediate = worker.take();
+    worker.cancel("download","old");release.set_value();
+    REQUIRE(intermediate.size()==1);
+    REQUIRE(intermediate.front().value.json==10);
+    REQUIRE(worker.submit(2,"download","new",[](Cancellation) {return Worker::Value{5,{}};}));
     std::deque<Worker::Result> results;const auto end=std::chrono::steady_clock::now()+std::chrono::seconds(2);
     while(results.empty() && std::chrono::steady_clock::now()<end) {results=worker.take();std::this_thread::yield();}
-    REQUIRE(results.size()==1);REQUIRE(results.front().epoch==2);REQUIRE(worker.bytes().first==5);
-    REQUIRE_FALSE(worker.publish(1,"catalog","partial",Worker::Value{1,{}},old));
+    REQUIRE(results.size()==1);REQUIRE(results.front().epoch==2);REQUIRE(results.front().value.json==5);
+    REQUIRE_FALSE(worker.publish(1,"download","old",Worker::Value{99,{}},old));
+}
+
+TEST_CASE("An interrupted download can start once with the renewed credentials", "[PlatformLibrary][LibraryDownload]") {
+    using Slic3r::GUI::LibraryDownloadRequest;
+    using Phase = LibraryDownloadRequest::Phase;
+    LibraryDownloadRequest request{std::string(model) + ":" + version, file, 27};
+    request.phase = Phase::Transfer;
+    request.done = 32;
+    request.total = 64;
+    request.credentials_changed(true);
+    REQUIRE(request.phase == Phase::WaitingForAccount);
+    REQUIRE(request.done == 32);
+    request.credentials_changed(true);
+    REQUIRE(request.resume());
+    REQUIRE(request.phase == Phase::Checking);
+    REQUIRE(request.done == 0);
+    REQUIRE(request.total == 64);
+    REQUIRE(request.request == 27);
+    REQUIRE(request.file == file);
+    request.credentials_changed(true);
+    REQUIRE(request.phase == Phase::Failed);
+    REQUIRE_FALSE(request.resume());
+}
+
+TEST_CASE("Credential changes leave local registration attached to its download", "[PlatformLibrary][LibraryDownload]") {
+    using Slic3r::GUI::LibraryDownloadRequest;
+    using Phase = LibraryDownloadRequest::Phase;
+    LibraryDownloadRequest request{std::string(model) + ":" + version, file, 27};
+    request.phase = Phase::Registering;
+    request.registration_scan = 42;
+    request.done = request.total = 64;
+    request.credentials_changed(true);
+    request.credentials_changed(false);
+    REQUIRE_FALSE(request.resume());
+    REQUIRE_FALSE(request.cancelable());
+    REQUIRE(request.phase == Phase::Registering);
+    REQUIRE(request.registration_scan == 42);
+    REQUIRE(request.done == request.total);
 }
 
 TEST_CASE("Download failures leave Chinese-path storage clean and keep existing files", "[PlatformLibrary][LibraryDownload]") {

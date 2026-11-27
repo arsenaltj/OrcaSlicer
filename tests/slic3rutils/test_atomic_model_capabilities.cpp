@@ -5,6 +5,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchHistorySnapshot.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportPresentation.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchTopologyDetails.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchSession.hpp"
 #include "slic3r/GUI/AI/ColorMatching/ColorMatchingComputation.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
@@ -130,34 +131,150 @@ TEST_CASE("Changed thumbnail sources DPI and unfinished decodes invalidate only 
     CHECK(fit_workbench_thumbnail_size(0, 640, 96, 96) == wxSize());
 }
 
-TEST_CASE("Workbench check summary stays compact while details retain diagnostics",
+TEST_CASE("Workbench check details report the current result and only verified repair counts",
           "[AtomicModelCapabilities][PostGenerationWorkbench]")
 {
     WorkbenchCheckResult result;
     CHECK(workbench_check_status_line(result) == "模型尚未检查");
     result.status = WorkbenchCheckStatus::Running;
     result.phase = WorkbenchCheckPhase::Repairing;
-    CHECK(workbench_check_status_line(result) == "正在修复模型……");
+    CHECK(workbench_check_status_line(result) == "高级修复进行中");
     result.status = WorkbenchCheckStatus::Normal;
     result.phase = WorkbenchCheckPhase::Idle;
     result.summary = "开放边 0；非流形边 0。";
     CHECK(workbench_check_status_line(result) == "检查通过");
-    result.before_faces = 10; result.before_vertices = 12;
-    CHECK(workbench_check_detail_text(result).find("当前模型：10 面 / 12 点") != std::string::npos);
-    CHECK(workbench_check_detail_text(result).find("修复后：0") == std::string::npos);
-    result.repair_reason = "已清理 2 个面。";
-    result.before_faces = 10; result.after_faces = 8;
-    result.before_vertices = 12; result.after_vertices = 11;
-    result.removed_faces = 2;
+    result.before_faces = 10;
+    CHECK(workbench_check_face_counts(result).current == 10);
+    CHECK(workbench_check_face_counts(result).before_repair == 0);
+    CHECK(workbench_check_next_step(result).empty());
+
+    result.after_faces = 8;
+    result.candidate_status = RepairCandidateStatus::Ready;
+    CHECK(workbench_check_status_line(result) == "正在保存修复结果……");
+    CHECK(workbench_check_face_counts(result).before_repair == 0);
+
+    result.candidate_status = RepairCandidateStatus::Accepted;
+    CHECK(workbench_check_status_line(result) == "已修复并保存");
+    CHECK(workbench_check_face_counts(result).current == 8);
+    CHECK(workbench_check_face_counts(result).before_repair == 10);
+    result.before_faces = 0;
+    CHECK(workbench_check_face_counts(result).current == 8);
+    CHECK(workbench_check_face_counts(result).before_repair == 0);
+
+    // A reopened certificate can describe the current mesh without publication state.
+    result.candidate_status = RepairCandidateStatus::None;
+    result.before_faces = 8;
     CHECK(workbench_check_status_line(result) == "检查通过");
-    const auto details = workbench_check_detail_text(result);
-    CHECK(details.find("修复前：10 面 / 12 点") != std::string::npos);
-    CHECK(details.find("拓扑指标") != std::string::npos);
+    CHECK(workbench_check_face_counts(result).current == 8);
+    CHECK(workbench_check_face_counts(result).before_repair == 0);
+
     result.status = WorkbenchCheckStatus::Attention;
+    result.boundary_edges = 12;
+    result.appearance_confidence = 0.42;
+    result.repair_reason = "内部诊断";
     CHECK(workbench_check_status_line(result) == "检查失败");
-    CHECK(workbench_check_detail_text(result).find("自交检测：尚未完成") != std::string::npos);
-    result.self_intersections_checked = true;
-    CHECK(workbench_check_detail_text(result).find("自交检测：未发现自交") != std::string::npos);
+    CHECK(workbench_check_next_step(result) == "模型表面有未闭合区域，请重新检查。");
+    result.candidate_status = RepairCandidateStatus::Failed;
+    CHECK(workbench_check_status_line(result) == "修复失败");
+    result.issue = WorkbenchCheckIssue::RecheckFailed;
+    CHECK(workbench_check_next_step(result) == "修复结果未通过复检，请重新检查。");
+    result.issue = WorkbenchCheckIssue::SaveFailed;
+    CHECK(workbench_check_status_line(result) == "保存失败");
+    CHECK(workbench_check_next_step(result).find("重新检查") != std::string::npos);
+    result.issue = WorkbenchCheckIssue::Canceled;
+    CHECK(workbench_check_status_line(result) == "已取消");
+    CHECK(workbench_check_next_step(result).find("重新检查") != std::string::npos);
+
+    CHECK_FALSE(workbench_check_can_locate(result, ""));
+    result.model_sha256 = "checked-mesh";
+    CHECK_FALSE(workbench_check_can_locate(result, "checked-mesh"));
+    result.issue_faces = {1, 2};
+    CHECK_FALSE(workbench_check_can_locate(result, "checked-mesh"));
+    result.issue = WorkbenchCheckIssue::RepairFailed;
+    CHECK_FALSE(workbench_check_can_locate(result, "different-mesh"));
+    CHECK(workbench_check_can_locate(result, "checked-mesh"));
+}
+
+TEST_CASE("Topology details show verified measurements for the current preview",
+          "[AtomicModelCapabilities][PostGenerationWorkbench]")
+{
+    WorkbenchCheckResult check;
+    check.model_sha256 = "checked-mesh";
+
+    SECTION("Clean topology stays compact after repair and after reopening history") {
+        check.status = WorkbenchCheckStatus::Normal;
+        check.candidate_status = RepairCandidateStatus::Accepted;
+        check.self_intersections_checked = true;
+        check.isolated_components = 2;
+
+        const auto repaired = workbench_topology_details(check, "checked-mesh");
+        CHECK(repaired.summary == "未发现拓扑异常");
+        REQUIRE(repaired.rows.size() == 3);
+        CHECK(repaired.rows[1] == "连通组件 2 个");
+        CHECK(repaired.rows[2] == "未发现自交");
+
+        check.candidate_status = RepairCandidateStatus::None;
+        CHECK(workbench_topology_details(check, "checked-mesh").rows == repaired.rows);
+    }
+
+    SECTION("Measured problems include their counts and the self check state") {
+        check.status = WorkbenchCheckStatus::Failed;
+        check.issue = WorkbenchCheckIssue::RepairFailed;
+        check.boundary_edges = 3;
+        check.boundary_loops = 1;
+        check.nonmanifold_edges = 2;
+        check.nonmanifold_vertices = 4;
+        check.degenerate_faces = 5;
+        check.duplicate_faces = 6;
+        check.inconsistent_edges = 7;
+
+        const auto details = workbench_topology_details(check, "checked-mesh");
+        CHECK(details.summary == "发现拓扑异常");
+        REQUIRE(details.rows.size() == 5);
+        CHECK(details.rows[0] == "开放边 3 条 · 边界环 1 个");
+        CHECK(details.rows[1] == "非流形边 2 条 · 非流形顶点 4 个");
+        CHECK(details.rows[2] == "退化面 5 个 · 重复面 6 个");
+        CHECK(details.rows[3] == "方向不一致 7 条边");
+        CHECK(details.rows[4] == "自交检测未完成");
+    }
+
+    SECTION("Self intersection is presented as a detection result") {
+        check.status = WorkbenchCheckStatus::Failed;
+        check.self_intersections_checked = true;
+        check.self_intersections = 1;
+
+        const auto details = workbench_topology_details(check, "checked-mesh");
+        CHECK(details.summary == "发现自交");
+        REQUIRE(details.rows.size() == 1);
+        CHECK(details.rows.front() == "发现自交");
+    }
+
+    SECTION("Completed mesh checks report an unfinished self intersection test separately") {
+        check.status = WorkbenchCheckStatus::Normal;
+        const auto details = workbench_topology_details(check, "checked-mesh");
+        CHECK(details.summary == "自交检测未完成");
+        REQUIRE(details.rows.size() == 2);
+        CHECK(details.rows.front() == "未发现拓扑异常");
+        CHECK(details.rows.back() == "自交检测未完成");
+    }
+
+    SECTION("Missing, unfinished, or obsolete results stay unavailable") {
+        check.status = WorkbenchCheckStatus::Failed;
+        check.before_faces = 10;
+        CHECK(workbench_topology_details(check, "checked-mesh").summary == "暂无拓扑记录");
+
+        check.boundary_edges = 3;
+        check.status = WorkbenchCheckStatus::Running;
+        CHECK(workbench_topology_details(check, "checked-mesh").rows.empty());
+        check.status = WorkbenchCheckStatus::Failed;
+        CHECK(workbench_topology_details(check, "").rows.empty());
+        CHECK(workbench_topology_details(check, "other-mesh").rows.empty());
+        check.issue = WorkbenchCheckIssue::SourceChanged;
+        CHECK(workbench_topology_details(check, "checked-mesh").rows.empty());
+        check.issue = WorkbenchCheckIssue::None;
+        check.candidate_status = RepairCandidateStatus::Ready;
+        CHECK(workbench_topology_details(check, "checked-mesh").rows.empty());
+    }
 }
 
 TEST_CASE("Automatic checks wait for the workbench and keep one progress card through every phase",
@@ -223,6 +340,30 @@ TEST_CASE("Both check entry points show cancellable progress from inspection thr
             CHECK_FALSE(workbench_check_card_should_show(false, true, true, true, false, result));
         }
     }
+}
+
+TEST_CASE("Manual check results stay visible until dismissed, including saved models",
+          "[AtomicModelCapabilities][PostGenerationWorkbench][WorkbenchCheckLifecycle]")
+{
+    WorkbenchCheckResult result;
+    result.source = WorkbenchCheckSource::Manual;
+    result.purpose = WorkbenchCheckPurpose::SavedModelReadOnly;
+    result.status = WorkbenchCheckStatus::Normal;
+    CHECK(workbench_check_card_should_show(true, true, true, false, false, result));
+    CHECK_FALSE(workbench_check_card_should_show(true, true, false, false, false, result));
+
+    result.status = WorkbenchCheckStatus::Failed;
+    result.issue = WorkbenchCheckIssue::RepairFailed;
+    CHECK(workbench_check_card_should_show(true, true, true, false, false, result));
+    result.issue = WorkbenchCheckIssue::Canceled;
+    CHECK_FALSE(workbench_check_card_should_show(true, true, true, false, false, result));
+
+    result.status = WorkbenchCheckStatus::Normal;
+    result.issue = WorkbenchCheckIssue::None;
+    result.candidate_status = RepairCandidateStatus::Accepted;
+    CHECK(workbench_check_card_should_show(true, true, true, false, false, result));
+    result.source = WorkbenchCheckSource::Automatic;
+    CHECK_FALSE(workbench_check_card_should_show(true, true, true, false, false, result));
 }
 
 TEST_CASE("Portrait source risk checks never become generic failure modals",
@@ -305,6 +446,20 @@ TEST_CASE("Import feedback remains inside the center viewport across sidebar siz
     CHECK(workbench_import_card_bounds(wxRect(-100, 10, 300, 150), content, wxSize(410, 184)) ==
           wxRect(0, 10, 200, 150));
     CHECK(workbench_import_card_bounds(wxRect(1300, 0, 100, 100), content, wxSize(410, 184)).IsEmpty());
+}
+
+TEST_CASE("Loading feedback follows the owner window from the visible source view", "[AtomicModelCapabilities][WorkbenchImportPresentation]")
+{
+    const wxRect owner(100, 60, 1200, 800), content(160, 80, 1140, 760);
+    const wxRect source_viewport(380, 95, 700, 730);
+    const wxSize card_size(410, 184);
+    const WorkbenchLoadingCardAnchor anchor(source_viewport, content, owner);
+    CHECK(anchor.bounds(owner, card_size) == wxRect(525, 368, 410, 184));
+    CHECK(anchor.bounds(wxRect(230, 95, 1200, 800), card_size) == wxRect(655, 403, 410, 184));
+    CHECK(anchor.bounds(wxRect(100, 60, 600, 400), card_size) == wxRect(240, 167, 350, 184));
+
+    const WorkbenchLoadingCardAnchor from_history(wxRect{}, content, owner);
+    CHECK(from_history.bounds(owner, card_size) == workbench_import_card_bounds(content, owner, card_size));
 }
 namespace Matching = LocalPrintColorMatching;
 

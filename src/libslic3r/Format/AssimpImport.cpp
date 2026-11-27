@@ -4,6 +4,12 @@
 #include "ResourcePathUtils.hpp"
 
 #include <assimp/Importer.hpp>
+#ifdef _WIN32
+#include "../Utils.hpp"
+#include <assimp/DefaultIOStream.h>
+#include <assimp/DefaultIOSystem.h>
+#include <boost/nowide/convert.hpp>
+#endif
 #include <assimp/color4.h>
 #include <assimp/config.h>
 #include <assimp/material.h>
@@ -28,6 +34,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -35,6 +42,45 @@
 
 namespace Slic3r {
 namespace {
+
+#ifdef _WIN32
+// Assimp's default Windows I/O can open paths through the ANSI code page.
+// Use wide filenames for the extended path passed by the model loader.
+class ExtendedAssimpStream final : public Assimp::DefaultIOStream
+{
+public:
+    ExtendedAssimpStream(FILE* file, const char* path) : DefaultIOStream(file, path) {}
+};
+
+class ExtendedAssimpIO final : public Assimp::DefaultIOSystem
+{
+public:
+    bool Exists(const char* path) const override
+    {
+        boost::system::error_code error;
+        return path && boost::filesystem::is_regular_file(wide_path(path), error);
+    }
+
+    Assimp::IOStream* Open(const char* path, const char* mode) override
+    {
+        if (!path || !mode)
+            return nullptr;
+        std::unique_ptr<FILE, decltype(&std::fclose)> file(
+            ::_wfopen(wide_path(path).c_str(), boost::nowide::widen(mode).c_str()), &std::fclose);
+        if (!file)
+            return nullptr;
+        auto* stream = new ExtendedAssimpStream(file.get(), path);
+        file.release();
+        return stream;
+    }
+
+private:
+    static boost::filesystem::path wide_path(const char* path)
+    {
+        return Slic3r::extended_path(boost::filesystem::path(boost::nowide::widen(path)));
+    }
+};
+#endif
 
 // Opt-in CPU attribution; only a few clock reads per mesh, never per vertex.
 // Keep this inside the importer so UI and caller contracts stay unchanged.
@@ -374,6 +420,10 @@ bool load_assimp_textured_model(const std::string& path, TexturedMesh& out, std:
     if (preview_materials) preview_materials->clear();
 
     Assimp::Importer importer;
+#ifdef _WIN32
+    if (path.rfind("\\\\?\\", 0) == 0)
+        importer.SetIOHandler(new ExtendedAssimpIO);
+#endif
     const unsigned int flags = assimp_import_flags(path);
     configure_importer(importer, path, flags);
 
