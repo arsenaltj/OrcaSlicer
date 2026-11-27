@@ -1355,6 +1355,7 @@ inline constexpr float DEFAULT_FILAMENT_DENSITY = 1.245f;
         ExtruderColors m_extruder_colors;
         ExtruderTemps m_extruder_temps;
         bool  m_is_XL_printer = false;
+        bool m_honor_forge_physical_tools = false;
         int m_highest_bed_temp;
         float m_extruded_last_z;
         float m_first_layer_height; // mm

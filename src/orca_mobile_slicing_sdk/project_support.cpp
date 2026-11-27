@@ -312,6 +312,71 @@ LoadedProject load_project(const std::string& inputPath, const Json& configOverr
             (inspection.is_object() && !inspection["blockedFeatures"].empty()?"; 3MF_FEATURES:"+inspection["blockedFeatures"].dump():std::string()));
     }
 
+    // Verify inspection and actual Native PlateData agree before any request
+    // override. An override cannot erase malformed or dropped source semantics.
+    if(sourceExtension==".3mf") {
+        for(const auto& declared:inspection.at("plates")) {
+            const auto id=declared.value("id",std::string());
+            if((nativePlateId>0 && id!=selectedPlateId) || (nativePlateId==0 && plates.size()!=1)) continue;
+            if(!declared.contains("validatedNativeProcess") && !declared.contains("validatedNativeSkirtStartAngle")) continue;
+            const auto found=std::find_if(plates.begin(),plates.end(),[&](const auto* plate){
+                return plate && std::to_string(plate->plate_index+1)==id;
+            });
+            if(found==plates.end()) throw std::runtime_error("PLATE_PROCESS_NATIVE_METADATA_MISSING");
+            if(declared.contains("validatedNativeSkirtStartAngle")) {
+                const auto* actual=(*found)->config.option<ConfigOptionFloat>("skirt_start_angle");
+                if(!actual || !std::isfinite(actual->value) || actual->value!=declared.at("validatedNativeSkirtStartAngle").get<double>())
+                    throw std::runtime_error("PLATE_NATIVE_SKIRT_START_ANGLE_INSPECTION_MISMATCH");
+            }
+            if(!declared.contains("validatedNativeProcess")) continue;
+            for(auto it=declared.at("validatedNativeProcess").begin();it!=declared.at("validatedNativeProcess").end();++it) {
+                const auto* actual=(*found)->config.option(it.key());
+                if(!actual || actual->serialize()!=it.value().get<std::string>())
+                    throw std::runtime_error("PLATE_PROCESS_NATIVE_INSPECTION_MISMATCH:"+it.key());
+            }
+        }
+    }
+
+    if(sourceExtension==".3mf") {
+        // Check a sourced plate layer against its source profile before explicit
+        // overrides. Native zero is serializable but is not an executable layer.
+        const auto& sourcePlates=inspection.at("plates");
+        // Physical limits require a profile actually present in the source.
+        // Do not confuse missing source nozzle data with an invalid target.
+        const bool sourceHasNozzleProfile=config.has("nozzle_diameter");
+        for(const auto& plate:sourcePlates) {
+            if(!plate.contains("validatedNativeProcess")) continue;
+            DynamicPrintConfig sourcePlate=DynamicPrintConfig::full_print_config();
+            sourcePlate.apply(config);
+            for(auto it=plate.at("validatedNativeProcess").begin();it!=plate.at("validatedNativeProcess").end();++it)
+                sourcePlate.apply(Slic3r::PlateProcess::parse(it.key(),it.value().get<std::string>()));
+            // NAT-PLATE-SOURCE-PHYS-01: use Native semantic validation before
+            // request overrides, for exactly the options carried by this plate.
+            // In particular a 9mm literal is type-valid but cannot be used with
+            // the source's real 0.4mm nozzle. A later 0.4mm override cannot erase it.
+            for(const auto& invalid:sourcePlate.validate()) {
+                if(!plate.at("validatedNativeProcess").contains(invalid.first)) continue;
+                if(!sourceHasNozzleProfile && (invalid.first=="outer_wall_line_width" || invalid.first=="layer_height")) continue;
+                throw std::runtime_error("PLATE_PROCESS_SOURCE_NATIVE_INVALID:"+invalid.first+":"+invalid.second);
+            }
+            if(!plate.at("validatedNativeProcess").contains("layer_height")) continue;
+            const double layer=sourcePlate.opt_float("layer_height");
+            const auto* diameters=sourcePlate.option<ConfigOptionFloats>("nozzle_diameter");
+            const auto* minima=sourcePlate.option<ConfigOptionFloats>("min_layer_height");
+            const auto* maxima=sourcePlate.option<ConfigOptionFloats>("max_layer_height");
+            if(!std::isfinite(layer) || layer<=0 || !diameters || diameters->values.empty())
+                throw std::runtime_error("PLATE_PROCESS_SOURCE_LAYER_INVALID");
+            if(!sourceHasNozzleProfile) continue;
+            for(size_t i=0;i<diameters->values.size();++i) {
+                const double nozzle=diameters->values[i];
+                const double minimum=minima && !minima->values.empty()?minima->values[std::min(i,minima->values.size()-1)]:nozzle*.1;
+                const double maximum=maxima && !maxima->values.empty()?maxima->values[std::min(i,maxima->values.size()-1)]:nozzle*.7;
+                if(!std::isfinite(nozzle) || nozzle<=0 || !std::isfinite(minimum) || !std::isfinite(maximum) ||
+                   layer<std::max(.02,minimum) || layer>std::min(nozzle*.75,maximum>0?maximum:nozzle*.7))
+                    throw std::runtime_error("PLATE_PROCESS_SOURCE_LAYER_OUT_OF_PROFILE");
+            }
+        }
+    }
     // Single-plate settings are part of the original profile, before user
     // overrides. Multi-plate projects are inspected but never silently flattened.
     if(sourceExtension==".3mf" && plates.size()==1) config.apply(plates.front()->config);
@@ -626,7 +691,7 @@ void apply_preset(LoadedProject& project,const std::string& kind,const std::stri
         // Existing nonzero assignments must be remapped explicitly, not clamped.
         apply_config_overrides(project.config,match->at("config"));
     }
-    if(presetId!="source/current") {
+    if(presetId!="source/current" && !(kind=="device" && presetId=="honor/forge-6-head-0.4")) {
         // The generated material is a one-slot profile; preserve a usable source
         // color for this slot, while scene/sourceColors remains the original set.
         const auto source=project.metadata.value("sourceColors",Json::array());
@@ -634,6 +699,15 @@ void apply_preset(LoadedProject& project,const std::string& kind,const std::stri
         int physical=1;
         if(kind=="material") if(const auto* maps=project.config.option<ConfigOptionInts>("filament_map"); maps && !maps->values.empty()) physical=maps->values.front();
         project.config.set_key_value("filament_map",new ConfigOptionInts({physical}));
+    }
+    if(kind=="device" && presetId=="honor/forge-6-head-0.4") {
+        // The preset describes six tools, not six known loaded spool colors.
+        // Keep the source display color as an unconfirmed placeholder; the
+        // manufacturing helper requires explicit per-slot actual bindings.
+        const auto source=project.metadata.value("sourceColors",Json::array());
+        const std::string display=source.empty()?"#FFFFFF":source.front().get<std::string>();
+        project.config.set_key_value("filament_colour",new ConfigOptionStrings(std::vector<std::string>(6,display)));
+        project.metadata["actualFilamentLoadingVerified"]=false;
     }
     // Retain user consent across a profile reset, but never manufacture it.
     if(project.metadata.value("outputMode",std::string())=="singleMaterial") project.config.set("enable_prime_tower",false,true);

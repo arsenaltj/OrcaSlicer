@@ -175,6 +175,16 @@ def create_app(session, *, engine=True, network_changed=None, shutdown=None) -> 
     def result(value):
         return {"result": value}
 
+    def lost_response(operation):
+        if not session.consume_response_loss(operation):
+            return None
+        async def broken_body():
+            # Headers are sent, but no acceptance receipt reaches the caller.
+            raise ConnectionResetError("Injected post-accept response loss")
+            yield b""  # Make this an async generator without emitting a false receipt.
+        return StreamingResponse(broken_body(), media_type="application/json",
+                                 headers={"Content-Length": "64", "Connection": "close"})
+
     def filter_objects(status: dict, requested: dict) -> dict:
         return {name: ({key: value for key, value in status[name].items() if key in fields} if isinstance(fields, list) else status[name])
                 for name, fields in requested.items() if name in status}
@@ -185,11 +195,14 @@ def create_app(session, *, engine=True, network_changed=None, shutdown=None) -> 
                        "klippy_state": "shutdown" if session.faults["overtemperature"] else "ready",
                        "components": ["file_manager", "webcam", "database"], "failed_components": [],
                        "machine_name": session.config["name"], "hostname": "hf-virtual-printer",
-                       "instance_uuid": session.instance_uuid, "hf_virtual_printer": True})
+                       "instance_uuid": session.instance_uuid, "hf_virtual_printer": True,
+                       "model": session.capability_config()["model"], "firmware": "klipper"})
 
     @app.get("/printer/info")
     def printer_info():
         return result({"state": "ready", "state_message": session.message, "hostname": "hf-virtual-printer",
+                       "model": session.capability_config()["model"], "firmware": "klipper",
+                       "config": session.capability_config(), "hf_virtual_printer": True,
                        "machine_name": session.config["name"], "software_version": f"virtual-{__version__}"})
 
     @app.get("/printer/objects/list")
@@ -199,6 +212,16 @@ def create_app(session, *, engine=True, network_changed=None, shutdown=None) -> 
     @app.get("/printer/objects/query")
     def query(request: Request):
         objects = {key: value.split(",") if value else None for key, value in request.query_params.items()}
+        return result({"status": filter_objects(session.objects(), objects or {name: None for name in session.objects()}),
+                       "eventtime": time.monotonic()})
+
+    @app.post("/printer/objects/query")
+    async def query_post(request: Request):
+        value = await body(request)
+        objects = value.get("objects", {})
+        if not isinstance(objects, dict) or any(not isinstance(k, str) or (v is not None and
+                (not isinstance(v, list) or any(not isinstance(field, str) for field in v))) for k, v in objects.items()):
+            raise PrinterError("objects必须为对象，字段为字符串数组或null")
         return result({"status": filter_objects(session.objects(), objects or {name: None for name in session.objects()}),
                        "eventtime": time.monotonic()})
 
@@ -250,6 +273,9 @@ def create_app(session, *, engine=True, network_changed=None, shutdown=None) -> 
             if str(form.get("print", "false")).lower() == "true":
                 await asyncio.to_thread(session.start, item["path"])
                 started = True
+            dropped = lost_response("upload")
+            if dropped is not None:
+                return dropped
             # Moonraker upload has a bare response, unlike the other HTTP endpoints.
             return {"item": item, "print_started": started, "print_queued": False, "action": "create_file"}
 
@@ -269,7 +295,10 @@ def create_app(session, *, engine=True, network_changed=None, shutdown=None) -> 
         if not isinstance(params, dict):
             raise PrinterError("params 必须为对象")
         filename = value.get("filename", params.get("filename", ""))
-        await asyncio.to_thread(session.start, filename)
+        await asyncio.to_thread(session.start, filename, value.get("commandId", params.get("commandId")))
+        dropped = lost_response("start")
+        if dropped is not None:
+            return dropped
         return result("ok")
 
     @app.post("/printer/print/{action}")
@@ -330,10 +359,10 @@ def create_app(session, *, engine=True, network_changed=None, shutdown=None) -> 
         except PrinterError:
             await ws.close(code=1008)
             return
+        await ws.accept()
         if session.faults["offline"]:
             await ws.close(code=1013)
             return
-        await ws.accept()
         try:
             while True:
                 message = await ws.receive_json()
@@ -367,7 +396,10 @@ def create_app(session, *, engine=True, network_changed=None, shutdown=None) -> 
                     elif method in {"printer.print.start", "printer.print.pause", "printer.print.resume", "printer.print.cancel"}:
                         action = method.rsplit(".", 1)[1]
                         if action == "start":
-                            await asyncio.to_thread(session.start, params.get("filename", ""))
+                            await asyncio.to_thread(session.start, params.get("filename", ""), params.get("commandId"))
+                            if session.consume_response_loss("start"):
+                                await ws.close(code=1011, reason="Injected post-accept response loss")
+                                return
                         else:
                             getattr(session, action)()
                         value = "ok"
@@ -404,7 +436,7 @@ def create_app(session, *, engine=True, network_changed=None, shutdown=None) -> 
     @app.get("/sim/api/v1/templates")
     def templates():
         from .config import default_config
-        return {name: default_config(name) for name in ("single", "multicolor", "multihead")}
+        return {name: default_config(name) for name in ("single", "multicolor", "multihead", "apex")}
 
     @app.post("/sim/api/v1/action")
     async def action(request: Request):

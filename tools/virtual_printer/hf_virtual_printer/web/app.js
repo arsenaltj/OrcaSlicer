@@ -6,7 +6,7 @@ function icons(root=document){root.querySelectorAll('[data-icon]').forEach(el=>{
 icons();
 let state=null,draft=null,templates=null,tab='overview',lastHardware='',lastSlots='',lastActiveTool=-1,toastTimer;
 const phases={standby:'空闲就绪',printing:'正在打印',paused:'已暂停',complete:'打印完成',cancelled:'已停止',error:'设备异常',interrupted:'已中断'};
-const faultNames={offline:'设备离线',upload_failed:'上传失败',storage_full:'存储空间已满',runout:'耗材用尽',overtemperature:'喷头温度异常',camera_offline:'摄像头中断'};
+const faultNames={offline:'设备离线',upload_failed:'上传失败',storage_full:'存储空间已满',runout:'耗材用尽',overtemperature:'喷头温度异常',camera_offline:'摄像头中断',upload_response_lost:'单次上传成功但响应中断',start_response_lost:'单次启动成功但响应中断'};
 function toast(message,error=false){$('toast').textContent=message;$('toast').className=error?'error':'';$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,error?6500:3500);}
 async function api(path,options={}){const response=await fetch(path,{signal:AbortSignal.timeout(15000),...options,headers:{...(options.body&&!(options.body instanceof FormData)?{'Content-Type':'application/json'}:{}),...options.headers}});if(!response.ok){let message=`请求失败 (${response.status})`;try{const body=await response.json();message=body.error?.message||body.detail||message;}catch{}throw Error(message);}return response.json();}
 const post=(path,value)=>api(path,{method:'POST',body:JSON.stringify(value)});

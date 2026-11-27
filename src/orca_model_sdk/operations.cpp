@@ -7,6 +7,8 @@ J execute(Context& c, const J& r)
     auto op = r.at("operation").get<std::string>();
     if (op == "capabilities")
         return J::parse(orca_model_capabilities());
+    if (op == "getPrintPalette" || op == "matchPrintColors" || op == "applyPrintColors" || op == "savePrintColorDraft")
+        return print_colors(c, r);
     if (op == "inspectGlbArtifact" || op == "repairGlbArtifact")
         return glb_safety(c, r);
     if (op == "manufacturingSnapshot" || op == "sliceDocument" || op == "recommendDocument")
@@ -197,6 +199,8 @@ J execute(Context& c, const J& r)
         return response;
     }
     if (op == "acceptCandidate") {
+        if (c.candidate.appearance.value("printColorCandidate", false))
+            throw Error("COLOR_MAPPING_CONFIRMATION_REQUIRED", "Use applyPrintColors with current material and process fingerprints");
         if (c.candidate.id.empty() || c.candidate_base != c.doc.revision || c.candidate_document != c.doc.id ||
             c.candidate_generation != c.generation || c.candidate_geometry != c.doc.geometry ||
             r.at("candidateId").get<std::string>() != c.candidate_id)
@@ -220,6 +224,7 @@ J execute(Context& c, const J& r)
         check_cancel(c);
         atomic_write(path, bytes);
         c.protected_sources.swap(protected_sources);
+        descriptor["documentPath"] = path.u8string();
         return descriptor;
     }
     if (op == "undo" || op == "redo") {
@@ -240,6 +245,8 @@ J execute(Context& c, const J& r)
         return descriptor;
     }
     if (op == "exportManufacturing") {
+        if(c.doc.appearance.contains("printColorDraft"))
+            throw Error("COLOR_TRIAL_ONLY", "Bind and confirm real materials before manufacturing export");
         auto format = r.value("format", std::string("obj"));
         if (format != "obj" && format != "stl")
             throw Error("UNSUPPORTED_FORMAT", "Supported export: OBJ/STL");
@@ -306,6 +313,8 @@ J execute(Context& c, const J& r)
                                           {"sizeBytes", data.dump().size()}}})}};
     }
     Document next = c.doc;
+    next.appearance.erase("printColorPlan");
+    next.appearance.erase("printColorCandidate");
     if (op == "transform") {
         V translation = r.value("translation", V{0, 0, 0}), scale = r.value("scale", V{1, 1, 1}),
           rotation = r.value("rotationDegrees", V{0, 0, 0});

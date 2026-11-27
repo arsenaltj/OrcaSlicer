@@ -24,6 +24,27 @@ option(ORCA_MOBILE_REAL_TRIANGULATION "Compile existing shared Core CGAL constra
 set(ORCA_MOBILE_CGAL_INCLUDE "" CACHE PATH "Verified CGAL 6.2.1 include root")
 set(ORCA_DEPS_SOURCE "${ORCA_SOURCE_ROOT}/deps_src")
 include(FetchContent)
+# Boost must have an explicit linkage before its targets are created. Other
+# dependencies may change BUILD_SHARED_LIBS later during configuration.
+if(WIN32)
+ set(_orca_boost_default SHARED)
+else()
+ set(_orca_boost_default STATIC)
+endif()
+set(ORCA_SDK_BOOST_LINKAGE "${_orca_boost_default}" CACHE STRING "Standalone SDK Boost linkage: STATIC or SHARED")
+set_property(CACHE ORCA_SDK_BOOST_LINKAGE PROPERTY STRINGS STATIC SHARED)
+if(NOT ORCA_SDK_BOOST_LINKAGE MATCHES "^(STATIC|SHARED)$")
+ message(FATAL_ERROR "ORCA_SDK_BOOST_LINKAGE must be STATIC or SHARED")
+endif()
+if(DEFINED BUILD_SHARED_LIBS)
+ set(_orca_restore_shared_defined TRUE)
+ set(_orca_restore_shared "${BUILD_SHARED_LIBS}")
+endif()
+if(ORCA_SDK_BOOST_LINKAGE STREQUAL "SHARED")
+ set(BUILD_SHARED_LIBS ON)
+else()
+ set(BUILD_SHARED_LIBS OFF)
+endif()
 set(BOOST_ENABLE_CMAKE ON CACHE BOOL "" FORCE)
 set(BOOST_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
 set(BOOST_SKIP_INSTALL_RULES ON CACHE BOOL "" FORCE)
@@ -35,6 +56,38 @@ FetchContent_Declare(boost
     URL https://github.com/boostorg/boost/releases/download/boost-1.84.0/boost-1.84.0.tar.gz
     URL_HASH SHA256=4d27e9efed0f6f152dc28db6430b9d3dfb40c0345da7342eaa5a987dde57bd95)
 FetchContent_MakeAvailable(boost)
+set(_orca_boost_audit "{\"requested\":\"${ORCA_SDK_BOOST_LINKAGE}\",\"targets\":{")
+set(_orca_boost_provenance "")
+set(_orca_boost_separator "")
+foreach(_orca_boost_component filesystem system thread log locale regex chrono date_time iostreams atomic)
+ if(NOT TARGET Boost::${_orca_boost_component})
+  message(FATAL_ERROR "Pinned Boost::${_orca_boost_component} target is missing")
+ endif()
+ get_target_property(_orca_boost_type Boost::${_orca_boost_component} TYPE)
+ if(_orca_boost_component STREQUAL "system" OR _orca_boost_component STREQUAL "regex")
+  set(_orca_expected_boost_type INTERFACE_LIBRARY)
+ else()
+  set(_orca_expected_boost_type "${ORCA_SDK_BOOST_LINKAGE}_LIBRARY")
+ endif()
+ if(NOT _orca_boost_type STREQUAL _orca_expected_boost_type)
+  message(FATAL_ERROR "Boost::${_orca_boost_component} is ${_orca_boost_type}; requested ${ORCA_SDK_BOOST_LINKAGE}")
+ endif()
+ get_target_property(_orca_boost_real Boost::${_orca_boost_component} ALIASED_TARGET)
+ get_target_property(_orca_boost_source Boost::${_orca_boost_component} SOURCE_DIR)
+ if(NOT _orca_boost_real OR NOT EXISTS "${_orca_boost_source}/CMakeLists.txt")
+  message(FATAL_ERROR "Pinned Boost::${_orca_boost_component} alias/source is missing")
+ endif()
+ file(SHA256 "${_orca_boost_source}/CMakeLists.txt" _orca_boost_source_sha)
+ string(APPEND _orca_boost_audit "${_orca_boost_separator}\"${_orca_boost_component}\":\"${_orca_boost_type}\"")
+ string(APPEND _orca_boost_provenance "${_orca_boost_separator}\"${_orca_boost_component}\":{\"alias\":\"Boost::${_orca_boost_component}\",\"realTarget\":\"${_orca_boost_real}\",\"sourceCmake\":\"${_orca_boost_source}/CMakeLists.txt\",\"sourceCmakeSha256\":\"${_orca_boost_source_sha}\"}")
+ set(_orca_boost_separator ",")
+endforeach()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/boost-linkage.json" "${_orca_boost_audit}},\"provenance\":{${_orca_boost_provenance}}}\n")
+if(_orca_restore_shared_defined)
+ set(BUILD_SHARED_LIBS "${_orca_restore_shared}")
+else()
+ unset(BUILD_SHARED_LIBS)
+endif()
 FetchContent_GetProperties(boost)
 file(GLOB _orca_boost_component_includes LIST_DIRECTORIES true "${boost_SOURCE_DIR}/libs/*/include")
 add_library(orca_boost_headers INTERFACE)
@@ -55,7 +108,30 @@ FetchContent_MakeAvailable(cereal)
 FetchContent_Declare(tbb
     URL https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2021.5.0.zip
     URL_HASH SHA256=83ea786c964a384dd72534f9854b419716f412f9d43c0be88d41874763e7bb47)
+if(ANDROID)
+    # Model and Slicing are loaded into one process. Bind both to the exact
+    # qualified runtime instead of packaging two different libtbb.so files.
+    set(ORCA_MOBILE_ANDROID_TBB_RUNTIME "" CACHE FILEPATH "Explicit approved Android libtbb.so shared with Model")
+    if(NOT IS_ABSOLUTE "${ORCA_MOBILE_ANDROID_TBB_RUNTIME}")
+        message(FATAL_ERROR "Android Slicing requires absolute ORCA_MOBILE_ANDROID_TBB_RUNTIME")
+    endif()
+    set(TBB_BUILD OFF CACHE BOOL "Use qualified runtime; only allocator is compiled" FORCE)
+endif()
 FetchContent_MakeAvailable(tbb)
+if(ANDROID)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    execute_process(COMMAND "${Python3_EXECUTABLE}"
+        "${ORCA_SOURCE_ROOT}/src/orca_model_sdk/repair_core/verify_approved_tbb.py"
+        --library "${ORCA_MOBILE_ANDROID_TBB_RUNTIME}" --include "${tbb_SOURCE_DIR}/include"
+        --manifest "${ORCA_SOURCE_ROOT}/src/orca_model_sdk/repair_core/approved_tbb.json"
+        --output "${CMAKE_CURRENT_BINARY_DIR}/approved-tbb-binding.json"
+        COMMAND_ERROR_IS_FATAL ANY)
+    add_library(orca_slicing_approved_tbb SHARED IMPORTED GLOBAL)
+    set_target_properties(orca_slicing_approved_tbb PROPERTIES
+        IMPORTED_LOCATION "${ORCA_MOBILE_ANDROID_TBB_RUNTIME}" IMPORTED_SONAME "libtbb.so"
+        INTERFACE_INCLUDE_DIRECTORIES "${tbb_SOURCE_DIR}/include")
+    add_library(TBB::tbb ALIAS orca_slicing_approved_tbb)
+endif()
 if(TARGET tbbmalloc AND ANDROID)
     set_target_properties(tbbmalloc PROPERTIES LINK_FLAGS "" LINK_DEPENDS "")
 endif()
@@ -125,7 +201,11 @@ target_include_directories(admesh SYSTEM PUBLIC "${ORCA_SOURCE_ROOT}/src")
 target_link_libraries(admesh PUBLIC orca_boost_headers Boost::log)
 # Upstream v2.5 uses Clipper2; the removed legacy clipper target is not rebuilt.
 add_subdirectory("${ORCA_DEPS_SOURCE}/clipper2" "deps/clipper2")
-add_subdirectory("${ORCA_DEPS_SOURCE}/expat" "deps/expat")
+set(ORCA_MOBILE_EXPAT_SOURCE "${ORCA_DEPS_SOURCE}/expat" CACHE PATH "Pinned Expat source directory with CMake interface")
+if(NOT EXISTS "${ORCA_MOBILE_EXPAT_SOURCE}/CMakeLists.txt")
+ message(FATAL_ERROR "Supply explicit pinned ORCA_MOBILE_EXPAT_SOURCE; this checkout no longer vendors Expat")
+endif()
+add_subdirectory("${ORCA_MOBILE_EXPAT_SOURCE}" "deps/expat")
 add_subdirectory("${ORCA_DEPS_SOURCE}/glu-libtess" "deps/glu-libtess")
 add_subdirectory("${ORCA_DEPS_SOURCE}/libigl" "deps/libigl")
 add_subdirectory("${ORCA_DEPS_SOURCE}/mcut" "deps/mcut")
@@ -196,6 +276,10 @@ if(ORCA_MOBILE_REAL_TRIANGULATION)
  execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/extract_parameterization.py"
   "${ORCA_SOURCE_ROOT}/src/libslic3r/MeshBoolean.cpp" "${CMAKE_CURRENT_BINARY_DIR}/generated/MeshParameterization.cpp"
   COMMAND_ERROR_IS_FATAL ANY)
+ execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/extract_enhanced_repair.py"
+  "${ORCA_SOURCE_ROOT}/src/libslic3r/MeshRepair.cpp" "${CMAKE_CURRENT_BINARY_DIR}/generated/MobileEnhancedRepair.cpp"
+  COMMAND_ERROR_IS_FATAL ANY)
+ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ORCA_SOURCE_ROOT}/src/libslic3r/MeshRepair.cpp" "${CMAKE_CURRENT_LIST_DIR}/extract_enhanced_repair.py")
  if(NOT EXISTS "${ORCA_MOBILE_CGAL_INCLUDE}/CGAL/version.h")
   message(FATAL_ERROR "Executable triangulation requires verified CGAL 6.2.1 public headers")
  endif()
@@ -206,13 +290,13 @@ if(ORCA_MOBILE_REAL_TRIANGULATION)
   "${ORCA_SOURCE_ROOT}/src/libslic3r/SLA/IndexedMesh.cpp"
   "${ORCA_SOURCE_ROOT}/src/libslic3r/Triangulation.cpp"
   "${ORCA_SOURCE_ROOT}/src/libslic3r/IntersectionPoints.cpp"
-  "${ORCA_SOURCE_ROOT}/src/libslic3r/MeshRepair.cpp")
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/MobileEnhancedRepair.cpp")
  # CGAL's existing Boost multiprecision backend avoids importing host GMP DLLs
  # into the Android artifact. Core algorithms and their public API stay unchanged.
  set_source_files_properties(
   "${ORCA_SOURCE_ROOT}/src/libslic3r/Triangulation.cpp"
   "${ORCA_SOURCE_ROOT}/src/libslic3r/IntersectionPoints.cpp"
-  "${ORCA_SOURCE_ROOT}/src/libslic3r/MeshRepair.cpp"
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/MobileEnhancedRepair.cpp"
   "${CMAKE_CURRENT_BINARY_DIR}/generated/MeshParameterization.cpp"
   PROPERTIES COMPILE_DEFINITIONS "CGAL_DISABLE_GMP=1;CGAL_NO_CORE=1"
   SKIP_PRECOMPILE_HEADERS ON
@@ -331,14 +415,53 @@ if(EXISTS "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/c_api.cpp" AND EXISTS
     set_target_properties(orca_mobile_slicing_sdk PROPERTIES OUTPUT_NAME orca_mobile_slicing_sdk_c CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
     if(ANDROID)
      target_link_options(orca_mobile_slicing_sdk PRIVATE "-Wl,--no-undefined" "-Wl,--version-script=${CMAKE_CURRENT_LIST_DIR}/exports/slicing.map")
+     set_property(TARGET orca_mobile_slicing_sdk APPEND PROPERTY LINK_DEPENDS "${ORCA_MOBILE_ANDROID_TBB_RUNTIME}")
+     add_custom_command(TARGET orca_mobile_slicing_sdk POST_BUILD
+         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${ORCA_MOBILE_ANDROID_TBB_RUNTIME}" "$<TARGET_FILE_DIR:orca_mobile_slicing_sdk>/libtbb.so"
+         COMMENT "Copying exact qualified shared TBB runtime without transformation")
     endif()
     if(MSVC)
      target_compile_definitions(orca_mobile_slicing_sdk PRIVATE _USE_MATH_DEFINES __TBB_NO_IMPLICIT_LINKAGE=1 __TBBMALLOC_NO_IMPLICIT_LINKAGE=1)
      target_compile_options(orca_mobile_slicing_sdk PRIVATE /utf-8 /bigobj /Zc:lambda)
+     target_link_options(orca_mobile_slicing_sdk PRIVATE /OPT:REF)
+    else()
+     target_link_options(orca_mobile_slicing_sdk PRIVATE -Wl,--gc-sections)
     endif()
     add_executable(orca_mobile_slicing_json_gate "${CMAKE_CURRENT_LIST_DIR}/slicing_json_gate.cpp")
     target_include_directories(orca_mobile_slicing_json_gate PRIVATE "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/include")
     target_link_libraries(orca_mobile_slicing_json_gate PRIVATE orca_mobile_slicing_sdk)
+    if(ORCA_SDK_HOST)
+        if(Python3_Interpreter_FOUND)
+            enable_testing()
+            add_test(NAME public_three_mf_component_world
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_LIST_DIR}/tests/three_mf_component_world_test.py
+                    $<TARGET_FILE:orca_mobile_slicing_sdk> --public-operations)
+        endif()
+        add_executable(orca_plate_process_test "${CMAKE_CURRENT_LIST_DIR}/tests/plate_process_test.cpp")
+        target_link_libraries(orca_plate_process_test PRIVATE OrcaSlicer::Core)
+        add_executable(orca_resident_memory_test "${CMAKE_CURRENT_LIST_DIR}/tests/resident_memory_test.cpp")
+        target_include_directories(orca_resident_memory_test PRIVATE "${ORCA_SOURCE_ROOT}/src")
+        add_executable(orca_honor_tool_routing_test "${CMAKE_CURRENT_LIST_DIR}/tests/honor_forge_routing_test.cpp")
+        target_link_libraries(orca_honor_tool_routing_test PRIVATE OrcaSlicer::Core)
+        add_executable(orca_cooling_tool_domain_test "${CMAKE_CURRENT_LIST_DIR}/tests/cooling_tool_domain_test.cpp")
+        target_link_libraries(orca_cooling_tool_domain_test PRIVATE OrcaSlicer::Core)
+        add_executable(orca_honor_multihead_thermal_test "${CMAKE_CURRENT_LIST_DIR}/tests/honor_multihead_thermal_test.cpp")
+        target_link_libraries(orca_honor_multihead_thermal_test PRIVATE OrcaSlicer::Core)
+        add_executable(orca_material_variant_layout_test "${CMAKE_CURRENT_LIST_DIR}/tests/material_variant_layout_test.cpp")
+        target_link_libraries(orca_material_variant_layout_test PRIVATE OrcaSlicer::Core)
+        add_executable(orca_cooling_tool_domain_baseline EXCLUDE_FROM_ALL "${CMAKE_CURRENT_LIST_DIR}/tests/cooling_tool_domain_test.cpp")
+        target_compile_definitions(orca_cooling_tool_domain_baseline PRIVATE ORCA_COOLING_BASELINE)
+        target_link_libraries(orca_cooling_tool_domain_baseline PRIVATE OrcaSlicer::Core)
+        if(MSVC)
+            foreach(_cooling_target orca_plate_process_test orca_cooling_tool_domain_test orca_cooling_tool_domain_baseline orca_material_variant_layout_test orca_honor_multihead_thermal_test)
+                target_compile_options(${_cooling_target} PRIVATE /utf-8 /bigobj)
+                target_compile_definitions(${_cooling_target} PRIVATE BOOST_ALL_NO_LIB __TBB_NO_IMPLICIT_LINKAGE=1 __TBBMALLOC_NO_IMPLICIT_LINKAGE=1)
+            endforeach()
+            target_compile_options(orca_honor_tool_routing_test PRIVATE /utf-8 /bigobj)
+            target_compile_definitions(orca_honor_tool_routing_test PRIVATE BOOST_ALL_NO_LIB __TBB_NO_IMPLICIT_LINKAGE=1 __TBBMALLOC_NO_IMPLICIT_LINKAGE=1)
+        endif()
+    endif()
 endif()
 
 add_executable(orca_mobile_stl_gate "${CMAKE_CURRENT_LIST_DIR}/stl_gcode_gate.cpp")

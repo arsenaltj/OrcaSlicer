@@ -1,4 +1,33 @@
-# v2 bounded 2M resource envelope
+# GLB inspection and v2 repair resource envelopes
+
+## Streamed v1 inspection (SDK-MODEL-2M-BUDGET-01)
+
+Inspection now visits validated POSITION/attribute/index components directly
+from the immutable source BIN. It keeps double world coordinates and original
+corner order; NORMAL/UV values are all checked even though not retained. Dense
+vertices/faces and each primitive remap are reserved exactly, with an explicit
+capacity guard. No decoded POSITION/normal/UV/index copy coexists with the
+canonical map and output mesh. Original bytes, material JSON and SHA identity
+remain unchanged. CGAL algorithms are unchanged, including the already qualified
+dead-set adapter, vertex-link validation and complete EPICK self-intersection.
+
+Only inspectGlbArtifact in the bounded RepairCore build uses the separate
+streamed-inspect-live-containers-v1 phase estimate. It takes the maximum of
+streamed decode, contiguous counting, pinned CGAL soup incidence workspace,
+Surface/point/link/box predicates and whole-source revalidation, then adds128MiB
+allocator/library reserve plus16 times the actual JSON/header size. The response
+reports phase bytes and actual admitted dense capacities. This is an estimated,
+empirically checked envelope, not an OS hard RSS limit. CGAL progress boundaries
+now expose cancellation points without claiming preemption inside a predicate.
+
+Limited v1 repair retains4B+96V+448F because removal maps, rebuilt candidates and
+publication have different overlapping storage. Its2M path remains resource
+limited; a successful2M inspection must not be generalized to2M v1 repair or to
+generated2M purchase eligibility. All numerical caps and120s cooperative policy
+stay unchanged. The v2 sections below describe a separate repair operation and
+do not authorize converting inspect into a Core float/appearance rebuild.
+
+## Existing v2 repair envelope
 
 The repair entry, CGAL residual predicates and appearance policy are unchanged.
 Source face count and authored-normal policy are captured before temporary
@@ -11,7 +40,8 @@ v1 keeps its original 1M generated capability; v2's profile remains static,
 embedded, single primitive, unextended, UV0 (not arbitrary 2M success).
 
 The former 4B+96V+448F admission made every true2M input mathematically impossible.
-It is replaced **only for v2** after removing simultaneous allocations:
+For v2 it was replaced after removing simultaneous allocations (the newer v1
+inspect-only policy above is independent):
 
 - Exact face/edge counts use sorted 12F face keys and 24F directed-edge words,
   with unchanged first-occurrence point identity, orientation and ordered faces.

@@ -2,10 +2,16 @@
 #include "project_support.hpp"
 #include "recommendation_support.hpp"
 #include "smart_slice_bridge.hpp"
+#include "resident_memory.hpp"
+#include "material_variant_layout.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/Exception.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
 #include "libslic3r/Format/bbs_3mf.hpp"
+#include "libslic3r/TriangleSelector.hpp"
+#include "libslic3r/Preset.hpp"
+#include "libslic3r/FilamentFlushLayout.hpp"
+#include "libslic3r/HonorForgeToolRouting.hpp"
 #include <tbb/global_control.h>
 #include <algorithm>
 #include <chrono>
@@ -17,6 +23,9 @@
 #include <stdexcept>
 #include <set>
 #include <optional>
+#include <iomanip>
+#include <array>
+#include <cmath>
 #if defined(__linux__) || defined(__ANDROID__)
 #include <unistd.h>
 #endif
@@ -52,15 +61,15 @@ class Budget {
     std::condition_variable wake;
     bool done=false;
     Slic3r::Print* active=nullptr;
-    std::atomic<int> reason{0}; // 1 timeout, 2 memory, 3 explicit cancel
+    std::atomic<int> reason{0}; // 1 timeout, 2 memory, 3 explicit cancel, 4 memory measurement unavailable
     std::thread monitor;
-    static uint64_t resident_bytes() {
+    static std::optional<uint64_t> resident_bytes() {
 #if defined(__linux__) || defined(__ANDROID__)
-        uint64_t total=0,resident=0;
-        std::ifstream stat("/proc/self/statm");
-        if (stat>>total>>resident) return resident*static_cast<uint64_t>(sysconf(_SC_PAGESIZE));
-#endif
+        std::ifstream status("/proc/self/status");
+        return detail::resident_bytes_from_status(status);
+#else
         return 0;
+#endif
     }
 public:
     Budget(std::atomic<bool>& flag,int64_t maxMs,uint64_t maxBytes):canceled(flag),
@@ -70,7 +79,11 @@ public:
             while (!done) {
                 int why=canceled.load()?3:0;
                 if (!why && Clock::now()>=deadline) why=1;
-                if (!why && memoryLimit && resident_bytes()>memoryLimit) why=2;
+                if (!why && memoryLimit) {
+                    const auto resident = resident_bytes();
+                    if (!resident) why=4;
+                    else if (*resident>memoryLimit) why=2;
+                }
                 if (why) { int expected=0; reason.compare_exchange_strong(expected,why); if (active) active->cancel(); }
                 wake.wait_for(lock,std::chrono::milliseconds(25),[this]{return done;});
             }
@@ -82,6 +95,7 @@ public:
         const int why=reason.load();
         if (why==1) throw std::runtime_error("RECOMMENDATION_TIMEOUT");
         if (why==2) throw std::runtime_error("MEMORY_LIMIT");
+        if (why==4) throw std::runtime_error("MEMORY_USAGE_UNAVAILABLE");
         if (why==3 || canceled.load()) throw std::runtime_error("SLICING_CANCELED");
         if (Clock::now()>=deadline) throw std::runtime_error("RECOMMENDATION_TIMEOUT");
     }
@@ -212,6 +226,9 @@ Json export_native_project(LoadedProject& project,const Json& request,const std:
                                    {"sha256",file_sha256(target.u8string())},{"sizeBytes",bytes}}})}};
 }
 
+#include "color_manufacturing_config.inc"
+#include "color_document_export.inc"
+
 void validate_material_compatibility(const LoadedProject& project)
 {
     const auto* diameters=project.config.option<Slic3r::ConfigOptionFloats>("nozzle_diameter");
@@ -251,6 +268,18 @@ Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,
     validate_project_bounds(project);
     project.metadata["quality"]=text(request,"quality","standard");
     const Json requestedConfig=config_json(project.config);
+    Json actualMaterialEvidence;
+    if(requestedConfig.value("printer_settings_id",std::string())=="Honor Forge 0.4 nozzle" || request.value("devicePresetId",std::string())=="honor/forge-6-head-0.4") {
+        if(!request.value("confirmMaterialMapping",false)||!request.contains("bindings"))
+            throw std::runtime_error("ACTUAL_FILAMENT_LOADING_REQUIRED");
+        actualMaterialEvidence=prepare_color_config(project,request);
+        if(actualMaterialEvidence.at("manufacturingConfig")!=requestedConfig)
+            throw std::runtime_error("ACTUAL_FILAMENT_CONFIG_CHANGED");
+    }
+    // Ordinary/manual execution requires the same logical-material integrity.
+    // This does not assert native preset authority for a generic configuration.
+    const auto expectedMaterials=detail::checked_execution_materials(project.config);
+    project.config=expectedMaterials;
     emit(sink,request,"validating",20,"校验实际生效配置与模型");
     Slic3r::Print print;
     PrintScope registration(budget,print);
@@ -261,6 +290,7 @@ Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,
     auto model=slicing_model(project);
     emit(sink,request,"validating",21,"应用并归一化打印配置",Json{{"nativeStage","print_apply.started"}});
     print.apply(model,project.config);
+    detail::verify_execution_materials(expectedMaterials,print.full_print_config());
     emit(sink,request,"validating",22,"打印配置归一化完成",Json{{"nativeStage","print_apply.completed"}});
     // Print::apply normalizes a by-value copy (e.g. vase walls/top/infill).
     // Identity, snapshots and confirmed candidate configs must describe that
@@ -292,10 +322,35 @@ Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,
     catch (const Slic3r::CanceledException&) {budget.check();throw std::runtime_error("SLICING_CANCELED");}
     if (generated.empty() || !stdfs::is_regular_file(stdfs::u8path(generated))) throw std::runtime_error("GCODE_NOT_CREATED");
     budget.check();
+    const bool physicalToolReadback=Slic3r::HonorForgeToolRouting::enabled(project.config);
+    if(physicalToolReadback){
+        // Validate the final emitted physical tool commands through the same
+        // native file-import path used when a G-code preview is reopened.
+        Slic3r::GCodeProcessor readback;
+        readback.apply_config(print.config());
+        readback.process_file(generated,[&]{budget.check();});
+        gcode=readback.extract_result();
+    }
     std::vector<unsigned int> activeMaterialIds;
     for(const auto& usage:gcode.print_statistics.total_volumes_per_extruder)
         if(std::isfinite(usage.second) && usage.second>1e-9) activeMaterialIds.push_back(usage.first);
     validate_material_plan(project,activeMaterialIds);
+    Json activeMaterialRoutes=Json::array();
+    if(activeMaterialIds.size()>1 && actualMaterialEvidence.is_null())
+        throw std::runtime_error("ACTUAL_MULTI_MATERIAL_EVIDENCE_REQUIRED");
+    if(!actualMaterialEvidence.is_null()) {
+        for(const auto id:activeMaterialIds) {
+            const auto& bindings=actualMaterialEvidence.at("bindings");
+            const auto binding=std::find_if(bindings.begin(),bindings.end(),[&](const auto& x){return x.at("materialId")==id;});
+            if(binding==bindings.end())throw std::runtime_error("ACTUAL_MATERIAL_BINDING_MISSING");
+            const auto& materials=actualMaterialEvidence.at("resolvedMaterialPresets");
+            const auto material=std::find_if(materials.begin(),materials.end(),[&](const auto& x){return x.at("materialId")==id;});
+            if(material==materials.end())throw std::runtime_error("ACTUAL_MATERIAL_PRESET_IDENTITY_MISSING");
+            activeMaterialRoutes.push_back(Json{{"materialId",id},{"physicalSlot",binding->at("slot")},{"toolId",binding->at("tool")},
+                {"materialPresetId",binding->at("materialPresetId")},{"materialPresetVersion",material->at("presetVersion")},
+                {"family",material->at("family")},{"color",binding->at("color")},{"purpose",binding->at("purpose")}});
+        }
+    }
     const auto plannedMaterials=print.extruders(true);
     for(const auto actual:activeMaterialIds)
         if(std::find(plannedMaterials.begin(),plannedMaterials.end(),actual)==plannedMaterials.end())
@@ -319,7 +374,13 @@ Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,
         {"projectRevision",project.metadata.at("revision")},{"inputSha256",project.inputSha256},
         {"configSha256",json_sha256(config_json(project.config))},{"effectiveConfig",config_json(project.config)},
         {"requestedConfig",requestedConfig},{"requestedConfigSha256",json_sha256(requestedConfig)},
-        {"materialPlanValidationVersion",1},{"activeMaterialIds",activeMaterialIds},
+        {"materialPlanValidationVersion",activeMaterialIds.size()>1?2:1},{"activeMaterialIds",activeMaterialIds},
+        {"activeMaterialRoutes",activeMaterialRoutes},{"actualFilamentLoadingVerified",false},
+        {"nativeMaterialConfigurationVerified",!actualMaterialEvidence.is_null()},
+        {"filamentConfirmationSource",actualMaterialEvidence.is_null()?Json():Json("operator")},
+        {"physicalToolGcodeReparsed",physicalToolReadback},
+        {"materialFingerprint",actualMaterialEvidence.is_null()?Json():actualMaterialEvidence.at("materialFingerprint")},
+        {"processFingerprint",actualMaterialEvidence.is_null()?Json():actualMaterialEvidence.at("processFingerprint")},
         {"jobId",text(request,"jobId")},{"attemptId",text(request,"attemptId")},{"state","succeeded"},
         {"quality",text(request,"quality","standard")},{"qualityPresetVersion","p1-v2"},
         {"outputMode",project.metadata.value("outputMode",Json("native"))},
@@ -399,8 +460,12 @@ Json Engine::execute(const Json& raw,const EventSink& sink)
     if (operation=="capabilities") return Json{{"schemaVersion",2},{"available",true},{"nativeSlicing",true},
 #ifdef ORCA_MOBILE_REAL_TRIANGULATION
         {"executableTriangulation",true},{"multiMaterialRequiresConfirmation",true},{"selectedPlateId",true},
+        {"nativeColorDocumentRebind",true},{"materialPlanValidationVersions",Json::array({1,2})},
+#else
+        {"nativeColorDocumentRebind",false},{"materialPlanValidationVersions",Json::array({1})},
 #endif
-        {"nativeRecommendation",true},{"nativeProjectExport",true},{"fullParameterSchema",true},
+        {"nativeRecommendation",true},{"nativeProjectExport",true},{"nativeColorDocumentExport",true},
+        {"nativeColorManufacturingConfig",true},{"printColorBridgeVersion",1},{"fullParameterSchema",true},
         {"remoteAI",false},{"nativeCheckpointResume",false},
         {"maxWorkers",1},{"maxThreads",4},{"qualities",Json::array({"standard","fine","fast","smart"})}};
     const int maxThreads=std::clamp(request.value("maxThreads",4),1,4);
@@ -412,6 +477,16 @@ Json Engine::execute(const Json& raw,const EventSink& sink)
     LoadedProject project=load(request,workspace_);
     budget.check();
     if(operation=="exportProject") return export_native_project(project,request,workspace_);
+    if(operation=="exportColorDocument") return export_color_document(project,request,workspace_,budget);
+    if(operation=="prepareColorManufacturingConfig") return prepare_color_config(project,request);
+    if(operation=="applyColorDocument") {
+        apply_color_document(project,request,workspace_,budget);
+        budget.check();
+        // Persist a native 3MF derivative to retain objects, volumes, instances,
+        // current effective configuration and applied native paint together.
+        Json exportedRequest=request;exportedRequest["confirmDerivedProject"]=true;
+        return export_native_project(project,exportedRequest,workspace_);
+    }
     if(operation=="preset") {
         apply_preset(project,text(request,"kind"),text(request,"presetId"));
         budget.check();
@@ -496,7 +571,7 @@ Json Engine::execute(const Json& raw,const EventSink& sink)
                         trial["configDiff"][option.key()]=Json{{"before",baselineConfig.value(option.key(),Json())},{"after",option.value()}};
                 for (const char* key:{"gcodePath","gcodeSize","gcodeSha256","scenePath","sceneSha256","previewPath","previewSha256","layerCount","layerHeights","manifestPath"}) trial[key]=result.at(key);
                 for(const char* key:{"filamentCost","costCurrency","costStatus"}) if(result.contains(key)) trial[key]=result.at(key);
-                trial["materialPlanValidationVersion"]=1; trial["activeMaterialIds"]=result.at("activeMaterialIds");
+                for(const char* key:{"materialPlanValidationVersion","activeMaterialIds","activeMaterialRoutes","actualFilamentLoadingVerified","nativeMaterialConfigurationVerified","filamentConfirmationSource","materialFingerprint","processFingerprint"})trial[key]=result.at(key);
                 trial["metrics"]=Json{{"printTimeSeconds",result["printTimeSeconds"]},{"filamentVolumeMm3",result["filamentVolumeMm3"]},
                     {"filamentGrams",result["filamentGrams"]},{"calculationElapsedMs",result["calculationElapsedMs"]}};
                 for (const auto& warning:result["warnings"]) trial["warnings"].push_back(warning);

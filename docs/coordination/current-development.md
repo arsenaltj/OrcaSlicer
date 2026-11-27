@@ -1,3 +1,116 @@
+# Latest desktop7c7298 + skirt repair2 source combination (2026-11-27)
+
+Mainline: Android nonGLB SDK adaptation; separate repair2 commit0a443086c3, repair1 review failure1 retained.
+This round: merge fixed integration7c7298. Keep both historical plan sections and GUI-free palette wrapper; transfer incoming palette changes into the existing shared implementation (normalized premerge shared equals mergebase GUI). Core printer-route/embedded-selection/log privacy changes retained.
+Open: source-only; Model now has shared palette code changes in addition to source marker, Slicing has incoming shared Core input changes. Old b5f raw remains immutable, new Android normal producer/package/phone qualification not run. No Windows native/held retry.
+Next: independent full combination review, then normal same-owned-cache Android configure/build with new real source identity and unchanged flags/deps, immutable new package and Mobile consumer pair.
+Plan change: explicit latest-desktop integration including relocated shared implementation; not a claim GUI-only0impact or existing binary qualification.
+
+# MOB-LOCAL-MFG-SKIRT-DIRECTIVE-01 repair2 source (2026-11-27)
+
+Mainline: retain repair1 independent review failure1: classic stream accepted leading plus while Native fast_float reader rejects it. Same issue, no counter reset.
+This round: inspection invokes the exact existing Native string_to_double_decimal_point parser with full-consumption/finite/range checks. Fraction45.5 stays positive; +45.5 is an explicit rejection regression. Native parser and desktop behavior unchanged.
+Open: source/fixture validation only, no C++ execution or rebuild. Actual new SDK/phone qualification pending; all held histories retained.
+Next: separate fixed latest desktop merge, complete combination review, then authorized Android-only source-identity rebuild.
+Plan change: lexical alignment correction after review, not acceptance relaxation or new contract.
+
+# MOB-LOCAL-MFG-SKIRT-DIRECTIVE-01 repair1 source (2026-11-27)
+
+Mainline: continue the nonGLB Android manufacture/slice flow; b5f original phone first failure and all unrelated held histories remain.
+This round: inspector validates native skirt_start_angle plate metadata (finite [-180,180], complete scalar, no conflicting duplicate), then load_project verifies the actual Native PlateData option before existing single/explicit selected plate configuration application. Unknown directives and invalid metadata on every source plate still block. Original source bytes are retained.
+Open: source and pure fixture checks only; no compiler, SDK loading, Android rebuild or phone retry. Public-CABI positive/negative/source-override/selected-plate/export/slice regression assertions are prepared, not executed.
+Next: freeze this source, independent review, then root-authorized incremental Android producer/package/consumer rebuild and different phone QA using the preserved first 3MF. No Windows native build.
+Plan change: narrow compatibility bug repair, no new contract, process-prefix key, UI route, unsupported-content waiver or GLB/16KiB/physical qualification.
+
+# NATIVE-HOST-B6-THERMAL-01 empty-map oracle correction (2026-11-25)
+
+Mainline: original Native task and same B6 issue, pre-arbitration3/post-arbitration1 failures preserved; next actual failed verification would be post2.
+This round: only empty physical({},0) rejection's expected string changes AMBIGUOUS→REQUIRED, per independent e8/406/01 same-blob contract proof. Empty input/rejection, two other negatives, all13 real exports/assertions/order and production code unchanged.
+Open: own01 Windows normal producer passed; post1 generated13Gcodes then target failed this oracle, not a whole-suite pass. Old outputs/failedtarget remain immutable. No new source compile/SDK/selftest has run.
+Next: clean freeze and exact v6 identity-only source/successful-own01 predecessor/fresh Core+cooling output paths/environment review, then root newGO. Original five process PATH prefix/6DLL identities remain scoped and reversible, no globalPATH change.
+Plan change: correct one proven test oracle without weakening mapping safety; snapshot currentWin01 before editing, no intermediateobject copy or new generic framework.
+
+## Prior repair retained
+# NATIVE-HOST-B6-THERMAL-01 round3 test ownership (2026-11-25)
+
+Mainline: same Native task/writer; original406 thermal failure, round1 beda source failure and round2_87 C2280 compile failure remain. Next repair round3; actual Core exports still0. A further failed repair/verification requires root arbitration before another repair.
+This round: only the test Export holder explicitly moves its GCodeProcessorResult through the existing move-assignment API; all13 inputs/assertions/order and production temperature code remain unchanged. Prior Win87 files/CL logs/generated/projects/source-header metadata captured before editing, without copying intermediate objects.
+Open: source-only fix, no rebuild/Core/SDK execution. v5 must bind Win's exact own failed87 predecessor and cumulative406 GCode change, while other three stages remain406; normal wait for an observed descendant must not invent a failure.
+Next: clean freeze, narrow source/tool review and necessary fixture QA then fresh root normal-build GO. No old saved verification matrix repeat or automatic source/package relabelling.
+Plan change: necessary compile-fixture ownership correction, no weaker thermal oracle/budget/GLBheld change; B5prepared needs future exact newsource/package binding.
+
+## Previous correction retained
+# NATIVE-HOST-B6-THERMAL-01 zero-delta correction (2026-11-25)
+
+Mainline: same Native dev writer/task; source fix1 independent review failed1 and dynamic repair-validation0 remain recorded.
+This round: within the strict SDK startup branch, use noninitial idle/standby target only with nonzero standby delta, matching the existing restore path. Keep all ten export controls and add delta0 idle177/235/0 real-export test sources.
+Open: source-only correction; compilation/13 actual exports, four-source producers/new package and independent affected Host QA are not run. Both custody foreign-resource failures and their immutable4151/619 mappings remain incomplete evidence.
+Next: freeze corrected source, different source review and new producer-tool identity review; actual resource operations require a new root GO and separately approved custody validation.
+Plan change: narrow confirmed SOURCE_OOZE_ZERO_DELTA_IDLE_TARGET repair; no global desktop ooze behavior, profile/template/oracle or original B5 evidence change. B5 prepared beda binding needs the new source/package later.
+
+## Earlier source preparation (review failed; retained)
+# NATIVE-HOST-B6-THERMAL-01 fix1 (2026-11-24)
+
+Mainline: task-20261124-v102-desktop-sdk-sync, authorized Native dev writer; preserve immutable406 bundle and original851/411 failure evidence and all issue histories.
+This round: only exact SDK Honor mapped-template independent Klipper multihead exports initialize actual sliced-tool-order participants after START_PRINT through the existing logical-to-physical Writer once; keep source/mapped templates, config, initial tool, user/ooze and normal-layer semantics. Add a permanent actual-Core export boundary target.
+Open: source prepared; compilation, public SDK self-tests, four exact-source normal producers/new immutable sdk-resource-complete bundle and independent review/affected nonGLB QA remain pending. No runtime success is asserted.
+Next: freeze source, provide resource/producer plan with old raw/object custody before reusing any build site; fresh root GO before any compiler or SDK operation. No Mobile, device, service, GLB/held/collector restart.
+Plan change: necessary real thermal-initialization repair after B5 standalone18-call diagnostic closure; original B5 qualification driver/oracle/profile and samples remain unchanged.
+
+# SDK-V102-FILAMENT-VARIANT-01 (2026-11-22)
+
+Current repair2: independent review v2 rejected68d/0c5b because ordinary generic singleMaterial logical1 with self1 still published logical0 temperature/fan/flow. Failed repair1/pre-arbitration1 is retained separately from Cooling/resource/Mobile histories;68d/0c5b and the actual counterexample remain immutable and unconsumable.
+This batch: all SDK slice entries validate interpretable logical/variant ownership, allow legitimate repeated logical IDs with distinct variants plus explicit singleton/per-material broadcasts, derive a detached canonical execution layout and check Print::apply material/routing preservation unconditionally. The desktop Core fallback and generic authority flags remain unchanged. New ordinary public-CABI regressions preserve the legal differing-material PE control and require malformed layouts to publish no executable artifacts; real Core drift is also checked by the postcondition unit.
+Open: normal-cache single-compiler WIP build/unit passed. One final same-production-input batch passed the public ordinary6-positive/9-negative suite (all negative cases without executable outputs), Honor3 routes, fullbridge36 negatives and mixedsupportT3/5+1. Earlier test const compile error, optional-GUI-metadata false rejection and fixture/oracle corrections remain preserved; singleton self1 is shared across variants only for an actual one-material domain. WIP HEAD68d markers are not qualified producers. Next: freeze the final source and rebuild four real markers/new immutable SDK, then different review and third QA. No current SDK consumer or Android approval.
+
+### Earlier first-correction record (review failed; not current qualification)
+
+Mainline: the same native resource/manufacturing task and dev writer. The ca592/c74 complete SDK remains immutable evidence; its actual PLA/PETG C ABI output exposed temperature/fan/flow copied from logical0 during variant gathering. Independent SE confirmed initial0 as a separate manufacturing blocker.
+This round: select the trusted material variant for the resolved physical machine tool, flatten one row per logical material with self IDs1..N, reject unknown/ambiguous/malformed variants, and verify authorized material parameters after Print::apply. Keep the Core's general fallback unchanged.
+Open: the normal one-compiler WIP build, strict variant/normalization-guard unit, Cooling16, full bridge36 negatives, and mixed PLA/PETG complete C ABI identity/sparse/permutation plus supportT3/5+1 all passed development self-tests. Effective220/255, fan100/20, flow.98/1, slow4/8 and self1,2 remain correct; actual fan/F sequences match across physical mappings. WIP DLLs retain the old HEAD marker and are explicitly unqualified. Independent correction review/QA and final exact-source producers remain open; other issue histories are unchanged.
+Next: freeze once, normally rebuild four exact-source producers and a new immutable complete SDK under the coordinated window, then different review and third QA. Android/consumer qualification remains pending; ca/c74 is not a consumable release.
+Plan change: necessary authoritative-material repair in this unfinished flow. Honor's catalog stays DD Standard/1.75mm; non-first machine selection is internal fixture coverage, without new production presets or client authority exceptions.
+
+## Earlier records retained
+# SDK-V102-SPARSE-COOLING-01 (2026-11-22)
+
+Mainline: the same task-20261122-v102-model-resource-closure; af0/40ee remains immutable history. Independent Host QA accepted the Model2M resource subset and requested manufacturing changes for physical/logical cooling-tool confusion, initial round0.
+This round: restore logical ownership in both cooling phases and nonzero pressure equalization, using the strict Honor inverse map plus active membership. Preserve physical output, original mapping, generic valid behavior and existing caps; add unequal fan/speed/diameter Core integration regressions.
+Open: normal new Core build and the actual small integration test passed (PID28472, 16 raw G-code files), including nonzero PE adjustment/diameter sensitivity and invalid tools. Original af0 Core baseline exhibits T5 using logical0 fan values and missing logical1 slowdown. Test-fixture/environment failures remain preserved; no independent correction round has completed.
+Next: freeze this source once, normally rebuild all four real source markers and a new immutable complete package under the root-authorized bounded window, then different review and third QA. Android and consumer gates remain separate; no device operation was performed.
+Plan change: necessary manufacturing regression repair within this unfinished flow; Model resource partial success and all Mobile issue rounds retain their identities.
+
+## Earlier records retained
+# SDK-MODEL-2M-BUDGET-01 (2026-11-22)
+
+Mainline: task-20261122-v102-model-resource-closure, independent child of the frozen1b SDK; round0 existing v1 face coefficient rejects every2M input.
+This round: stream original double accessor values and u32 indices, reserve dense storage, retain full topology/EPICK/appearance/source checks; inspect has a separate phase-live-container admission under the unchanged768MiB cap. Limited v1 repair retains its conservative admission; it is not newly qualified for2M.
+Open: final exact-source host/Android producers, immutable full SDK, independent review and third QA, then Android4K/16K and consumer qualification. Initial development Windows closed2M inspection performed all checks and verified; this is not final frozen-source or Android acceptance.
+Next: complete targeted negative/cancel/precision/resource regressions, freeze actual source and new package, hand off; old1b/fd16/8480 and active Mobile QA remain untouched.
+Plan change: only the necessary Model inspect resource path; no higher caps, v2 substitution, Slicer algorithm change, Mobile prep root-cause inference or device access.
+
+## Earlier records retained
+# V102-16K-MEMORY-01 (2026-11-22)
+
+Mainline: task-20261120-color-model-sdk, MOB-V102-16K-MEMORY-01 round0; correct Linux/Android resident memory accounting without raising the existing budget.
+This round: VmRSS uses explicit KiB units rather than kernel statm pages multiplied by potentially emulated userspace page size. Strict parsing rejects missing, duplicate, malformed, unknown-unit and overflowing measurements; unavailable measurements fail closed as SLICING_FAILED / MEMORY_USAGE_UNAVAILABLE. Windows behavior, 2 GiB default, 2M geometry limit and manufacturing/tool routing remain unchanged.
+Open: new exact-source immutable package, independent review and artifact QA, then updated Mobile consumer and actual 4K/16K six-tool runtime. Same-shell fourfold discrepancy is observed; the original App did not have simultaneous RSS sampling and its failure is not declared uniquely explained yet.
+Next: build and freeze new package; keep8480/aec369 unchanged; no phone/AVD/physical print or paused desktop algorithm work.
+Plan change: native fix is now necessary for the approved runtime gate; no resource-limit increase or desktop918 feature port.
+
+## Earlier records retained
+# MOBILE-COLOR-SDK-20261120
+
+Mainline: isolated task-20261120-color-model-sdk, merged desktop reference f9d52e76ba via d6ba6e4153. User authorized mobile color workbench and native manufacturing implementation; no push, deployment or physical print.
+This round: share the existing desktop Direct/CIEDE2000 core with transactional Model commands, authoritative native project export/rebind and native material config preparation; preserve current process and explicit model/support routing.
+Open: independent review and different QA, final Android producer bundle/runtime qualification, real device/visual/physical loading and printing. Enhanced repair stays bounded; the separate full strict repair path is unsupported.
+Next: finish sparse physical-tool G-code/file-readback and support regressions, freeze exact source/manifest, then independently review and accept the combined mobile consumer.
+Plan change: original project remains unchanged; device/process/material configuration applies only to the derivative. Trial colors are preview/draft-only and require a new confirmed native match before manufacturing.
+
+## Earlier records retained
+
+## Latest desktop incoming records retained (7c7298ed)
+
 # 2026-11-26 当前 · 高级首次建模已验收，V1.0.5 修复包已构建
 
 **主线**　`UX/ADVANCED-MULTIVIEW-20261107`／`ADV-2D-06`。[首次建模修复、验收与打包](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#advanced-3d-first-submit-race-verified-20261126)
@@ -1261,3 +1374,26 @@ Plan change: none to paused Desktop work, device/production/paid/PR/push prohibi
 下一步：核对追加交付记录后的PR最终head与远端检查；原生构建、初轮573／578及补修24／24、Python83／83、JS12／12与Run五步证据沿用mainline-library-log-20261111，提交前确认源码一致。后续获实施指令后，将两种独立创作会话交付到合入前的唯一工作台，先拆开生成恢复与资产加载，再统一Shell路由和原切片导入，回归两种生成及凭证。实际提交／PR回读见remote-pr-20261111，分析见workbench-routing-analysis-20261111。
 
 计划变更：本轮新授权仅增加当前代码远端提交及开放PR；用户要求单一工作台的设计已取代旧双宿主取舍，实施另行承接。保护模型、历史、账号、用户进程和其他分支；不合入、重构、启动窗口、打包、部署、付费生成或打印。
+# 2026-11-27 当前 · 1.0.2 原生来源按最新远端集成
+
+**主线**　`V102-NATIVE-PR-INTEGRATION-20261127`，[本轮范围与返回点](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#v102-native-pr-integration-20261127)。
+
+**本轮**　在远端 `7c7298edc8` 独立工作树合入 SDK `0a86364f`、工具 `7b03dbf3` 和虚拟打印机 `819e4e60` 最终净差；工具旧分支不覆盖新版共享源码。Python/架构/文档检查另行记录。
+
+**未结**　该合流版本未新构建 SDK/APK、未重新运行真机矩阵；独立 review、第三 QA 和远端正式 PR 待协调者推进。GLB/AI held、16KiB 动态资格、实体打印与其他未完成路线保持未结。
+
+**下一步**　冻结单一可审查提交，交不同 review 与 QA，之后由协调者推送特性分支和正式 PR。无服务、设备或原生构建安排。
+
+**计划变更**　用户授权本任务关联本地修改按最新远端提交 PR；三来源固定，原源码、制品与失败记录不回写、不冒充新合流验收。下方各桌面专项继续保留原返回点。
+
+# 2026-11-27 CI shared color guardrail fix1
+
+**主线**　`V102-NATIVE-PR-INTEGRATION-20261127` / `NATIVE-PR-SHARED-GUARD-PATH-01`，PR90 / run46022779649 / job140586381831 原1355项中1失败保留。
+
+**本轮**　只适配测试的GUI转发入口与canonical共享实现联动，保留原physical-channel/兼容性断言；新增缺失/空实现及错误转发负例，完整guardrails59项通过。生产算法/SDK原件未改。
+
+**未结**　fix1独立review/第三QA及更新后的CI待执行，不以本地59项替代全1355或新源码动态资格。
+
+**下一步**　冻结本地测试修复提交并释放writer，交独立复检后由Root普通push更新PR90；不运行Windows/native/服务/设备。
+
+**计划变更**　原CI首失败作为initial0保留，当前fix1尚待独立验证；不删断言、不恢复held流程。

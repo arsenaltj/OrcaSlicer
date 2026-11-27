@@ -1,5 +1,7 @@
 #pragma once
 // Read-only OPC/XML feature inspection. Never extracts/rewrites the source.
+#include "libslic3r/Format/PlateProcess.hpp"
+#include "libslic3r/LocalesUtils.hpp"
 #include <expat.h>
 #include <miniz.h>
 #include <cstring>
@@ -21,8 +23,9 @@ struct ThreeMfScan {
     static std::string lower(std::string value) {std::transform(value.begin(),value.end(),value.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});return value;}
     std::string file,error,optionKey,optionValue,settingsFile;XML_Parser parser=nullptr;
     Json sourceConfig=Json::object();std::vector<std::pair<std::string,Json>> embeddedProfiles;
-    bool model=false,settings=false,ranges=false,inPlate=false,inMember=false,paint=false,support=false,seam=false,fuzzy=false;
+    bool model=false,settings=false,sliceInfo=false,ranges=false,inPlate=false,inMember=false,paint=false,support=false,seam=false,fuzzy=false;
     Json plate,member;
+    std::vector<std::string> xmlPath;
     void feature(const std::string& id,const std::string& status,const std::string& message) {
         if(!seen.insert(id+":"+file).second) return;
         Json item{{"id",id},{"status",status},{"path",file},{"message",message},
@@ -40,7 +43,7 @@ struct ThreeMfScan {
     }
     static void start(void* data,const XML_Char* raw,const XML_Char** at) {
         auto& s=*static_cast<ThreeMfScan*>(data);
-        try {s.on_start(raw,at);} catch(const std::exception& e) {s.error=e.what();XML_StopParser(s.parser,XML_FALSE);}
+        try {s.xmlPath.push_back(local(raw));s.on_start(raw,at);} catch(const std::exception& e) {s.error=e.what();XML_StopParser(s.parser,XML_FALSE);}
     }
     static void end(void* data,const XML_Char* raw) {
         auto& s=*static_cast<ThreeMfScan*>(data);
@@ -49,6 +52,7 @@ struct ThreeMfScan {
             if(s.ranges && name=="option") {s.config(Json{{s.optionKey,s.optionValue}});s.optionKey.clear();s.optionValue.clear();}
             if(s.settings && name=="model_instance") {s.plate["members"].push_back(s.member);s.inMember=false;}
             if(s.settings && name=="plate") {s.result["plates"].push_back(s.plate);s.inPlate=false;}
+            if(!s.xmlPath.empty())s.xmlPath.pop_back();
         } catch(const std::exception& e) {s.error=e.what();XML_StopParser(s.parser,XML_FALSE);}
     }
     static void text(void* data,const XML_Char* value,int count) {
@@ -61,6 +65,15 @@ struct ThreeMfScan {
     }
     void on_start(const char* raw,const XML_Char** at) {
         const auto name=local(raw);
+        if(name=="metadata") {
+            std::string key=attr(at,"key");if(key.empty())key=attr(at,"name");
+            if(Slic3r::PlateProcess::reserved_key(key) &&
+               (!settings || !inPlate || xmlPath.size()<2 || xmlPath[xmlPath.size()-2]!="plate"))
+                feature("reserved_plate_metadata_context:"+key,"blocked","Reserved plate process/session metadata is outside direct ModelSettings plate metadata");
+        }
+        // Existing statistics retain their old interpretation. Only reserved
+        // new semantic namespaces in this container are rejected above.
+        if(sliceInfo) return;
         const char* separator=std::strrchr(raw,'|');
         if(model && separator) {
             const std::string_view uri(raw,size_t(separator-raw));
@@ -129,7 +142,38 @@ struct ThreeMfScan {
                 } else if(inPlate) {
                     if(key=="plater_id") plate["id"]=value;
                     else if(key=="plater_name") plate["name"]=value;
-                    else plate["directives"][key]=value;
+                    else {
+                        if(key.rfind("orca_workbench_slicing_",0)==0 || key.rfind("orca_workbench_curve_",0)==0)
+                            feature("plate_directive:"+key,"blocked","Workbench sessions and layer curves are not executed by this SDK");
+                        // Native export writes this ordinary plate option even for
+                        // a freshly manufactured project. Validate before directives
+                        // overwrite duplicates or Native silently drops bad angles.
+                        if(key=="skirt_start_angle") {
+                            try {
+                                if(value.empty() || value.size()>1024) throw std::invalid_argument("SKIRT_START_ANGLE_INVALID_LENGTH");
+                                // Share the Native reader's lexical contract, including
+                                // fast_float rejecting a leading plus or whitespace.
+                                size_t consumed=0;
+                                const double angle=Slic3r::string_to_double_decimal_point(value,&consumed);
+                                if(consumed==0 || consumed!=value.size() || !std::isfinite(angle) || angle < -180. || angle > 180.)
+                                    throw std::invalid_argument("SKIRT_START_ANGLE_INVALID_NATIVE_SCALAR");
+                                if(plate.contains("validatedNativeSkirtStartAngle") && plate["validatedNativeSkirtStartAngle"].get<double>()!=angle)
+                                    throw std::invalid_argument("SKIRT_START_ANGLE_CONFLICTING_DUPLICATE");
+                                plate["validatedNativeSkirtStartAngle"]=angle;
+                            } catch(const std::exception& error) {feature("invalid_plate_directive:skirt_start_angle","blocked",error.what());}
+                        }
+                        if(Slic3r::PlateProcess::has_prefix(key)) {
+                            try {
+                                const auto option=key.substr(Slic3r::PlateProcess::prefix.size());
+                                const auto parsed=Slic3r::PlateProcess::parse(option,value);
+                                const auto canonical=parsed.option(option)->serialize();
+                                if(plate["validatedNativeProcess"].contains(option) && plate["validatedNativeProcess"][option]!=canonical)
+                                    throw std::invalid_argument("PLATE_PROCESS_CONFLICTING_DUPLICATE:"+option);
+                                plate["validatedNativeProcess"][option]=canonical;
+                            } catch(const std::exception& error) {feature("invalid_plate_process:"+key,"blocked",error.what());}
+                        }
+                        plate["directives"][key]=value;
+                    }
                 } else if((key=="post_process" || key=="plugins" || key=="slicing_pipeline_plugin" || key.find("plugin_config_overrides")!=std::string::npos) && active(Json(value))) feature("external_processing:"+key,"blocked","Object or part requires an unavailable external processor");
                 else if(key=="name" || key=="matrix" || key=="extruder" || key.rfind("source_",0)==0 || key=="volume_type" || key=="part_type") { }
                 else if(!Slic3r::print_config_def.get(key)) feature("object_setting:"+key,"blocked","Unrecognized object/part setting");
@@ -147,17 +191,21 @@ struct ThreeMfScan {
         return XML_Parse(s.parser,static_cast<const char*>(buffer),int(bytes),XML_FALSE)==XML_STATUS_OK?bytes:0;
     }
     void xml(mz_zip_archive& zip,mz_uint index,const std::string& path) {
-        file=path;const std::string kind=lower(path);model=kind.size()>=6&&kind.substr(kind.size()-6)==".model";settings=kind=="metadata/model_settings.config";ranges=kind=="metadata/layer_config_ranges.xml";
+        xmlPath.clear();
+        file=path;const std::string kind=lower(path);model=kind.size()>=6&&kind.substr(kind.size()-6)==".model";settings=kind=="metadata/model_settings.config";sliceInfo=kind=="metadata/slice_info.config";ranges=kind=="metadata/layer_config_ranges.xml";
         if(settings) settingsFile=path;
         namespaces.clear();instanceCounts.clear();paint=support=seam=fuzzy=false;error.clear();inPlate=inMember=false;
         parser=XML_ParserCreateNS(nullptr,'|');if(!parser) throw std::bad_alloc();
-        XML_SetUserData(parser,this);XML_SetElementHandler(parser,start,end);XML_SetNamespaceDeclHandler(parser,ns,nullptr);XML_SetStartDoctypeDeclHandler(parser,doctype);
+        XML_SetUserData(parser,this);XML_SetElementHandler(parser,start,end);XML_SetNamespaceDeclHandler(parser,ns,nullptr);
+        if(!sliceInfo) XML_SetStartDoctypeDeclHandler(parser,doctype);
         if(ranges) XML_SetCharacterDataHandler(parser,text);
         const bool ok=mz_zip_reader_extract_to_callback(&zip,index,chunk,this,0) && XML_Parse(parser,"",0,XML_TRUE)==XML_STATUS_OK;
         std::string why=error;
         if(!ok&&why.empty()) {const char* reason=XML_ErrorString(XML_GetErrorCode(parser));why=reason?reason:"3MF_XML_PARSE_FAILED";}
         XML_ParserFree(parser);parser=nullptr;
-        if(!ok) feature("xml_parse_failure","blocked",why);
+        // Native treats ordinary SliceInfo parse failures as nonfatal. Only
+        // reserved semantic prefixes add a blocker in this statistics file.
+        if(!ok && !sliceInfo) feature("xml_parse_failure","blocked",why);
 #ifdef ORCA_MOBILE_REAL_TRIANGULATION
         if(paint) feature("paint_color","supported_native","Native painted facets retained; actual Print and G-code tool routes require explicit confirmation and validation");
 #else
@@ -215,9 +263,9 @@ struct ThreeMfScan {
         };
         for(auto& source_plate:result["plates"]) {
             const auto& directives=source_plate.at("directives");
-            const std::set<std::string> known{"locked","bed_type","print_sequence","first_layer_print_sequence","other_layers_print_sequence","other_layers_print_sequence_nums","spiral_mode","spiral_vase_mode","filament_map_mode","filament_maps","filament_volume_maps","thumbnail_file","thumbnail_no_light_file","top_file","pick_file"};
+            const std::set<std::string> known{"locked","bed_type","skirt_start_angle","print_sequence","first_layer_print_sequence","other_layers_print_sequence","other_layers_print_sequence_nums","spiral_mode","spiral_vase_mode","filament_map_mode","filament_maps","filament_volume_maps","thumbnail_file","thumbnail_no_light_file","top_file","pick_file"};
             for(auto it=directives.begin();it!=directives.end();++it)
-                if(!known.count(it.key())&&active(it.value()))feature("plate_directive:"+it.key(),"blocked","Unknown per-plate directive cannot be dropped, including selected multi-plate projects");
+                if(!known.count(it.key())&&!Slic3r::PlateProcess::has_prefix(it.key())&&active(it.value()))feature("plate_directive:"+it.key(),"blocked","Unknown per-plate directive cannot be dropped, including selected multi-plate projects");
             for(const char* key:{"filament_maps","filament_volume_maps"}) {
                 if(!directives.contains(key))continue;
                 const auto& raw=directives.at(key);
@@ -247,9 +295,9 @@ struct ThreeMfScan {
         if(result["plates"].size()==1) {
             if(!result["plates"][0]["id"].is_string() || result["plates"][0]["id"].get<std::string>().empty()) feature("invalid_plate_identity","blocked","Current plate identity is missing");
             result["currentPlate"]=result["plates"][0]["id"];
-            const std::set<std::string> supportedDirectives{"locked","bed_type","print_sequence","first_layer_print_sequence","other_layers_print_sequence","other_layers_print_sequence_nums","spiral_mode","spiral_vase_mode","filament_map_mode","filament_maps","filament_volume_maps","thumbnail_file","thumbnail_no_light_file","top_file","pick_file"};
+            const std::set<std::string> supportedDirectives{"locked","bed_type","skirt_start_angle","print_sequence","first_layer_print_sequence","other_layers_print_sequence","other_layers_print_sequence_nums","spiral_mode","spiral_vase_mode","filament_map_mode","filament_maps","filament_volume_maps","thumbnail_file","thumbnail_no_light_file","top_file","pick_file"};
             for(auto it=result["plates"][0]["directives"].begin();it!=result["plates"][0]["directives"].end();++it)
-                if(!supportedDirectives.count(it.key()) && active(it.value())) feature("plate_directive:"+it.key(),"blocked","Unsupported per-plate directive must not be dropped");
+                if(!supportedDirectives.count(it.key()) && !Slic3r::PlateProcess::has_prefix(it.key()) && active(it.value())) feature("plate_directive:"+it.key(),"blocked","Unsupported per-plate directive must not be dropped");
             std::set<std::string> owned;
             for(const auto& member:result["plates"][0]["members"])
                 owned.insert(member.value("sourceObjectId",std::string())+":"+member.value("sourceInstanceId",std::string()));
@@ -287,7 +335,7 @@ inline Json inspect_archive(const std::string& path) {
     for(mz_uint i=0;i<count;++i) {
         mz_zip_archive_file_stat stat{};if(!mz_zip_reader_file_stat(&zip,i,&stat)) throw std::runtime_error("3MF_ARCHIVE_INDEX_FAILED");
         const std::string name=stat.m_filename,kind=ThreeMfScan::lower(name);scan.file=name;
-        if((kind.size()>=6&&kind.substr(kind.size()-6)==".model") || kind=="metadata/model_settings.config") scan.xml(zip,i,name);
+        if((kind.size()>=6&&kind.substr(kind.size()-6)==".model") || kind=="metadata/model_settings.config" || kind=="metadata/slice_info.config") scan.xml(zip,i,name);
         else if(kind=="metadata/project_settings.config" || kind=="metadata/filament_sequence.json" || kind.rfind("metadata/filament_settings_",0)==0 || kind.rfind("metadata/machine_settings_",0)==0 || kind.rfind("metadata/process_settings_",0)==0) {
             if(stat.m_uncomp_size>8*1024*1024) {scan.feature("settings_size","blocked","Source configuration exceeds inspection budget");continue;}
             size_t bytes=0;void* buffer=mz_zip_reader_extract_to_heap(&zip,i,&bytes,0);

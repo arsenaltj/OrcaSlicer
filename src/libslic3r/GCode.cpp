@@ -18,6 +18,7 @@
 #include "GCode/WipePathHelpers.hpp"
 #include "GCodeReader.hpp"
 #include "GCodeWriter.hpp"
+#include "HonorForgeToolRouting.hpp"
 #include "Point.hpp"
 #include "Line.hpp"
 #include "ObjectID.hpp"
@@ -3582,6 +3583,12 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
     // Get optimal tool ordering to minimize tool switches of a multi-exruder print.
     // For a print by objects, find the 1st printing object.
     ToolOrdering tool_ordering;
+    const bool honor_sdk_thermal = HonorForgeToolRouting::enabled(print.config());
+    // Unlike Print::extruders(), these lists come from sliced extrusion paths:
+    // object perimeters/fills, generated support, and actual tower/brim paths.
+    // Sequential prints need the union of every object's ordering, not only
+    // the object whose ordering remains in tool_ordering after the loop.
+    std::vector<unsigned int> honor_startup_filaments;
     unsigned int initial_extruder_id = (unsigned int)-1;
     //BBS: first non-support filament extruder
     unsigned int initial_non_support_extruder_id = (unsigned int) -1;
@@ -3619,6 +3626,8 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
                 tool_ordering = ToolOrdering(*(*print_object_instance_sequential_active)->print_object, initial_extruder_id);
                 tool_ordering.sort_and_build_data(*(*print_object_instance_sequential_active)->print_object,initial_extruder_id);
             }
+            if (honor_sdk_thermal)
+                append(honor_startup_filaments, tool_ordering.all_extruders());
             float temp_max_additional_fan = tool_ordering.cal_max_additional_fan(print.config());
             if(temp_max_additional_fan > max_additional_fan )
                         max_additional_fan = temp_max_additional_fan;
@@ -3645,6 +3654,8 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
         // If the tool ordering has been pre-calculated by Print class for wipe tower already, reuse it.
         tool_ordering = print.tool_ordering();
         tool_ordering.assign_custom_gcodes(print);
+        if (honor_sdk_thermal)
+            honor_startup_filaments = tool_ordering.all_extruders();
         float temp_max_additional_fan = tool_ordering.cal_max_additional_fan(print.config());
         if(temp_max_additional_fan > max_additional_fan )
                         max_additional_fan = temp_max_additional_fan;
@@ -3707,6 +3718,8 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
 
     m_cooling_buffer = make_unique<CoolingBuffer>(*this);
     m_cooling_buffer->set_current_extruder(initial_extruder_id, extruder_id);
+    if(m_pressure_equalizer)
+        m_pressure_equalizer->set_tool_routing(print.config(),m_writer.extruder_ids(),initial_extruder_id);
 
     // Orca: Initialise AdaptivePA processor filter
     m_pa_processor = std::make_unique<AdaptivePAProcessor>(*this);
@@ -4414,6 +4427,43 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
     // Write the custom start G-code
     file.writeln(machine_start_gcode);
     m_cooling_buffer->remember_motion_settings(machine_start_gcode);
+    if (honor_sdk_thermal) {
+        sort_remove_duplicates(honor_startup_filaments);
+        std::set<unsigned int> physical_heads;
+        for (const unsigned int logical : honor_startup_filaments)
+            physical_heads.insert(HonorForgeToolRouting::physical(m_config.filament_map.values, logical));
+        if (physical_heads.size() > 1) {
+            int custom_temperature = -1;
+            // Keep the normal custom-temperature suppression rule. The exact
+            // SDK mapped START_PRINT only sets its initial nozzle, so it does
+            // not stand in for the missing per-head targets below.
+            if (!custom_gcode_sets_temperature(machine_start_gcode, 104, 109, false, custom_temperature)) {
+                // Match the existing startup idle/standby policy without
+                // moving the global ooze initialization (ordinary printers
+                // and their user G-code retain their original ordering).
+                const bool ooze = print.config().ooze_prevention.value;
+                for (const unsigned int logical : honor_startup_filaments) {
+                    const size_t fi = get_filament_config_index(int(logical));
+                    int temperature = print.config().nozzle_temperature_initial_layer.get_at(fi);
+                    // Existing OozePrevention::post_toolchange only restores
+                    // the print target when standby delta is nonzero. Without
+                    // that restoration path, initialize to the actual print
+                    // target even when an explicit idle temperature exists.
+                    if (ooze && logical != initial_extruder_id && print.config().standby_temperature_delta.value != 0) {
+                        const int idle = print.config().idle_temperature.get_at(logical);
+                        temperature = idle == 0 ? temperature + print.config().standby_temperature_delta.value : idle;
+                    }
+                    if (temperature > 0)
+                        // Instance Writer takes LOGICAL id, translates once,
+                        // and emits physical M109 Tn without selecting a tool.
+                        // Keep this before filament-specific user G-code, so
+                        // an explicit user override still runs afterwards.
+                        file.write(m_writer.set_temperature(temperature, true, int(logical)));
+                }
+            }
+        }
+    }
+
     // Mark the end of the machine start g-code so the GCodeProcessor usage-block builder knows where user
     // g-code ends and can start attributing filament/extruder usage. Gated on enable_pre_heating: only the
     // injector fleet (H2D/X2D/H2D-Pro/H2C) emits it; the byte-frozen fleet (X1/P1/A1/H2S, flag false) never
