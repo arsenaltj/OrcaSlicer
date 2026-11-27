@@ -1,3 +1,11 @@
+# MOB-LOCAL-MFG-SKIRT-DIRECTIVE-01 repair2 source (2026-11-27)
+
+Mainline: retain repair1 independent review failure1: classic stream accepted leading plus while Native fast_float reader rejects it. Same issue, no counter reset.
+This round: inspection invokes the exact existing Native string_to_double_decimal_point parser with full-consumption/finite/range checks. Fraction45.5 stays positive; +45.5 is an explicit rejection regression. Native parser and desktop behavior unchanged.
+Open: source/fixture validation only, no C++ execution or rebuild. Actual new SDK/phone qualification pending; all held histories retained.
+Next: separate fixed latest desktop merge, complete combination review, then authorized Android-only source-identity rebuild.
+Plan change: lexical alignment correction after review, not acceptance relaxation or new contract.
+
 # MOB-LOCAL-MFG-SKIRT-DIRECTIVE-01 repair1 source (2026-11-27)
 
 Mainline: continue the nonGLB Android manufacture/slice flow; b5f original phone first failure and all unrelated held histories remain.

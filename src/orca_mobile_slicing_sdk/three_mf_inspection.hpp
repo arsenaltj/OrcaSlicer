@@ -1,6 +1,7 @@
 #pragma once
 // Read-only OPC/XML feature inspection. Never extracts/rewrites the source.
 #include "libslic3r/Format/PlateProcess.hpp"
+#include "libslic3r/LocalesUtils.hpp"
 #include <expat.h>
 #include <miniz.h>
 #include <cstring>
@@ -150,8 +151,12 @@ struct ThreeMfScan {
                         if(key=="skirt_start_angle") {
                             try {
                                 if(value.empty() || value.size()>1024) throw std::invalid_argument("SKIRT_START_ANGLE_INVALID_LENGTH");
-                                const double angle=Slic3r::PlateProcess::number(value);
-                                Slic3r::PlateProcess::range(angle,-180.,180.);
+                                // Share the Native reader's lexical contract, including
+                                // fast_float rejecting a leading plus or whitespace.
+                                size_t consumed=0;
+                                const double angle=Slic3r::string_to_double_decimal_point(value,&consumed);
+                                if(consumed==0 || consumed!=value.size() || !std::isfinite(angle) || angle < -180. || angle > 180.)
+                                    throw std::invalid_argument("SKIRT_START_ANGLE_INVALID_NATIVE_SCALAR");
                                 if(plate.contains("validatedNativeSkirtStartAngle") && plate["validatedNativeSkirtStartAngle"].get<double>()!=angle)
                                     throw std::invalid_argument("SKIRT_START_ANGLE_CONFLICTING_DUPLICATE");
                                 plate["validatedNativeSkirtStartAngle"]=angle;

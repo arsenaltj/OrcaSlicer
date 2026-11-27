@@ -52,7 +52,7 @@ def project(source, destination, angles, second=None, unknown=False):
 
 def exercise(run, success, basis, root):
     # Public harness saves each real result, source SHA and emitted events.
-    for i, value in enumerate(('-180', '-135', '0', '180', '+45.5', '1e1')):
+    for i, value in enumerate(('-180', '-135', '0', '180', '45.5', '1e1')):
         path = project(basis, root / ('skirt-valid-%d.3mf' % i), [value])
         out = success('skirt-import-%d' % i, path)['project']
         assert not out['blockingFeatures'], out['blockingFeatures']
@@ -70,7 +70,7 @@ def exercise(run, success, basis, root):
     assert not again['blockingFeatures'] and float(again['config']['skirt_start_angle']) == -135
     equal = project(basis, root / 'skirt-equal.3mf', ['-135', '-135.0'])
     assert not success('skirt-equal', equal)['project']['blockingFeatures']
-    bad = ['', 'nan', 'inf', '-inf', '181', '-180.1', '1junk', '45%', '1,2', ' 1', '1 ', '1' * 1025]
+    bad = ['+45.5', '', 'nan', 'inf', '-inf', '181', '-180.1', '1junk', '45%', '1,2', ' 1', '1 ', '1' * 1025]
     for i, value in enumerate(bad):
         path = project(basis, root / ('skirt-invalid-%d.3mf' % i), [value])
         assert run('skirt-invalid-%d' % i, path, 'slice', executeEffectiveConfig=True,
