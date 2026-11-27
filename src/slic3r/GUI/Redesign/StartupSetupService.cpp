@@ -13,9 +13,7 @@
 namespace Slic3r::GUI {
 namespace {
 
-constexpr std::array<const char*, 4> models = {
-    "WonderMaker ZR", "WonderMaker ZR Ultra", "WonderMaker ZR Ultra S", "Honor Forge"
-};
+constexpr const auto& models = startup_printer_models;
 constexpr std::array<const char*, 4> labels = { "ZR", "ZR Ultra", "ZR Ultra S", "Honor Forge" };
 
 const StartupSetupFilament* find_filament(const StartupSetupPrinter& printer, const std::string& name)

@@ -23,6 +23,10 @@ struct BeautyCandidateSnapshot {
     std::optional<AI::ModelMatchedColors> matched_colors;
     std::string matched_configuration_signature;
     std::shared_ptr<DynamicPrintConfig> project_config;
+    // Project materials are scoped to the machine that authored this undo entry.
+    std::string project_printer;
+    bool can_restore_project_config(const std::string& printer) const
+    { return !project_config || project_printer == printer; }
     std::vector<std::string> project_presets;
     boost::filesystem::path source;
     boost::filesystem::path candidate;

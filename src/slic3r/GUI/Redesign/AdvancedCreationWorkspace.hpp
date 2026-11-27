@@ -17,7 +17,8 @@ public:
                               std::function<void()> show_smart, ModelGenerationFeatureHost& shared_models,
                               std::function<void(const ModelGenerationUIState&)> model_state_changed,
                               std::function<void(const AdvancedCreation::ModelJobEvent&)> model_job_event,
-                              std::function<void()> open_workbench, std::function<void()> completed);
+                              std::function<void()> open_workbench, std::function<void()> completed,
+                              std::function<void(const std::string&)> generation_feedback);
     ~AdvancedCreationWorkspace() override;
     void render();
     void set_presented(bool visible);

@@ -35,6 +35,13 @@ def design_prompt(request: DesignImageRequest) -> str:
     base_prompt = (gpt.build_geometry_reference_prompt(user_instruction, request.style, request.custom_style)
                    if request.references else
                    gpt.build_text_geometry_reference_prompt(user_instruction, request.style, request.custom_style))
+    if request.local_prompt is not None and request.local_prompt.strip():
+        base_prompt += (
+            f"\nLocal edit for the {request.view} image only. The following local requirements take precedence "
+            "over conflicting global description or style requirements for this image only. "
+            "Keep all unrequested details and the camera view unchanged. Local requirements:\n"
+            + request.local_prompt.strip()
+        )
     single_output = (
         " Return exactly ONE standalone design image. Do not output a contact sheet, multiple panels, labels, "
         "watermarks, or duplicate views."

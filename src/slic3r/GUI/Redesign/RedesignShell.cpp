@@ -1684,7 +1684,8 @@ void RedesignShell::switch_creation_mode(bool advanced)
             }, [this](const AdvancedCreation::ModelJobEvent& event) {
                 on_advanced_model_job(event);
             }, [this] { open_creation_artifact(CreationSource::Advanced); },
-            [this] { show_generation_completion(); });
+            [this] { show_generation_completion(); },
+            [this](const std::string& reason) { show_generation_error(reason); });
         m_advanced_workspace->set_creation_return_handler([this] { return_to_image_design(); },
             [this] { return can_return_to_image_design(); });
         m_content_host->GetSizer()->Add(m_advanced_workspace, 1, wxEXPAND);
@@ -2513,6 +2514,9 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     const bool preserve_creation_draft = m_smart_creation && m_saved_creation_input.has_value();
     const auto& displayed_input = preserve_creation_draft ? *m_saved_creation_input : state.input;
     const bool restore_input = !preserve_creation_draft && image_design_restores_input(state, m_model_generation_state);
+    const bool same_draft = !restore_input && !state.busy && state.job_id == m_model_generation_state.job_id;
+    const bool keep_input = m_smart_creation && same_draft && (m_generation_input_rejected || m_submit_in_progress);
+    const bool keep_options = m_smart_creation && same_draft && (m_generation_options_rejected || m_submit_in_progress);
     if (restore_input && state.job_id != m_model_generation_state.job_id &&
         (!m_model_generation_state.job_id.empty() || !(current_generation_input() == state.input)))
         cancel_prompt_polish(true);
@@ -2540,21 +2544,21 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         m_submit_in_progress = false;
 
     m_applying_model_generation_state = true;
-    if (m_prompt != nullptr && !preserve_over_limit_prompt &&
+    if (m_prompt != nullptr && !keep_input && !preserve_over_limit_prompt &&
         m_prompt->GetValue().ToStdString(wxConvUTF8) != displayed_input.prompt)
         m_prompt->ChangeValue(wxString::FromUTF8(displayed_input.prompt.c_str()));
     refresh_prompt_count();
-    if (m_style_choice != nullptr) {
+    if (m_style_choice != nullptr && !keep_input) {
         const int style_selection = ModelGenerationPresentation::style_selection(displayed_input.style);
         static_cast<StylePicker*>(m_style_choice)->set_selection(style_selection);
         m_selected_style_id = displayed_input.style;
         if (style_selection == 2)
             m_last_stylized_style = ModelGenerationPresentation::stylized_style_selection(displayed_input.style);
     }
-    if (m_custom_style != nullptr && m_custom_style->GetValue().ToStdString(wxConvUTF8) != displayed_input.custom_style)
+    if (m_custom_style != nullptr && !keep_input && m_custom_style->GetValue().ToStdString(wxConvUTF8) != displayed_input.custom_style)
         m_custom_style->ChangeValue(wxString::FromUTF8(displayed_input.custom_style));
     m_generation_geometry_mode = m_smart_creation || redesign_primary_action(state, image_stage) == RedesignPrimaryAction::Model;
-    apply_generation_options(preserve_creation_draft ? *m_saved_creation_options : state.options);
+    if (!keep_options) apply_generation_options(preserve_creation_draft ? *m_saved_creation_options : state.options);
     m_applying_model_generation_state = false;
     m_input_sync_ok = m_model_generation_host != nullptr && current_generation_input() == state.input;
     m_option_sync_ok = m_model_generation_host != nullptr && current_generation_options() == state.options;
@@ -2745,7 +2749,8 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
 
     if (m_smart_creation) {
         primary_label = text("生成3D模型");
-        primary_enabled = m_input_sync_ok && m_option_sync_ok && state.can_generate_design && editable && selected_provider_ready();
+        primary_enabled = state.can_click_generate_smart && editable &&
+            (!m_smart_generation_view || !m_smart_generation_view->loading());
         const bool ambiguous_submission_blocked = state.busy && state.provider_error_ambiguous && state.inputs_match_job;
         if (ambiguous_submission_blocked) primary_enabled = false;
         m_generate_button->SetToolTip(primary_enabled ? text("自动准备输入并生成3D模型") :
@@ -3098,7 +3103,9 @@ void RedesignShell::on_generation_option_changed()
     const bool valid = options.face_limit != 2000000 || options.geometry_quality == "detailed";
     if (!valid) {
         m_option_sync_ok = false;
-        if (m_generate_button != nullptr &&
+        m_generation_options_rejected = true;
+        if (m_smart_creation) apply_model_generation_state(m_model_generation_host->snapshot());
+        else if (m_generate_button != nullptr &&
             m_model_generation_state.stage == ModelGenerationUIStage::DesignReady)
             m_generate_button->Enable(false);
         return;
@@ -3110,7 +3117,9 @@ bool RedesignShell::synchronize_generation_input()
 {
     if (m_model_generation_host == nullptr || m_applying_model_generation_state)
         return false;
+    m_generation_input_rejected = true;
     m_input_sync_ok = m_model_generation_host->synchronize_input(current_generation_input());
+    m_generation_input_rejected = !m_input_sync_ok;
     apply_model_generation_state(m_model_generation_host->snapshot());
     return m_input_sync_ok;
 }
@@ -3119,7 +3128,9 @@ bool RedesignShell::synchronize_generation_options()
 {
     if (m_model_generation_host == nullptr || m_applying_model_generation_state)
         return false;
+    m_generation_options_rejected = true;
     m_option_sync_ok = m_model_generation_host->synchronize_options(current_generation_options());
+    m_generation_options_rejected = !m_option_sync_ok;
     if (m_option_sync_ok)
         apply_model_generation_state(m_model_generation_host->snapshot());
     return m_option_sync_ok;
@@ -3136,15 +3147,15 @@ void RedesignShell::refresh_prompt_count()
             ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES));
         m_prompt_count->SetForegroundColour(over_limit ? wxColour(255, 128, 112) :
             smart_creation_opaque_colour(wxColour(255, 255, 255, 115), m_prompt->GetBackgroundColour()));
-        m_prompt_count->SetToolTip(text("按输入容量计数，上限2000字节；英文通常占1，汉字通常占3。超限保留全文，请精简后生成。"));
+        m_prompt_count->SetToolTip(text("上限 2000 字符，以输入框容量计数为准。超限保留全文，请精简后生成。"));
         m_prompt_count->Refresh();
         if (m_prompt_limit_warning) m_prompt_limit_warning->Show(over_limit);
     } else m_prompt_count->SetLabel(wxString::Format("%zu/%zu", bytes,
-        ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES) + text(" UTF-8 字节") +
+        ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES) + text(" 字符") +
         (over_limit ? text("（已超限）") : wxString()));
     if (!m_smart_creation) {
         m_prompt_count->SetForegroundColour(over_limit ? wxColour(255, 128, 112) : secondary_text_colour());
-        m_prompt_count->SetToolTip(text("中文通常占3字节。超限时保留完整文字，请精简后生成。"));
+        m_prompt_count->SetToolTip(text("以输入框容量计数为准。超限时保留完整文字，请精简后生成。"));
     }
     m_prompt_count->GetParent()->Layout();
     if (m_smart_creation) layout_image_settings();
@@ -3211,7 +3222,7 @@ void RedesignShell::request_prompt_polish()
         return;
     }
     if (prompt.size() > ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES) {
-        m_prompt_polish_status->SetLabel(text("描述超过 2000 UTF-8 字节，请精简后再润色。"));
+        m_prompt_polish_status->SetLabel(text("描述超过 2000 字符，请精简后再润色。"));
         refresh_prompt_polish_controls();
         return;
     }
@@ -3310,7 +3321,9 @@ void RedesignShell::fail_prompt_polish(
     if (!m_prompt_polish_state.fail(sequence))
         return;
     m_prompt_polish_request.reset();
-    wxString message = wxString::FromUTF8(error.message);
+    wxString message = error.code == "description_too_long" ? text("描述超过 2000 字符，请精简后再润色。") :
+        error.code == "result_too_long" ? text("润色结果超过 2000 字符，已保留原描述。") :
+        wxString::FromUTF8(error.message);
     if (!error.diagnostic_id.empty())
         message += text(" 诊断编号：") + wxString::FromUTF8(error.diagnostic_id);
     m_prompt_polish_status->SetLabel(message);
@@ -3434,6 +3447,7 @@ bool RedesignShell::request_open_history(const std::string& job_id)
 
 void RedesignShell::restore_image_input(const ModelGenerationUIInput& input)
 {
+    m_generation_input_rejected = m_generation_options_rejected = false;
     // Explicit context switches replace the source and the design together.
     // Ordinary refreshes must not overwrite an uploaded, unsubmitted draft.
     ++m_image_request_generation;
@@ -3454,19 +3468,48 @@ void RedesignShell::request_generate_design()
 {
     if (m_prompt_polish_state.active() || m_submit_in_progress || !generation_input_editable())
         return;
-    m_submit_in_progress = true;
-    // Capture the current controls before any snapshot can refill the draft.
-    if (!synchronize_generation_options() || !synchronize_generation_input()) {
+    if (!m_smart_creation) {
+        // The separate image-design page keeps its original interaction.
+        m_submit_in_progress = true;
+        if (!synchronize_generation_options() || !synchronize_generation_input()) {
+            m_submit_in_progress = false;
+            apply_model_generation_state(m_model_generation_host->snapshot());
+            return;
+        }
+        m_image_design_draft.begin_submission();
+        const bool requested = m_model_generation_host && m_model_generation_host->request_generate_smart();
+        m_image_design_draft.end_submission(m_model_generation_host ? m_model_generation_host->snapshot() : ModelGenerationUIState());
         m_submit_in_progress = false;
-        apply_model_generation_state(m_model_generation_host->snapshot());
+        apply_model_generation_state(m_model_generation_host ? m_model_generation_host->snapshot() : ModelGenerationUIState());
+        if (requested && m_smart_generation_view) m_smart_generation_view->generation_started();
         return;
     }
+    if (!m_model_generation_host || !m_model_generation_host->snapshot().can_click_generate_smart ||
+        (m_smart_generation_view && m_smart_generation_view->loading())) return;
+    // Snapshot both controls before synchronization can publish old host input.
+    const auto input = current_generation_input();
+    const auto options = current_generation_options();
+    std::string rejection;
+    const auto rejected = [&rejection](const std::string& reason) { rejection = reason; };
+    m_submit_in_progress = true;
+    m_option_sync_ok = m_model_generation_host->synchronize_options(options, rejected);
+    m_input_sync_ok = m_option_sync_ok && m_model_generation_host->synchronize_input(input, rejected);
+    m_generation_options_rejected = !m_option_sync_ok;
+    m_generation_input_rejected = !m_input_sync_ok;
+    if (!m_option_sync_ok || !m_input_sync_ok) {
+        m_submit_in_progress = false;
+        apply_model_generation_state(m_model_generation_host->snapshot());
+        show_generation_error(rejection.empty() ? "sync_failed" : rejection);
+        return;
+    }
+    show_generation_error({});
     m_image_design_draft.begin_submission();
-    const bool requested = m_model_generation_host != nullptr && m_model_generation_host->request_generate_smart();
+    const bool requested = m_model_generation_host->request_generate_smart(rejected);
     m_image_design_draft.end_submission(m_model_generation_host != nullptr ? m_model_generation_host->snapshot() : ModelGenerationUIState());
     if (!requested) {
         m_submit_in_progress = false;
         apply_model_generation_state(m_model_generation_host != nullptr ? m_model_generation_host->snapshot() : ModelGenerationUIState());
+        if (!rejection.empty()) show_generation_error(rejection);
         return;
     }
     m_submit_in_progress = false;
@@ -3798,6 +3841,20 @@ void RedesignShell::show_printer_media()
     if (block_workbench_navigation() || m_import_in_progress || m_page_coordinator.transition().active() || !m_print_page) return;
     m_print_page->show_media();
     navigate_to(Page::Print);
+}
+
+bool RedesignShell::settings_printer_switch_blocked() const
+{
+    return m_import_in_progress || m_slicing_state.orientation_running ||
+        workbench_slice_running(false, m_slicing_state.official.phase) ||
+        (m_model_generation_host && m_model_generation_host->settings_printer_switch_blocked());
+}
+
+void RedesignShell::settings_printer_switch_applied()
+{
+    if (m_model_generation_host) m_model_generation_host->settings_printer_switch_applied();
+    refresh_printer_state();
+    refresh_print_preparation_action();
 }
 
 void RedesignShell::refresh_printer_state()

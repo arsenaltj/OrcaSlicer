@@ -132,6 +132,33 @@ def targets(value: Any, *, default_all: bool = True) -> tuple[str, ...]:
     return tuple(view for view in VIEWS if view in value)
 
 
+def design_request_fields(value: Any) -> dict[str, Any]:
+    """Explicit advanced intent; absence is handled only by legacy callers."""
+    if (not isinstance(value, Mapping) or type(value.get("version")) is not int
+            or not isinstance(value.get("scope"), str)
+            or value["version"] != 1 or value.get("scope") not in {"all_inputs", "single_view"}):
+        raise RequestError("invalid_request", "A supported advanced design scope is required.", 400)
+    if value["scope"] == "all_inputs":
+        if set(value) != {"version", "scope"}:
+            raise RequestError("invalid_request", "A full-input request cannot contain a local edit.", 400)
+        return {"version": 1, "scope": "all_inputs"}
+    if (set(value) != {"version", "scope", "target_view", "local_prompt"}
+            or value["target_view"] not in VIEWS):
+        raise RequestError("invalid_request", "A single named design direction is required.", 400)
+    local_prompt = value["local_prompt"]
+    if not isinstance(local_prompt, str) or len(local_prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
+        raise RequestError("invalid_request", "local_prompt must be text within its byte limit.", 400)
+    return {"version": 1, "scope": "single_view", "target_view": value["target_view"],
+            "local_prompt": local_prompt}
+
+
+def design_targets(group: Mapping[str, Any]) -> tuple[str, ...]:
+    """The direction domain is fixed; a user's image operation need not use all of it."""
+    if group.get("source") == "image":
+        return tuple(view for view in VIEWS if group.get("uploads", {}).get(view))
+    return VIEWS if group.get("saved_draft", {}).get("prompt", "").strip() else ()
+
+
 def revision(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise RequestError("invalid_request", "expected_group_revision must be a nonnegative integer.", 400)

@@ -115,8 +115,9 @@ void AdvancedModelTaskMonitor::prepare(AI::GeneratedModelArtifact artifact,
                     const std::atomic<bool> reading_commit {false};
                     auto entries = ModelLibraryRepository::read(root, reading_commit, false, status.id);
                     if (!entries.empty()) {
-                        entry = entries.front();
-                        event = ModelLibraryCommit {entry, PlatformLibrary::file_digest(library_metadata_path(status.id))};
+                        // History is a lightweight projection and may resolve a different saved path.
+                        // Keep the prepared path and model digest together for the foreground handoff.
+                        event = ModelLibraryCommit {entries.front(), PlatformLibrary::file_digest(library_metadata_path(status.id))};
                         event->request = request;
                     }
                 }

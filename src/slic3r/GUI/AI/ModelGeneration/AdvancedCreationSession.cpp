@@ -64,6 +64,11 @@ bool design_attempt_failed(const std::string& state)
            state == "result_pending" || state == "result_saved";
 }
 
+bool design_attempt_recoverable(const std::string& state)
+{
+    return state == "result_pending" || state == "result_saved";
+}
+
 bool Session::set_design_draft(DesignDraft draft)
 {
     if (m_draft.design == draft) return false;
@@ -94,12 +99,23 @@ bool Session::set_design_provider(std::string provider)
     return set_design_draft(std::move(draft));
 }
 
-bool Session::set_upload(ViewId view, std::string path)
+bool Session::set_upload(ViewId view, std::string path, bool explicit_replacement)
 {
-    if (m_draft.uploads.at(index(view)) == path) return false;
-    m_draft.uploads[index(view)] = std::move(path);
-    if (m_group && m_group->views[index(view)].usable && !m_selected[index(view)]) {
-        m_selected[index(view)] = true;
+    if (!upload_change_rejection(view, path, explicit_replacement).empty()) return false;
+    const auto slot = index(view);
+    if (m_draft.uploads.at(slot) == path && !explicit_replacement) return false;
+    m_draft.uploads[slot] = std::move(path);
+    m_draft.replaced_uploads[slot] = explicit_replacement;
+    ++m_draft.upload_revisions[slot];
+    m_invalidated_uploads[slot] = true;
+    if (m_group) {
+        auto& design = m_group->views[slot];
+        if (!design.canonical_version_id.empty()) m_invalidated_versions[slot] = design.canonical_version_id;
+        design = {};
+        m_group->pending_views[slot] = !m_draft.uploads[slot].empty();
+    }
+    if (!m_selected[slot] && !m_draft.uploads[slot].empty()) {
+        m_selected[slot] = true;
         ++m_selection_revision;
     }
     m_draft_dirty = true;
@@ -107,9 +123,55 @@ bool Session::set_upload(ViewId view, std::string path)
     return true;
 }
 
+std::string Session::upload_change_rejection(ViewId view, const std::string& path, bool explicit_replacement) const
+{
+    if (view != ViewId::Front && !path.empty() && m_draft.uploads[0].empty() &&
+        (explicit_replacement || path != m_draft.uploads[index(view)])) return "missing_front";
+    return {};
+}
+
+std::vector<ViewId> Session::all_design_views() const
+{
+    const bool images = std::any_of(m_draft.uploads.begin(), m_draft.uploads.end(),
+        [](const auto& path) { return !path.empty(); });
+    std::vector<ViewId> result;
+    if (!images && m_draft.design.prompt.find_first_not_of(" \r\n\t") == std::string::npos) return result;
+    for (ViewId view : AllViews)
+        if (!images || !m_draft.uploads[index(view)].empty()) result.push_back(view);
+    return result;
+}
+
+bool Session::has_local_design_target(ViewId view) const
+{
+    const auto slot = index(view);
+    if (!m_group || !m_group->published || m_invalidated_uploads[slot]) return false;
+    const auto& image = m_group->views[slot];
+    return image.usable || design_attempt_failed(image.attempt_state) || image.display_error;
+}
+
+std::string Session::single_design_rejection(ViewId view, const std::string& text) const
+{
+    if (!has_local_design_target(view)) return "missing_current_view";
+    if (text.size() > 2000) return "invalid_input";
+    const auto input = input_rejection();
+    if (!input.empty() && input != "empty_input") return input;
+    for (const auto& design : m_group->views)
+        if (design_attempt_recoverable(design.attempt_state)) return "recovery_required";
+
+    // With no uploads or global description, the visible edit base, a main
+    // design reference for an auxiliary retry, or the local text can suffice.
+    const auto& front = m_group->views[index(ViewId::Front)];
+    const bool main_reference = view != ViewId::Front && !m_invalidated_uploads[index(ViewId::Front)] &&
+        !front.canonical_version_id.empty();
+    if (input == "empty_input" && !m_group->views[index(view)].usable && !main_reference &&
+        text.find_first_not_of(" \r\n\t") == std::string::npos) return "empty_input";
+    return {};
+}
+
 void Session::mark_draft_saved(const DesignDraft& saved)
 {
-    if (saved == m_draft.design && (!m_group || m_draft.uploads == m_group->uploads))
+    if (saved == m_draft.design && (!m_group || m_draft.uploads == m_group->uploads) &&
+        std::none_of(m_invalidated_uploads.begin(), m_invalidated_uploads.end(), [](bool flag) { return flag; }))
         m_draft_dirty = false;
 }
 
@@ -127,30 +189,57 @@ CallbackContext Session::begin_open(std::string group_id)
     ++m_epoch;
     m_opening_id = std::move(group_id);
     m_pending_click.reset();
+    m_model_candidate.reset();
     m_accepted_model.reset();
     m_initial_design_guidance = InitialDesignGuidance::Unarmed;
+    m_guidance_targets.clear(); m_guidance_input_epoch.clear();
+    m_model_selected.fill(false); m_model_seen.fill(false);
+    m_invalidated_uploads.fill(false); m_invalidated_versions.fill({});
     return context();
 }
 
-void Session::arm_initial_design_guidance(const CallbackContext& callback)
+void Session::arm_initial_design_guidance(const CallbackContext& callback, std::vector<ViewId> targets,
+                                         std::string input_epoch)
 {
     if (matches(callback) && !callback.group_id.empty() &&
-        m_initial_design_guidance == InitialDesignGuidance::Unarmed)
+        m_initial_design_guidance == InitialDesignGuidance::Unarmed) {
         m_initial_design_guidance = InitialDesignGuidance::Pending;
+        m_guidance_targets = std::move(targets);
+        m_guidance_input_epoch = std::move(input_epoch);
+    }
+}
+
+void Session::track_initial_design_plan(const CallbackContext& callback, std::vector<ViewId> targets,
+                                       std::string input_epoch)
+{
+    if (matches(callback) && m_initial_design_guidance == InitialDesignGuidance::Pending) {
+        m_guidance_targets = std::move(targets);
+        m_guidance_input_epoch = std::move(input_epoch);
+    }
 }
 
 bool Session::consume_initial_design_guidance()
 {
     if (m_initial_design_guidance != InitialDesignGuidance::Pending || !m_group ||
         m_group->id != m_opening_id || !m_group->active_operation_id.empty() ||
-        m_group->stop_intent || !inputs_match_results())
+        m_group->stop_intent || !inputs_match_results() ||
+        (!m_guidance_input_epoch.empty() && m_guidance_input_epoch != m_group->input_epoch))
         return false;
-    for (const auto& view : m_group->views)
+    bool has_target = false;
+    for (ViewId direction : AllViews) {
+        // A local repaint may target only a successful view. The creation's
+        // other current targets must still be usable before the first guide.
+        if (!m_group->design_targets[index(direction)] &&
+            std::find(m_guidance_targets.begin(), m_guidance_targets.end(), direction) == m_guidance_targets.end()) continue;
+        has_target = true;
+        const auto& view = m_group->views[index(direction)];
         if (!view.usable || view.asset_pending || view.display_error ||
             view.version_id.empty() || view.image_path.empty() ||
             view.version_id != view.canonical_version_id ||
             design_attempt_generating(view.attempt_state) || design_attempt_failed(view.attempt_state))
             return false;
+    }
+    if (!has_target) return false;
     m_initial_design_guidance = InitialDesignGuidance::Consumed;
     return true;
 }
@@ -164,6 +253,7 @@ CallbackContext Session::new_creation()
     m_draft_dirty = false;
     ++m_draft_revision;
     ++m_selection_revision;
+    ++m_model_selection_revision;
     return context();
 }
 
@@ -182,7 +272,18 @@ bool Session::apply_snapshot(GroupSnapshot snapshot, const CallbackContext& call
     for (ViewId view : AllViews) {
         auto& incoming = snapshot.views[index(view)];
         if (incoming.canonical_version_id.empty()) incoming.canonical_version_id = incoming.version_id;
-        if (!incoming.usable && m_group && m_group->id == snapshot.id) {
+        const auto slot = index(view);
+        const bool acknowledged = saved_input && !restore_draft &&
+            m_draft.uploads[slot] == saved_input->uploads[slot] &&
+            m_draft.upload_revisions[slot] == saved_input->upload_revisions[slot];
+        if (m_invalidated_uploads[slot] && acknowledged &&
+            (incoming.canonical_version_id.empty() || incoming.canonical_version_id != m_invalidated_versions[slot])) {
+            m_invalidated_uploads[slot] = false;
+            m_draft.replaced_uploads[slot] = false;
+        }
+        if (m_invalidated_uploads[slot]) incoming = {};
+        if (!incoming.usable && !incoming.canonical_version_id.empty() &&
+            !m_invalidated_uploads[slot] && m_group && m_group->id == snapshot.id) {
             const auto& visible = m_group->views[index(view)];
             if (visible.usable) {
                 const bool same_verified_asset = !incoming.display_error &&
@@ -196,7 +297,7 @@ bool Session::apply_snapshot(GroupSnapshot snapshot, const CallbackContext& call
         }
         if (!incoming.usable) { incoming.version_id.clear(); incoming.image_path.clear(); }
     }
-    if (restore_draft || inputs_changed) {
+    if (restore_draft || (inputs_changed && (saved_input || !m_draft_dirty))) {
         // A save acknowledges its captured input, not edits made while its
         // request/cache verification was running. Still adopt canonical upload
         // paths for slots that have not changed since that request.
@@ -205,16 +306,22 @@ bool Session::apply_snapshot(GroupSnapshot snapshot, const CallbackContext& call
         if (saved_input && !restore_draft) {
             if (m_draft.design != saved_input->design) design = m_draft.design;
             for (ViewId view : AllViews)
-                if (m_draft.uploads[index(view)] != saved_input->uploads[index(view)])
+                if (m_draft.uploads[index(view)] != saved_input->uploads[index(view)] ||
+                    m_draft.upload_revisions[index(view)] != saved_input->upload_revisions[index(view)])
                     uploads[index(view)] = m_draft.uploads[index(view)];
         }
         m_draft.uploads = std::move(uploads);
         m_draft.design = std::move(design);
-        if (restore_draft) m_selected.fill(false);
+        if (restore_draft) {
+            m_selected.fill(false);
+            m_draft.replaced_uploads.fill(false);
+            m_draft.upload_revisions.fill(0);
+        }
         for (ViewId view : AllViews)
             if (snapshot.pending_views[index(view)])
                 m_selected[index(view)] = true;
-        m_draft_dirty = m_draft.design != snapshot.saved_draft || m_draft.uploads != snapshot.uploads;
+        m_draft_dirty = m_draft.design != snapshot.saved_draft || m_draft.uploads != snapshot.uploads ||
+            std::any_of(m_invalidated_uploads.begin(), m_invalidated_uploads.end(), [](bool flag) { return flag; });
         m_pending_click.reset();
         ++m_draft_revision;
         ++m_selection_revision;
@@ -234,6 +341,13 @@ bool Session::apply_snapshot(GroupSnapshot snapshot, const CallbackContext& call
         snapshot.model_updated_at >= m_accepted_model->updated_at)
         m_accepted_model.reset();
     m_group = std::move(snapshot);
+    for (ViewId view : AllViews) {
+        const auto slot = index(view);
+        if (!m_model_seen[slot] && model_view_usable(view)) {
+            m_model_seen[slot] = m_model_selected[slot] = true;
+            ++m_model_selection_revision;
+        }
+    }
     if (m_accepted_model) apply_model_job(*m_accepted_model, callback);
     return true;
 }
@@ -258,9 +372,23 @@ bool Session::apply_model_job(const ModelJobProjection& job, const CallbackConte
     return true;
 }
 
+void Session::set_model_options(ModelOptions options)
+{
+    m_draft.geometry = std::move(options);
+    ++m_draft_revision;
+    ++m_model_options_revision;
+}
+
 CommandContext Session::command_context() const
 {
-    return {context(), m_draft_revision, m_selection_revision, m_group ? m_group->revision : 0};
+    return {context(), m_draft_revision, m_selection_revision, m_group ? m_group->revision : 0,
+            m_model_selection_revision, m_model_options_revision};
+}
+
+bool Session::matches_model_command(const CommandContext& command) const
+{
+    return matches(command.callback) && command.model_selection_revision == m_model_selection_revision &&
+           command.model_options_revision == m_model_options_revision;
 }
 
 bool Session::matches_command(const CommandContext& command, bool uses_selection) const
@@ -284,35 +412,188 @@ bool Session::toggle(ViewId view)
 std::vector<ViewId> Session::effective_views() const
 {
     std::vector<ViewId> result;
-    for (ViewId view : AllViews) if (m_selected[index(view)]) result.push_back(view);
-    if (result.empty()) result.assign(AllViews.begin(), AllViews.end());
+    const bool images = std::any_of(m_draft.uploads.begin(), m_draft.uploads.end(), [](const auto& path) { return !path.empty(); });
+    for (ViewId view : AllViews)
+        if (m_selected[index(view)] && (!images || !m_draft.uploads[index(view)].empty())) result.push_back(view);
+    if (result.empty()) for (ViewId view : AllViews)
+        if (!images || !m_draft.uploads[index(view)].empty()) result.push_back(view);
     return result;
 }
 
-void Session::click(ViewId view, std::uint64_t now_ms, std::uint64_t double_click_ms)
+bool Session::model_view_usable(ViewId view) const
+{
+    if (!m_group || m_invalidated_uploads[index(view)]) return false;
+    const auto& image = m_group->views[index(view)];
+    return image.usable && !image.asset_pending && !image.display_error &&
+        !image.version_id.empty() && !image.image_path.empty() &&
+        image.version_id == image.canonical_version_id;
+}
+
+std::array<bool, 4> Session::model_selection() const
+{
+    std::array<bool, 4> result {};
+    if (m_group) for (ViewId view : AllViews) {
+        const auto slot = index(view);
+        result[slot] = !m_invalidated_uploads[slot] &&
+            !m_group->views[slot].canonical_version_id.empty() && (slot == 0 || m_model_selected[slot]);
+    }
+    return result;
+}
+
+bool Session::can_toggle_model_view(ViewId view) const
+{
+    // A previously selected auxiliary may be removed after it becomes unavailable.
+    return view != ViewId::Front && (model_selection()[index(view)] || model_view_usable(view));
+}
+
+bool Session::toggle_model_view(ViewId view)
+{
+    if (!can_toggle_model_view(view)) return false;
+    const auto slot = index(view);
+    m_model_selected[slot] = !m_model_selected[slot];
+    ++m_model_selection_revision;
+    return true;
+}
+
+std::vector<ViewId> Session::effective_model_views() const
+{
+    const auto selected = model_selection();
+    std::vector<ViewId> result;
+    for (ViewId view : AllViews) if (selected[index(view)]) result.push_back(view);
+    return result;
+}
+
+std::uint64_t Session::begin_model_selection()
+{
+    m_pending_click.reset();
+    m_model_candidate = ModelSelectionCandidate {++m_candidate_sequence, 0, command_context(), model_selection()};
+    m_model_candidate->selected[0] = true;
+    return m_model_candidate->id;
+}
+
+bool Session::toggle_candidate_view(ViewId view)
+{
+    if (!m_model_candidate || !matches_model_command(m_model_candidate->command) || view == ViewId::Front) return false;
+    auto& candidate = *m_model_candidate;
+    const auto slot = index(view);
+    if (!candidate.selected[slot] && !model_view_usable(view)) return false;
+    candidate.selected[slot] = !candidate.selected[slot];
+    ++candidate.revision;
+    return true;
+}
+
+std::vector<ViewId> Session::candidate_model_views() const
+{
+    std::vector<ViewId> result;
+    if (m_model_candidate) for (ViewId view : AllViews)
+        if (m_model_candidate->selected[index(view)]) result.push_back(view);
+    return result;
+}
+
+Eligibility Session::candidate_model_eligibility(const Capabilities& capabilities, const HostGuards& guards) const
+{
+    if (m_model_candidate && matches_model_command(m_model_candidate->command))
+        return eligibility_for(capabilities, guards, m_model_candidate->selected);
+    Eligibility result;
+    result.model_reason = "stale_confirmation";
+    return result;
+}
+
+Eligibility Session::model_selection_entry_eligibility(const Capabilities& capabilities, const HostGuards& guards) const
+{
+    // An unavailable auxiliary may be removed inside the confirmation. All
+    // creation-wide guards and the mandatory main design still apply here.
+    return eligibility_for(capabilities, guards, {true, false, false, false}, true);
+}
+
+std::optional<LocalDraft> Session::candidate_local_draft() const
+{
+    if (!m_model_candidate || !matches_model_command(m_model_candidate->command)) return std::nullopt;
+    auto local = local_draft();
+    local.model_selected = m_model_candidate->selected;
+    return local;
+}
+
+bool Session::commit_model_selection(std::uint64_t id, std::uint64_t revision)
+{
+    if (!m_model_candidate || m_model_candidate->id != id || m_model_candidate->revision != revision ||
+        !matches_model_command(m_model_candidate->command)) return false;
+    m_model_selected = m_model_candidate->selected;
+    ++m_model_selection_revision;
+    m_model_candidate.reset();
+    return true;
+}
+
+bool Session::toggle_selection(ViewId view, SelectionContext selection_context)
+{
+    const auto slot = index(view);
+    if (selection_context == SelectionContext::Model) return toggle_model_view(view);
+    if (selection_context == SelectionContext::DesignForNextModel && view != ViewId::Front &&
+        !model_view_usable(view)) {
+        if (!m_group || !m_selected[slot] || m_invalidated_uploads[slot] ||
+            m_group->views[slot].canonical_version_id.empty()) return false;
+        // Keep pending regeneration facts intact. Only this explicit next-model
+        // selection may remove a failed pending auxiliary from the 2D cards.
+        m_selected[slot] = false;
+        ++m_selection_revision;
+    } else if (!toggle(view)) return false;
+    if (selection_context == SelectionContext::DesignForNextModel) {
+        auto next = m_model_selected;
+        for (ViewId direction : AllViews)
+            next[index(direction)] = direction == ViewId::Front || m_selected[index(direction)];
+        if (next != m_model_selected) {
+            m_model_selected = next;
+            ++m_model_selection_revision;
+        }
+    }
+    return true;
+}
+
+void Session::click(ViewId view, std::uint64_t now_ms, std::uint64_t double_click_ms,
+                    SelectionContext selection_context)
 {
     flush_click(now_ms);
-    if (m_pending_click) toggle(m_pending_click->view);
-    m_pending_click = PendingClick {view, now_ms + double_click_ms};
+    if (m_pending_click) toggle_selection(m_pending_click->view, m_pending_click->context);
+    m_pending_click = PendingClick {view, now_ms + double_click_ms, selection_context};
 }
 
 bool Session::flush_click(std::uint64_t now_ms)
 {
     if (!m_pending_click || now_ms < m_pending_click->due) return false;
-    const ViewId view = m_pending_click->view;
+    const auto click = *m_pending_click;
     m_pending_click.reset();
-    return toggle(view);
+    return toggle_selection(click.view, click.context);
 }
 
 std::optional<ViewId> Session::double_click(ViewId view)
 {
-    if (m_pending_click && m_pending_click->view != view) toggle(m_pending_click->view);
+    if (m_pending_click && m_pending_click->view != view)
+        toggle_selection(m_pending_click->view, m_pending_click->context);
     m_pending_click.reset();
     if (!m_group || !m_group->views.at(index(view)).usable) return std::nullopt;
     return view;
 }
 
+std::string Session::input_rejection() const
+{
+    if (m_draft.design.prompt.size() > 2000) return "prompt_too_long";
+    if (m_draft.design.custom_style.size() > 1000) return "custom_style_too_long";
+    if (m_draft.design.style == "custom" &&
+        m_draft.design.custom_style.find_first_not_of(" \r\n\t") == std::string::npos) return "custom_style_empty";
+    const bool any_upload = std::any_of(m_draft.uploads.begin(), m_draft.uploads.end(),
+        [](const std::string& value) { return !value.empty(); });
+    if (any_upload && m_draft.uploads[0].empty()) return "missing_front";
+    if (!any_upload && m_draft.design.prompt.find_first_not_of(" \r\n\t") == std::string::npos) return "empty_input";
+    return {};
+}
+
 Eligibility Session::eligibility(const Capabilities& capabilities, const HostGuards& guards) const
+{
+    return eligibility_for(capabilities, guards, model_selection());
+}
+
+Eligibility Session::eligibility_for(const Capabilities& capabilities, const HostGuards& guards,
+                                    const std::array<bool, 4>& selected, bool selection_entry) const
 {
     Eligibility result;
     if (m_group && m_group->id != m_opening_id) {
@@ -320,39 +601,76 @@ Eligibility Session::eligibility(const Capabilities& capabilities, const HostGua
         return result;
     }
     const bool busy = m_group && (!m_group->active_operation_id.empty() || m_group->model_busy);
-    bool unresolved = false, missing = !m_group;
-    if (m_group) for (const DesignView& view : m_group->views) {
-        missing = missing || !view.usable || view.display_error || view.asset_pending ||
-                  (!view.canonical_version_id.empty() && view.version_id != view.canonical_version_id);
-        unresolved = unresolved || view.attempt_state == "ambiguous" || view.attempt_state == "result_pending" ||
-                     view.attempt_state == "result_saved";
-        result.retry = result.retry || view.attempt_state == "failed" || view.attempt_state == "stopped" ||
-                       view.attempt_state == "blocked";
+    bool recoverable = false, selected_recoverable = false;
+    bool unknown_design = false, selected_unknown_design = false;
+    bool missing = !model_view_usable(ViewId::Front);
+    std::size_t model_view_count = 0;
+    for (ViewId view : AllViews) {
+        if (!selected[index(view)]) continue;
+        ++model_view_count;
+        missing = missing || !model_view_usable(view);
+    }
+    if (m_group) for (const auto view : AllViews) {
+        const auto slot = index(view);
+        const auto& state = m_group->views[slot].attempt_state;
+        const bool view_recoverable = design_attempt_recoverable(state);
+        recoverable = recoverable || view_recoverable;
+        selected_recoverable = selected_recoverable || (selected[slot] && view_recoverable);
+        unknown_design = unknown_design || state == "ambiguous";
+        selected_unknown_design = selected_unknown_design || (selected[slot] && state == "ambiguous");
+        result.retry = result.retry || state == "failed" || state == "stopped" || state == "blocked";
     }
     result.stop = busy && !m_group->stop_intent;
-    result.recover = unresolved && !busy;
+    result.recover = recoverable && !busy;
+    // A missing image can precede workbench_guard in model_reason. Project
+    // interaction directly from the guards, not from the first error string.
+    result.click_generate_design = !busy && guards.can_start;
+    result.click_generate_model = result.click_generate_design;
     const bool any_upload = std::any_of(m_draft.uploads.begin(), m_draft.uploads.end(),
                                         [](const std::string& value) { return !value.empty(); });
-    const bool valid = m_draft.design.prompt.size() <= 2000 && m_draft.design.custom_style.size() <= 1000 &&
-        (m_draft.design.style != "custom" || m_draft.design.custom_style.find_first_not_of(" \r\n\t") != std::string::npos) &&
-        (any_upload ? !m_draft.uploads[0].empty() : m_draft.design.prompt.find_first_not_of(" \r\n\t") != std::string::npos);
+    const bool valid = input_rejection().empty();
     const bool initial = !m_group || !m_group->published;
     const bool image_capable = initial ? (any_upload ? capabilities.initial_references : capabilities.initial_text)
                                       : capabilities.edit_current;
     result.design_reason = busy ? "group_busy" : !guards.can_start ? "workbench_guard" :
+        recoverable ? "recovery_required" :
         !capabilities.service_available ? "service_unavailable" : any_upload && m_draft.uploads[0].empty() ? "missing_front" : !valid ? "invalid_input" :
         !image_capable ? "unsupported_multiview" : "";
     result.generate_design = result.design_reason.empty();
-    result.model_reason = busy ? "group_busy" : unresolved ? "recovery_required" : missing ? "missing_current_view" :
-        std::any_of(m_group->pending_views.begin(), m_group->pending_views.end(), [](bool pending) { return pending; }) ?
-            "design_regeneration_required" :
-        !inputs_match_results() ? "draft_changed" : !guards.can_start ? "workbench_guard" :
+    result.model_reason = busy ? "group_busy" : selected_recoverable ? "recovery_required" :
+        selected_unknown_design ? "design_result_unknown" : missing ? "missing_current_view" :
+        !guards.can_start ? "workbench_guard" :
         !guards.model_options_valid ? "invalid_model_options" :
         !capabilities.service_available || !guards.model_service_available ? "service_unavailable" :
-        !capabilities.four_view_model ? "unsupported_multiview" : "";
+        !(selection_entry ? (capabilities.model_image_counts_known ?
+          std::any_of(capabilities.model_image_counts.begin(), capabilities.model_image_counts.end(), [](bool supported) { return supported; }) :
+          capabilities.four_view_model) : model_view_count >= 1 && model_view_count <= 4 &&
+          (capabilities.model_image_counts_known ? capabilities.model_image_counts[model_view_count - 1] :
+           model_view_count == 4 && capabilities.four_view_model)) ? "unsupported_multiview" : "";
     result.generate_model = result.model_reason.empty();
-    result.retry = result.retry && !busy && !unresolved && guards.can_start && capabilities.service_available;
+    result.retry = result.retry && !busy && !recoverable && !unknown_design && guards.can_start && capabilities.service_available;
     return result;
+}
+
+LocalDraft Session::local_draft() const
+{
+    return {m_draft, m_invalidated_uploads, m_model_selected, m_model_seen, m_invalidated_versions, m_draft_dirty};
+}
+
+void Session::restore_local_draft(const LocalDraft& local)
+{
+    m_draft.geometry = local.input.geometry;
+    if (local.dirty) {
+        m_draft = local.input;
+        m_draft_dirty = true;
+        m_invalidated_uploads = local.invalidated_uploads;
+        m_invalidated_versions = local.invalidated_versions;
+        if (m_group) for (ViewId view : AllViews)
+            if (m_invalidated_uploads[index(view)]) m_group->views[index(view)] = {};
+        ++m_draft_revision;
+    }
+    m_model_selected = local.model_selected; m_model_seen = local.model_seen;
+    ++m_model_selection_revision;
 }
 
 } // namespace Slic3r::GUI::AdvancedCreation

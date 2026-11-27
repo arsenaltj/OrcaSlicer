@@ -33,6 +33,8 @@ class DesignImageRequest:
     # Reference order is an explicit authority order, frozen by the advanced workflow.
     references: tuple[tuple[str, Path], ...]
     view_contract: dict[str, Any] | None = None
+    # None is legacy/global; an empty string is a valid local regeneration.
+    local_prompt: str | None = None
 
 
 @dataclass(frozen=True)
@@ -59,7 +61,8 @@ class AdvancedMultiviewDesignWorkflow:
         return DesignImageRequest(view, initial, draft["prompt"], draft["style"],
                                   draft["custom_style"], draft["design_provider"], draft["design_model"],
                                   operation["attempts"][view]["id"], references,
-                                  dict(contract["views"][view]))
+                                  dict(contract["views"][view]),
+                                  operation.get("design_request", {}).get("local_prompt"))
 
     def _operation(self, group_id: str, operation_id: str) -> dict[str, Any]:
         return self.repository.read_record(group_id, f"operations/{operation_id}/operation.json")
@@ -104,7 +107,9 @@ class AdvancedMultiviewDesignWorkflow:
                 if anchor:
                     record = self.repository.version(group_id, "front", anchor)
                     append("front_design", self.repository.path(group_id, record["path"]))
-                if not references:
+                local_text_retry = (operation.get("design_request", {}).get("scope") == "single_view" and
+                                    frozen["source"] == "text")
+                if not references and not local_text_retry:
                     raise RequestError("anchor_unavailable", "The main-reference design must succeed before an inferred view.", 409)
         else:
             context = frozen["context"]
@@ -322,14 +327,17 @@ class AdvancedMultiviewDesignWorkflow:
 
     def recover_interrupted(self, group_id: str, expected_revision: int | None = None,
                             *, expected_operation: str | None = None,
-                            operation_running: Callable[[str], bool] | None = None) -> None:
+                            operation_running: Callable[[str], bool] | None = None,
+                            allow_failed_result_retry: bool = False,
+                            model_busy: Callable[[str], bool] | None = None) -> None:
         """Finish an existing receipt without issuing a supplier creation request."""
         with self._recovery_lock:
             if group_id in self._recovering:
                 return
             self._recovering.add(group_id)
         try:
-            self._recover_interrupted(group_id, expected_revision, expected_operation, operation_running)
+            self._recover_interrupted(group_id, expected_revision, expected_operation, operation_running,
+                                      allow_failed_result_retry, model_busy)
         finally:
             with self._recovery_lock:
                 self._recovering.remove(group_id)
@@ -344,8 +352,11 @@ class AdvancedMultiviewDesignWorkflow:
 
     def _recover_interrupted(self, group_id: str, expected_revision: int | None,
                              expected_operation: str | None,
-                             operation_running: Callable[[str], bool] | None) -> None:
+                             operation_running: Callable[[str], bool] | None,
+                             allow_failed_result_retry: bool, model_busy: Callable[[str], bool] | None) -> None:
         with self.repository.transaction():
+            if model_busy and model_busy(group_id):
+                return
             group = self.repository.load(group_id)
             if expected_revision is not None and group["revision"] != expected_revision:
                 return
@@ -391,8 +402,9 @@ class AdvancedMultiviewDesignWorkflow:
                                     "operation_id": orphan["id"], "attempt_id": attempt["id"],
                                     "state": "stopped", "error": None}
                             group["published"] = True
-                            group["saved_draft"] = deepcopy(orphan["draft"])
-                            group["latest_submitted_draft"] = deepcopy(orphan["draft"])
+                            if orphan.get("design_request", {}).get("scope") != "single_view":
+                                group["saved_draft"] = deepcopy(orphan["draft"])
+                                group["latest_submitted_draft"] = deepcopy(orphan["draft"])
                             if orphan["kind"] == "initial":
                                 group["initial_input"] = deepcopy(orphan["draft"])
                             group = self.repository.save(group)
@@ -412,9 +424,9 @@ class AdvancedMultiviewDesignWorkflow:
         retrieved = {}
         for attempt_id, output in reads.items():
             try:
-                retrieved[attempt_id] = (self.recover_image(output), False)
-            except (RequestError, ProviderGatewayError):
-                retrieved[attempt_id] = (None, True)
+                retrieved[attempt_id] = (self.recover_image(output), None)
+            except (RequestError, ProviderGatewayError) as error:
+                retrieved[attempt_id] = (None, error.code)
 
         with self.repository.transaction():
             group = self.repository.load(group_id)
@@ -437,9 +449,12 @@ class AdvancedMultiviewDesignWorkflow:
                             must_exist=False)
                         result = None
                         if self.recover_image:
-                            result, failed = retrieved.get(attempt["id"], (None, False))
-                            if failed:
-                                attempt["state"] = "result_pending"
+                            result, recovery_error = retrieved.get(attempt["id"], (None, None))
+                            if recovery_error:
+                                if allow_failed_result_retry and recovery_error == "invalid_provider_result":
+                                    attempt.update(state="failed", error={"code": recovery_error})
+                                else:
+                                    attempt["state"] = "result_pending"
                         elif output.exists():
                             result = DesignImageResult()
                         if result is not None:
@@ -448,9 +463,10 @@ class AdvancedMultiviewDesignWorkflow:
                             except RequestError as error:
                                 if error.code == "persistence_failed":
                                     raise
-                                # A corrupt obtained image remains a failed result,
-                                # never a reason to retain a phantom active worker.
-                                attempt.update(state="result_pending", error={"code": error.code,
+                                # Startup recovery preserves the receipt. An explicit recovery
+                                # can release a definitively invalid result for user retry.
+                                state = "failed" if allow_failed_result_retry and error.code == "invalid_provider_result" else "result_pending"
+                                attempt.update(state=state, error={"code": error.code,
                                                "message": redact_text(error.message)})
                             else:
                                 group = self.repository.load(group_id)
@@ -461,11 +477,8 @@ class AdvancedMultiviewDesignWorkflow:
                     publication_base = operation.get("publication_bases", {}).get(view, attempt["base_version_id"])
                     if (group["views"][view]["current_version_id"] in {publication_base, record["id"]}
                             and not group["stop_intent"] and not operation["stop_intent"]):
-                        group["views"][view] = {"current_version_id": record["id"], "latest_attempt": {
-                            "operation_id": operation_id, "attempt_id": attempt["id"], "state": "succeeded"}}
-                        attempt["state"] = "succeeded"
-                        if view == "front":
-                            operation["frozen"]["initial_front_version_id"] = record["id"]
+                        self._commit_candidate(group, operation, view, attempt["id"])
+                        group = self.repository.load(group_id)
                     else:
                         attempt.update(state="stopped", error={"code": "stopped_with_result"})
                 elif attempt["state"] == "submitting":

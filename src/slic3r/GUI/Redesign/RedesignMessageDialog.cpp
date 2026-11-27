@@ -1,4 +1,5 @@
 #include "RedesignMessageDialog.hpp"
+#include "RedesignDetailsViewport.hpp"
 #include "../AI/ModelGeneration/ModelGenerationConfirmation.hpp"
 
 #include "RedesignTheme.hpp"
@@ -108,188 +109,185 @@ private:
     int m_content_height {1};
 };
 
-class RedesignDetailsViewport final : public wxPanel
+RedesignDetailsViewport::RedesignDetailsViewport(wxWindow* parent, wxWindowID id,
+                        const wxPoint& position, const wxSize& size, long style,
+                        const wxColour& background, bool draw_details)
+    : wxPanel(parent, id, position, size, wxBORDER_NONE)
 {
-public:
-    RedesignDetailsViewport(wxWindow* parent, wxWindowID id,
-                            const wxPoint& position, const wxSize& size, long style,
-                            const wxColour& background, bool draw_details = false)
-        : wxPanel(parent, id, position, size, wxBORDER_NONE)
-    {
-        SetBackgroundStyle(wxBG_STYLE_PAINT);
-        SetBackgroundColour(background);
+    SetBackgroundStyle(wxBG_STYLE_PAINT);
+    SetBackgroundColour(background);
 
-        const long scroll_style = style | wxCLIP_CHILDREN | wxBORDER_NONE;
-        m_scroller = draw_details ? new RedesignDetailsContentPanel(this, scroll_style) :
-            new wxScrolledWindow(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, scroll_style);
-        if (!draw_details) m_scroller->SetBackgroundStyle(wxBG_STYLE_ERASE);
-        m_scroller->SetBackgroundColour(background);
-        if (!draw_details) m_scroller->SetScrollRate(0, FromDIP(12));
-        m_scroller->ShowScrollbars(wxSHOW_SB_NEVER, wxSHOW_SB_NEVER);
+    const long scroll_style = style | wxCLIP_CHILDREN | wxBORDER_NONE;
+    m_scroller = draw_details ? new RedesignDetailsContentPanel(this, scroll_style) :
+        new wxScrolledWindow(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, scroll_style);
+    if (!draw_details) m_scroller->SetBackgroundStyle(wxBG_STYLE_ERASE);
+    m_scroller->SetBackgroundColour(background);
+    if (!draw_details) m_scroller->SetScrollRate(0, FromDIP(12));
+    m_scroller->ShowScrollbars(wxSHOW_SB_NEVER, wxSHOW_SB_NEVER);
 
-        m_bar = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
-        m_bar->SetBackgroundStyle(wxBG_STYLE_PAINT);
-        m_bar->SetBackgroundColour(background);
-        m_bar->SetCursor(wxCursor(wxCURSOR_HAND));
-        m_bar->Hide();
-        m_bar->Bind(wxEVT_PAINT, [this](wxPaintEvent&) { paint_bar(); });
-        m_bar->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& event) { begin_bar_pointer(event); });
-        m_bar->Bind(wxEVT_MOTION, [this](wxMouseEvent& event) { drag_bar_pointer(event); });
-        m_bar->Bind(wxEVT_LEFT_UP, [this](wxMouseEvent&) { end_bar_pointer(); });
-        m_bar->Bind(wxEVT_MOUSE_CAPTURE_LOST, [this](wxMouseCaptureLostEvent&) { end_bar_pointer(); });
-        m_bar->Bind(wxEVT_MOUSEWHEEL, [this](wxMouseEvent& event) {
-            // The themed bar is a sibling of the scroller. Forward the wheel
-            // to the real scrolled window without making the bar part of the
-            // moving content hierarchy.
-            event.Skip(false);
-            wxMouseEvent forwarded(event);
-            forwarded.SetEventObject(m_scroller);
-            m_scroller->GetEventHandler()->ProcessEvent(forwarded);
-        });
+    m_bar = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
+    m_bar->SetBackgroundStyle(wxBG_STYLE_PAINT);
+    m_bar->SetBackgroundColour(background);
+    m_bar->SetCursor(wxCursor(wxCURSOR_HAND));
+    m_bar->Hide();
+    m_bar->Bind(wxEVT_PAINT, [this](wxPaintEvent&) { paint_bar(); });
+    m_bar->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& event) { begin_bar_pointer(event); });
+    m_bar->Bind(wxEVT_MOTION, [this](wxMouseEvent& event) { drag_bar_pointer(event); });
+    m_bar->Bind(wxEVT_LEFT_UP, [this](wxMouseEvent&) { end_bar_pointer(); });
+    m_bar->Bind(wxEVT_MOUSE_CAPTURE_LOST, [this](wxMouseCaptureLostEvent&) { end_bar_pointer(); });
+    m_bar->Bind(wxEVT_MOUSEWHEEL, [this](wxMouseEvent& event) {
+        // The themed bar is a sibling of the scroller. Forward the wheel
+        // to the real scrolled window without making the bar part of the
+        // moving content hierarchy.
+        event.Skip(false);
+        wxMouseEvent forwarded(event);
+        forwarded.SetEventObject(m_scroller);
+        m_scroller->GetEventHandler()->ProcessEvent(forwarded);
+    });
 
-        const auto refresh_bar = [this](wxScrollWinEvent& event) {
-            // Read the final scroll position after the native handler runs.
-            m_scroller->CallAfter([this] { update_bar(); });
-            event.Skip();
-        };
-        m_scroller->Bind(wxEVT_SCROLLWIN_TOP, refresh_bar);
-        m_scroller->Bind(wxEVT_SCROLLWIN_BOTTOM, refresh_bar);
-        m_scroller->Bind(wxEVT_SCROLLWIN_LINEUP, refresh_bar);
-        m_scroller->Bind(wxEVT_SCROLLWIN_LINEDOWN, refresh_bar);
-        m_scroller->Bind(wxEVT_SCROLLWIN_PAGEUP, refresh_bar);
-        m_scroller->Bind(wxEVT_SCROLLWIN_PAGEDOWN, refresh_bar);
-        m_scroller->Bind(wxEVT_SCROLLWIN_THUMBTRACK, refresh_bar);
-        m_scroller->Bind(wxEVT_SCROLLWIN_THUMBRELEASE, refresh_bar);
-        m_scroller->Bind(wxEVT_MOUSEWHEEL, [this](wxMouseEvent& event) {
-            m_scroller->CallAfter([this] { update_bar(); });
-            event.Skip();
-        });
-        Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
-            layout_children();
-            event.Skip();
-        });
+    const auto refresh_bar = [this](wxScrollWinEvent& event) {
+        // Read the final scroll position after the native handler runs.
+        m_scroller->CallAfter([this] { update_bar(); });
+        event.Skip();
+    };
+    m_scroller->Bind(wxEVT_SCROLLWIN_TOP, refresh_bar);
+    m_scroller->Bind(wxEVT_SCROLLWIN_BOTTOM, refresh_bar);
+    m_scroller->Bind(wxEVT_SCROLLWIN_LINEUP, refresh_bar);
+    m_scroller->Bind(wxEVT_SCROLLWIN_LINEDOWN, refresh_bar);
+    m_scroller->Bind(wxEVT_SCROLLWIN_PAGEUP, refresh_bar);
+    m_scroller->Bind(wxEVT_SCROLLWIN_PAGEDOWN, refresh_bar);
+    m_scroller->Bind(wxEVT_SCROLLWIN_THUMBTRACK, refresh_bar);
+    m_scroller->Bind(wxEVT_SCROLLWIN_THUMBRELEASE, refresh_bar);
+    m_scroller->Bind(wxEVT_MOUSEWHEEL, [this](wxMouseEvent& event) {
+        m_scroller->CallAfter([this] { update_bar(); });
+        event.Skip();
+    });
+    Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
         layout_children();
+        event.Skip();
+    });
+    layout_children();
+}
+
+wxScrolledWindow* RedesignDetailsViewport::scroller() const { return m_scroller; }
+
+void RedesignDetailsViewport::FitInside()
+{
+    if (auto* details = dynamic_cast<RedesignDetailsContentPanel*>(m_scroller))
+        m_scroller->SetVirtualSize(details->content_size());
+    else {
+        m_scroller->Layout();
+        m_scroller->FitInside();
+    }
+    update_bar();
+}
+
+void RedesignDetailsViewport::SetContentExtent(const wxSize& extent)
+{
+    m_scroller->SetVirtualSize(extent);
+    update_bar();
+}
+
+wxRect RedesignDetailsViewport::thumb_rect() const
+{
+    const int height = m_bar->GetClientSize().y;
+    const int virtual_height = std::max(1, m_scroller->GetVirtualSize().y);
+    const int visible_height = m_scroller->GetClientSize().y;
+    const int thumb_height = std::min(height,
+        std::max(FromDIP(24), height * visible_height / virtual_height));
+    int view_x = 0, view_y = 0, unit_x = 0, unit_y = 0;
+    m_scroller->GetViewStart(&view_x, &view_y);
+    m_scroller->GetScrollPixelsPerUnit(&unit_x, &unit_y);
+    const int range = std::max(1, virtual_height - visible_height);
+    const int top = std::clamp(int(double(view_y) * unit_y * (height - thumb_height) / range),
+                               0, std::max(0, height - thumb_height));
+    return wxRect(FromDIP(3), top, FromDIP(kDetailsScrollbarThumbWidth), thumb_height);
+}
+
+void RedesignDetailsViewport::paint_bar()
+{
+    wxAutoBufferedPaintDC dc(m_bar);
+    dc.SetBackground(wxBrush(m_bar->GetBackgroundColour()));
+    dc.Clear();
+    if (!m_bar->IsShown() || m_scroller->GetVirtualSize().y <= m_scroller->GetClientSize().y)
+        return;
+
+    const auto thumb = thumb_rect();
+    dc.SetPen(*wxTRANSPARENT_PEN);
+    dc.SetBrush(wxBrush(wxColour(105, 105, 112)));
+    dc.DrawRoundedRectangle(thumb, FromDIP(2));
+}
+
+void RedesignDetailsViewport::begin_bar_pointer(wxMouseEvent& event)
+{
+    const auto thumb = thumb_rect();
+    if (thumb.Contains(event.GetPosition())) {
+        m_drag_offset = event.GetY() - thumb.y;
+        m_dragging = true;
+        m_bar->CaptureMouse();
+        m_bar->Refresh(false);
+        return;
     }
 
-    wxScrolledWindow* scroller() const { return m_scroller; }
+    int view_x = 0, view_y = 0, unit_x = 0, unit_y = 0;
+    m_scroller->GetViewStart(&view_x, &view_y);
+    m_scroller->GetScrollPixelsPerUnit(&unit_x, &unit_y);
+    const int page = m_scroller->GetClientSize().y / std::max(1, unit_y);
+    m_scroller->Scroll(view_x, std::max(0, view_y + (event.GetY() < thumb.y ? -page : page)));
+    update_bar();
+}
 
-    void FitInside()
-    {
-        if (auto* details = dynamic_cast<RedesignDetailsContentPanel*>(m_scroller))
-            m_scroller->SetVirtualSize(details->content_size());
-        else {
-            m_scroller->Layout();
-            m_scroller->FitInside();
-        }
-        update_bar();
-    }
+void RedesignDetailsViewport::drag_bar_pointer(wxMouseEvent& event)
+{
+    if (!m_dragging || !m_bar->HasCapture())
+        return;
 
-private:
-    wxRect thumb_rect() const
-    {
-        const int height = m_bar->GetClientSize().y;
-        const int virtual_height = std::max(1, m_scroller->GetVirtualSize().y);
-        const int visible_height = m_scroller->GetClientSize().y;
-        const int thumb_height = std::min(height,
-            std::max(FromDIP(24), height * visible_height / virtual_height));
-        int view_x = 0, view_y = 0, unit_x = 0, unit_y = 0;
-        m_scroller->GetViewStart(&view_x, &view_y);
-        m_scroller->GetScrollPixelsPerUnit(&unit_x, &unit_y);
-        const int range = std::max(1, virtual_height - visible_height);
-        const int top = std::clamp(int(double(view_y) * unit_y * (height - thumb_height) / range),
-                                   0, std::max(0, height - thumb_height));
-        return wxRect(FromDIP(3), top, FromDIP(kDetailsScrollbarThumbWidth), thumb_height);
-    }
+    const int travel = m_bar->GetClientSize().y - thumb_rect().height;
+    int view_x = 0, view_y = 0, unit_x = 0, unit_y = 0;
+    m_scroller->GetViewStart(&view_x, &view_y);
+    m_scroller->GetScrollPixelsPerUnit(&unit_x, &unit_y);
+    const int range = std::max(0, m_scroller->GetVirtualSize().y - m_scroller->GetClientSize().y);
+    const int position = std::clamp(event.GetY() - m_drag_offset, 0, std::max(0, travel));
+    m_scroller->Scroll(view_x, travel > 0 ?
+        int(double(position) * range / travel / std::max(1, unit_y) + .5) : 0);
+    update_bar();
+}
 
-    void paint_bar()
-    {
-        wxAutoBufferedPaintDC dc(m_bar);
-        dc.SetBackground(wxBrush(m_bar->GetBackgroundColour()));
-        dc.Clear();
-        if (!m_bar->IsShown() || m_scroller->GetVirtualSize().y <= m_scroller->GetClientSize().y)
-            return;
-
-        const auto thumb = thumb_rect();
-        dc.SetPen(*wxTRANSPARENT_PEN);
-        dc.SetBrush(wxBrush(wxColour(105, 105, 112)));
-        dc.DrawRoundedRectangle(thumb, FromDIP(2));
-    }
-
-    void begin_bar_pointer(wxMouseEvent& event)
-    {
-        const auto thumb = thumb_rect();
-        if (thumb.Contains(event.GetPosition())) {
-            m_drag_offset = event.GetY() - thumb.y;
-            m_dragging = true;
-            m_bar->CaptureMouse();
-            m_bar->Refresh(false);
-            return;
-        }
-
-        int view_x = 0, view_y = 0, unit_x = 0, unit_y = 0;
-        m_scroller->GetViewStart(&view_x, &view_y);
-        m_scroller->GetScrollPixelsPerUnit(&unit_x, &unit_y);
-        const int page = m_scroller->GetClientSize().y / std::max(1, unit_y);
-        m_scroller->Scroll(view_x, std::max(0, view_y + (event.GetY() < thumb.y ? -page : page)));
-        update_bar();
-    }
-
-    void drag_bar_pointer(wxMouseEvent& event)
-    {
-        if (!m_dragging || !m_bar->HasCapture())
-            return;
-
-        const int travel = m_bar->GetClientSize().y - thumb_rect().height;
-        int view_x = 0, view_y = 0, unit_x = 0, unit_y = 0;
-        m_scroller->GetViewStart(&view_x, &view_y);
-        m_scroller->GetScrollPixelsPerUnit(&unit_x, &unit_y);
-        const int range = std::max(0, m_scroller->GetVirtualSize().y - m_scroller->GetClientSize().y);
-        const int position = std::clamp(event.GetY() - m_drag_offset, 0, std::max(0, travel));
-        m_scroller->Scroll(view_x, travel > 0 ?
-            int(double(position) * range / travel / std::max(1, unit_y) + .5) : 0);
-        update_bar();
-    }
-
-    void end_bar_pointer()
-    {
-        if (m_bar->HasCapture())
-            m_bar->ReleaseMouse();
-        if (m_dragging) {
-            m_dragging = false;
-            m_bar->Refresh(false);
-        }
-    }
-
-    void layout_children()
-    {
-        if (!m_scroller || !m_bar)
-            return;
-        const wxSize size = GetClientSize();
-        const int width = FromDIP(kDetailsScrollbarWidth);
-        // Owner-drawn text has no native gutter. Reserve the themed bar's
-        // strip so the buffered first paint cannot cover its sibling thumb.
-        // Native confirmation text retains its existing gutter overlay.
-        const bool draws_details = dynamic_cast<RedesignDetailsContentPanel*>(m_scroller) != nullptr;
-        m_scroller->SetSize(0, 0, std::max(0, size.x - (draws_details ? width : 0)), std::max(0, size.y));
-        m_bar->SetSize(std::max(0, size.x - width), 0, width, std::max(0, size.y));
-        m_bar->Raise();
-        update_bar();
-    }
-
-    void update_bar()
-    {
-        if (!m_bar || !m_scroller)
-            return;
-        m_bar->Show(m_scroller->GetVirtualSize().y > m_scroller->GetClientSize().y);
-        m_bar->Raise();
+void RedesignDetailsViewport::end_bar_pointer()
+{
+    if (m_bar->HasCapture())
+        m_bar->ReleaseMouse();
+    if (m_dragging) {
+        m_dragging = false;
         m_bar->Refresh(false);
     }
+}
 
-    wxScrolledWindow* m_scroller {nullptr};
-    wxPanel* m_bar {nullptr};
-    int m_drag_offset {0};
-    bool m_dragging {false};
-};
+void RedesignDetailsViewport::layout_children()
+{
+    if (!m_scroller || !m_bar)
+        return;
+    const wxSize size = GetClientSize();
+    const int width = FromDIP(kDetailsScrollbarWidth);
+    // Owner-drawn text has no native gutter. Reserve the themed bar's
+    // strip so the buffered first paint cannot cover its sibling thumb.
+    // Native confirmation text retains its existing gutter overlay.
+    const bool draws_details = dynamic_cast<RedesignDetailsContentPanel*>(m_scroller) != nullptr;
+    m_scroller->SetSize(0, 0, std::max(0, size.x - (draws_details ? width : 0)), std::max(0, size.y));
+    m_bar->SetSize(std::max(0, size.x - width), 0, width, std::max(0, size.y));
+    m_bar->Raise();
+    update_bar();
+}
+
+void RedesignDetailsViewport::update_bar()
+{
+    if (!m_bar || !m_scroller)
+        return;
+    m_bar->Show(m_scroller->GetVirtualSize().y > m_scroller->GetClientSize().y);
+    m_bar->Raise();
+    m_bar->Refresh(false);
+}
+
 
 namespace {
 
@@ -298,12 +296,15 @@ constexpr int kCornerRadius = 10;
 class DialogStatusIcon final : public wxPanel
 {
 public:
-    DialogStatusIcon(wxWindow* parent, bool warning)
+    enum class Kind { Question, Warning, Information };
+
+    DialogStatusIcon(wxWindow* parent, Kind kind)
         : wxPanel(parent, wxID_ANY, wxDefaultPosition, parent->FromDIP(wxSize(36, 36)), wxBORDER_NONE)
-        , m_warning(warning)
+        , m_kind(kind)
     {
         SetMinSize(FromDIP(wxSize(36, 36)));
         SetMaxSize(FromDIP(wxSize(36, 36)));
+        SetBackgroundColour(RedesignTheme::panel_colour());
         SetBackgroundStyle(wxBG_STYLE_PAINT);
         Bind(wxEVT_PAINT, [this](wxPaintEvent&) { paint(); });
     }
@@ -318,7 +319,7 @@ private:
     void paint()
     {
         wxAutoBufferedPaintDC dc(this);
-        dc.SetBackground(wxBrush(RedesignTheme::panel_colour()));
+        dc.SetBackground(wxBrush(GetBackgroundColour()));
         dc.Clear();
         const wxSize size = GetClientSize();
         if (size.x <= 0 || size.y <= 0)
@@ -327,7 +328,7 @@ private:
         auto gc = std::unique_ptr<wxGraphicsContext>(wxGraphicsContext::Create(dc));
         if (!gc)
             return;
-        const wxColour accent = m_warning ? wxColour(235, 174, 78) : RedesignTheme::accent_colour();
+        const wxColour accent = m_kind == Kind::Warning ? wxColour(235, 174, 78) : RedesignTheme::accent_colour();
         gc->SetBrush(wxBrush(accent));
         gc->SetPen(*wxTRANSPARENT_PEN);
         gc->DrawEllipse(0, 0, size.x, size.y);
@@ -339,12 +340,12 @@ private:
             info.FaceName(family);
         dc.SetFont(wxFont(info));
         dc.SetTextForeground(wxColour(25, 25, 27));
-        const wxString glyph = m_warning ? "!" : "?";
+        const wxString glyph = m_kind == Kind::Warning ? "!" : m_kind == Kind::Information ? "i" : "?";
         const wxSize extent = dc.GetTextExtent(glyph);
         dc.DrawText(glyph, (size.x - extent.x) / 2, (size.y - extent.y) / 2);
     }
 
-    bool m_warning { false };
+    Kind m_kind;
 };
 
 }
@@ -559,10 +560,15 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
 {
     m_inline_confirmation_footer = inline_confirmation_footer;
     const bool design = appearance == Appearance::GenerationConfirmation;
-    const bool compact = appearance != Appearance::Standard;
-    m_dialog_width = design ? 480 : compact ? 400 : 560;
-    m_message_width = design ? 432 : compact ? 352 : 408;
-    m_message_min_height = design ? std::max(0, minimum_message_height) : -1;
+    const bool settings = appearance == Appearance::Settings;
+    const bool compact = !settings && appearance != Appearance::Standard;
+    m_dialog_width = settings ? 520 : design ? 480 : compact ? 400 : 560;
+    m_message_width = settings ? 420 : design ? 432 : compact ? 352 : 408;
+    m_message_min_height = settings ? 0 : design ? std::max(0, minimum_message_height) : -1;
+    if (settings) {
+        m_fit_message_to_content = true;
+        m_maximum_message_height = 220;
+    }
     m_cancel_result = redesign_dialog_dismiss_result(style);
     m_default_result = redesign_dialog_default_result(style);
     const int action_count = actions.empty() ? int(bool(style & wxYES)) + int(bool(style & wxNO)) +
@@ -571,7 +577,8 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
     m_stacked_actions = design && action_count > 2;
     // Opaque dark-glass face keeps native text crisp; only the separate backdrop
     // dims the workspace, never the dialog controls themselves.
-    SetBackgroundColour(design ? wxColour(53, 53, 55) : RedesignTheme::panel_colour());
+    SetBackgroundColour(design ? wxColour(53, 53, 55) :
+        settings ? RedesignTheme::background_colour() : RedesignTheme::panel_colour());
     if (design) {
         SetName("generation-confirmation");
         SetBackgroundStyle(wxBG_STYLE_PAINT);
@@ -607,15 +614,23 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
     title_sizer->Add(m_close_button, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(design ? 20 : 10));
     root->Add(m_title_bar, 0, wxEXPAND | (design ? wxLEFT | wxRIGHT | wxTOP : 0), design ? FromDIP(1) : 0);
 
-    auto* divider = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxSize(-1, FromDIP(1)), wxBORDER_NONE);
-    divider->SetBackgroundColour(RedesignTheme::divider_colour());
-    if (!compact && !inline_confirmation_footer) root->Add(divider, 0, wxEXPAND);
-    else divider->Hide();
+    if (!settings && !compact && !inline_confirmation_footer) {
+        auto* divider = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxSize(-1, FromDIP(1)), wxBORDER_NONE);
+        divider->SetBackgroundColour(RedesignTheme::divider_colour());
+        root->Add(divider, 0, wxEXPAND);
+    }
 
     auto* content_sizer = new wxBoxSizer(wxHORIZONTAL);
-    m_icon = new DialogStatusIcon(this, (style & wxICON_WARNING) != 0);
-    if (!compact) content_sizer->Add(m_icon, 0, wxTOP, FromDIP(2));
-    else m_icon->Hide();
+    const auto icon_kind = (style & wxICON_WARNING) ? DialogStatusIcon::Kind::Warning :
+        settings && (style & wxICON_INFORMATION) ? DialogStatusIcon::Kind::Information : DialogStatusIcon::Kind::Question;
+    m_icon = new DialogStatusIcon(this, icon_kind);
+    if (settings) {
+        m_icon->SetBackgroundColour(GetBackgroundColour());
+        content_sizer->Add(m_icon, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(16));
+    } else if (!compact)
+        content_sizer->Add(m_icon, 0, wxTOP, FromDIP(2));
+    else
+        m_icon->Hide();
     const bool owner_drawn_details = scroll_message && m_content_mode == ContentMode::OwnerDrawnDetails;
     if (owner_drawn_details) {
         const wxColour viewport_colour = RedesignTheme::panel_colour();
@@ -667,8 +682,12 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
             m_fit_message_to_content ? m_message_view_height :
                 std::min(m_message_window->GetBestSize().y, FromDIP(240))));
         content_sizer->Add(scroll_host, 1, wxEXPAND);
-    } else content_sizer->Add(m_message_window, 1, wxLEFT, FromDIP(compact ? 0 : 16));
-    root->AddSpacer(FromDIP(compact ? 8 : 24));
+    } else if (settings) {
+        content_sizer->Add(m_message_window, 1, wxALIGN_CENTER_VERTICAL);
+    } else {
+        content_sizer->Add(m_message_window, 1, wxLEFT, FromDIP(compact ? 0 : 16));
+    }
+    root->AddSpacer(FromDIP(settings ? 16 : compact ? 8 : 24));
     root->Add(content_sizer, m_message_view ? 1 : 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(24));
     if (!checkbox_label.empty()) {
         m_checkbox = new wxCheckBox(this, wxID_ANY, checkbox_label);
@@ -678,6 +697,10 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
             root->Add(m_checkbox, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(24));
     }
 
+    if (design) {
+        m_confirmation_content = new wxBoxSizer(wxVERTICAL);
+        root->Add(m_confirmation_content, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(24));
+    }
     m_action_sizer = new wxBoxSizer(m_stacked_actions ? wxVERTICAL : wxHORIZONTAL);
     if ((!compact || design) && !m_stacked_actions && !inline_confirmation_footer) m_action_sizer->AddStretchSpacer(1);
     if (!actions.empty()) {
@@ -773,7 +796,7 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
 void RedesignMessageDialog::add_action_button(wxWindowID id, const wxString& label, bool primary)
 {
     const bool design = m_appearance == Appearance::GenerationConfirmation;
-    const bool compact = m_appearance != Appearance::Standard;
+    const bool compact = m_appearance != Appearance::Standard && m_appearance != Appearance::Settings;
     auto* button = new RedesignDialogActionButton(this, id, label, primary,
         m_stacked_actions ? 432 : design ? 200 : compact ? 170 : m_inline_confirmation_footer ? 96 : 112,
         design, m_action_point_size);
@@ -794,6 +817,25 @@ void RedesignMessageDialog::enable_action(wxWindowID id, bool enabled)
 {
     for (auto* button : m_action_buttons)
         if (button->GetId() == id) { button->Enable(enabled); button->Refresh(false); }
+}
+
+void RedesignMessageDialog::set_confirmation_content(wxWindow* content, std::function<bool()> before_confirm)
+{
+    if (!m_confirmation_content || !content || content->GetParent() != this) return;
+    m_confirmation_content->Add(content, 1, wxEXPAND);
+    m_before_confirm = std::move(before_confirm);
+    GetSizer()->SetSizeHints(this); Layout(); update_shape(); CentreOnParent();
+}
+
+void RedesignMessageDialog::fit_confirmation_content()
+{
+    if (!m_confirmation_content || !GetSizer()) return;
+    const auto size = GetSizer()->GetMinSize();
+    GetSizer()->SetSizeHints(this);
+    SetClientSize(wxSize(std::max(GetClientSize().x, size.x), size.y));
+    Layout();
+    update_shape();
+    CentreOnParent();
 }
 
 bool RedesignMessageDialog::checkbox_checked() const
@@ -829,6 +871,7 @@ void RedesignMessageDialog::bind_title_drag(wxWindow* window)
 
 void RedesignMessageDialog::finish_with(int result)
 {
+    if (result == wxID_YES && m_before_confirm && !m_before_confirm()) return;
     if (IsModal())
         EndModal(result);
     else {
@@ -853,7 +896,8 @@ void RedesignMessageDialog::fit_message_layout()
         ? (m_details_viewport ? static_cast<wxWindow*>(m_details_viewport) :
                               static_cast<wxWindow*>(m_message_view))
         : m_message_window;
-    int viewport_height = std::max(FromDIP(48), m_message_view_height);
+    const int minimum_height = m_appearance == Appearance::Settings && !m_message_view ? 1 : FromDIP(48);
+    int viewport_height = std::max(minimum_height, m_message_view_height);
     scroll_host->SetMinSize(wxSize(FromDIP(m_message_view ? m_message_width : message_text_width()), viewport_height));
 
     const int dialog_width = m_inline_confirmation_footer
@@ -939,7 +983,7 @@ void RedesignMessageDialog::wrap_message()
     if (!m_message)
         return;
     m_message->SetLabel(m_original_message);
-    if (m_appearance == Appearance::GenerationConfirmation) {
+    if (m_appearance == Appearance::GenerationConfirmation || m_appearance == Appearance::Settings) {
         // wxStaticText::Wrap cannot break a filename without spaces and can
         // discard following lines. Reuse Orca's CJK/long-word wrapping instead.
         wxClientDC dc(m_message);

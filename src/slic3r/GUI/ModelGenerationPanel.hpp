@@ -13,6 +13,7 @@
 #include "AI/ModelGeneration/ModelLibraryApplication.hpp"
 #include "AI/ModelGeneration/ModelLibraryLoader.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationHost.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/GenerationActionFeedback.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp"
 #include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
 #include "slic3r/AI/Contracts/IPrintablePaletteProvider.hpp"
@@ -122,14 +123,14 @@ public:
     void finish_history_model_open(bool accepted, std::function<void()> complete = {});
     void set_ui_state_listener(ModelGenerationUIStateListener listener);
     ModelGenerationUIState ui_state_snapshot() const { return m_ui_state; }
-    bool synchronize_ui_input(const ModelGenerationUIInput& input);
-    bool synchronize_ui_options(const ModelGenerationUIOptions& options);
+    bool synchronize_ui_input(const ModelGenerationUIInput& input, GenerationRejected rejected = {});
+    bool synchronize_ui_options(const ModelGenerationUIOptions& options, GenerationRejected rejected = {});
     void get_provider_catalog(const std::string& role, const std::string& provider,
                               AIModelGenerationClient::CatalogFn on_complete,
                               AIModelGenerationClient::ErrorFn on_error);
     ModelGenerationSubmissionResult request_generate_design();
     ModelGenerationSubmissionResult request_generate_model();
-    bool request_generate_smart();
+    bool request_generate_smart(GenerationRejected rejected = {});
     bool request_retry_model();
     bool request_stop();
     bool request_retry_service();
@@ -194,7 +195,8 @@ public:
     void set_project_filament_delete_handler(std::function<void(size_t)> handler)
     { m_project_filament_delete = std::move(handler); }
     void set_project_color_sync_suspended(bool suspended);
-    void synchronize_workbench_project_palette(bool activate_preview = false);
+    void synchronize_workbench_project_palette(bool activate_preview = false, bool printer_switched = false);
+    bool settings_printer_switch_blocked() const;
 
 private:
     friend class ModelGenerationFeatureHost;
@@ -461,6 +463,9 @@ private:
     void clear_selected_image();
     void publish_ui_state();
     bool can_generate_design_from_shell() const;
+    bool design_generation_busy() const;
+    std::string smart_generation_rejection() const;
+    std::string generation_provider_rejection(const std::string& role) const;
     void initialize_page(bool require_visible);
     void on_first_visible_idle(wxIdleEvent& event);
     void build_page();

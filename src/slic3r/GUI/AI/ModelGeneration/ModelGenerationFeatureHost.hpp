@@ -2,6 +2,7 @@
 
 #include "slic3r/GUI/AIModelGenerationClient.hpp"
 #include "ModelGenerationHost.hpp"
+#include "GenerationActionFeedback.hpp"
 #include "ModelGenerationSubmissionResult.hpp"
 #include "PostGenerationWorkbenchState.hpp"
 #include "WorkbenchImportSession.hpp"
@@ -40,6 +41,8 @@ public:
     void set_creation_workflow_listener(std::function<void()> listener);
     void set_import_navigation_guard(std::function<std::function<bool()>()> capture);
     bool can_replace_asset() const;
+    bool settings_printer_switch_blocked() const;
+    void settings_printer_switch_applied();
     ~ModelGenerationFeatureHost();
 
     ModelGenerationFeatureHost(const ModelGenerationFeatureHost&) = delete;
@@ -57,14 +60,14 @@ public:
     void finish_history_model_open(bool accepted, std::function<void()> complete = {});
     ModelGenerationUIState snapshot() const;
     void set_state_listener(ModelGenerationUIStateListener listener);
-    bool synchronize_input(const ModelGenerationUIInput& input);
-    bool synchronize_options(const ModelGenerationUIOptions& options);
+    bool synchronize_input(const ModelGenerationUIInput& input, GenerationRejected rejected = {});
+    bool synchronize_options(const ModelGenerationUIOptions& options, GenerationRejected rejected = {});
     void get_provider_catalog(const std::string& role, const std::string& provider,
                               AIModelGenerationClient::CatalogFn on_complete,
                               AIModelGenerationClient::ErrorFn on_error);
     ModelGenerationSubmissionResult request_generate_design();
     ModelGenerationSubmissionResult request_generate_model();
-    bool request_generate_smart();
+    bool request_generate_smart(GenerationRejected rejected = {});
     bool request_retry_model();
     bool request_stop();
     bool request_retry_service();

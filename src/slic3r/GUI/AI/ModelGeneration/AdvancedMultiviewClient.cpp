@@ -9,6 +9,60 @@
 #include <cctype>
 
 namespace Slic3r::GUI {
+bool AdvancedMultiviewClient::design_plan_matches(const Json& plan, const Json& request, const std::string& group,
+                                                 const std::vector<AdvancedCreation::ViewId>& targets)
+{
+    try {
+        const auto& intent = request.at("design_request");
+        auto expected = Json::array();
+        for (auto view : targets) expected.push_back(AdvancedCreation::view_name(view));
+        if (plan.at("id") != request.at("command_id") || plan.at("group_id") != group ||
+            plan.at("kind") != request.at("kind") || plan.at("expected_group_revision") != request.at("expected_group_revision") ||
+            plan.at("design_request") != intent || plan.at("targets") != expected) return false;
+        if (intent.at("scope") != "single_view") return intent.at("scope") == "all_inputs";
+        const auto target = intent.at("target_view").get<std::string>();
+        const auto& modes = plan.at("target_modes"); const auto& bases = plan.at("base_versions");
+        return expected == Json::array({target}) && plan.at("dependency_views").is_array() &&
+            plan.at("dependency_views").empty() && modes.is_object() && modes.size() == 1 && modes.contains(target) &&
+            bases.is_object() && bases.size() == 1 && bases.contains(target) &&
+            bases.at(target) == request.at("base_versions").at(target) &&
+            modes.at(target) == (bases.at(target).is_null() ? "initial" : "edit") &&
+            plan.at("max_new_image_calls").is_number_integer() && plan.at("max_new_image_calls").get<int>() >= 0 &&
+            plan.at("max_new_image_calls").get<int>() <= 1 && plan.at("max_new_model_tasks") == 0;
+    } catch (const Json::exception&) { return false; }
+}
+
+bool AdvancedMultiviewClient::model_plan_matches(const Json& plan, const Json& request, const std::string& group)
+{
+    try {
+        const auto& selected = request.at("selected_views");
+        const auto& snapshot = plan.at("approved_multiview_snapshot");
+        const auto& options = plan.at("options");
+        if (plan.at("schema") != selected_plan_schema || request.at("schema") != selected_plan_schema ||
+            plan.at("id") != request.at("command_id") || plan.at("job_id") != request.at("command_id") ||
+            plan.at("group_id") != group ||
+            snapshot.at("schema") != "approved-multiview-input-v2" || snapshot.at("group_id") != group ||
+            snapshot.at("snapshot_id") != request.at("command_id") || snapshot.at("selected_views") != selected ||
+            !valid_id(snapshot.at("input_epoch").get<std::string>()) ||
+            snapshot.at("input_mode") != (selected.size() == 1 ? "image" : "multiview") ||
+            !snapshot.at("views").is_object() || snapshot.at("views").size() != selected.size()) return false;
+        for (const auto& view : selected) {
+            const auto name = view.get<std::string>();
+            const auto& visible = request.at("visible_versions").at(name);
+            if (snapshot.at("views").at(name) != Json {{"version_id", visible.at("version_id")},
+                {"sha256", visible.at("sha256")}, {"path", "inputs/" + name + ".png"}}) return false;
+        }
+        for (const auto* key : {"provider", "face_limit", "geometry_quality", "texture_quality", "output_format"})
+            if (options.at(key) != request.at(key)) return false;
+        const auto model = options.at("geometry_model").get<std::string>();
+        if (model.empty() || (!request.at("geometry_model").get<std::string>().empty() &&
+            options.at("geometry_model") != request.at("geometry_model"))) return false;
+        return plan.at("max_new_image_calls") == 0 && plan.at("max_new_model_tasks") == 1 &&
+            plan.at("max_new_conversion_tasks") == (options.at("output_format") == "obj" ? 1 : 0) &&
+            plan.at("confirmation_fingerprint").get<std::string>().size() == 64;
+    } catch (const Json::exception&) { return false; }
+}
+
 namespace {
 const std::string prefix = "/v1/orcaslicer/advanced-multiview";
 
@@ -139,6 +193,11 @@ void AdvancedMultiviewClient::update_group(const std::string& group_id, std::uin
     if (!valid_id(group_id)) { if (error) error("The group identity is invalid."); return; }
     auto payload = design_json(draft.design);
     payload["expected_group_revision"] = std::to_string(expected_revision);
+    auto replaced = Json::array();
+    for (auto view : AdvancedCreation::AllViews)
+        if (draft.replaced_uploads[AdvancedCreation::index(view)] && !draft.uploads[AdvancedCreation::index(view)].empty())
+            replaced.push_back(AdvancedCreation::view_name(view));
+    payload["replaced_views"] = replaced.dump();
     auto http = Http::post(m_endpoint + prefix + "/groups/" + group_id + "/inputs");
     for (auto field = payload.begin(); field != payload.end(); ++field)
         http.form_add(field.key(), field.value().get<std::string>());
@@ -223,6 +282,16 @@ std::optional<AdvancedCreation::GroupSnapshot> AdvancedMultiviewClient::parse_gr
         result.input_epoch = value.at("input_epoch").get<std::string>();
         if (!valid_id(result.id) || !valid_id(result.input_epoch) || !value.at("revision").is_number_unsigned()) return {};
         result.revision = value.at("revision").get<std::uint64_t>();
+        if (value.contains("design_targets")) {
+            if (!value["design_targets"].is_array()) return {};
+            result.design_targets.fill(false);
+            for (const auto& name : value["design_targets"]) {
+                if (!name.is_string()) return {};
+                const auto direction = parse_view(name.get<std::string>());
+                if (!direction || result.design_targets[index(*direction)]) return {};
+                result.design_targets[index(*direction)] = true;
+            }
+        }
         if (value.contains("pending_views")) {
             if (!value["pending_views"].is_array()) return {};
             for (const auto& name : value["pending_views"]) {

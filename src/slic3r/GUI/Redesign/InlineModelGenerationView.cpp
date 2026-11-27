@@ -510,6 +510,7 @@ void InlineModelGenerationView::apply_snapshot(const GenerationBinding& binding,
     if (m_impl->closing) return;
     const auto generation = m_impl->state.generation();
     const bool ready_before = ready();
+    const bool loading_before = loading();
     const auto stage_before = m_impl->state.snapshot().stage;
     const bool content_before = has_content();
     std::optional<InlineModelArtifact> model;
@@ -550,7 +551,7 @@ void InlineModelGenerationView::apply_snapshot(const GenerationBinding& binding,
                 << " generation=" << m_impl->state.generation();
     }
     m_impl->refresh.request(Presentation::Dirty::Content);
-    if (ready_before != ready()) m_impl->changed();
+    if (ready_before != ready() || loading_before != loading()) m_impl->changed();
     if (content_handoff) {
         // Hide/Show on native siblings can expose their parent before buffered
         // feedback is painted. Complete this local handoff before returning.
@@ -594,6 +595,7 @@ void InlineModelGenerationView::invalidate_context() {
 }
 bool InlineModelGenerationView::has_content() const { return m_impl->state.has_content(); }
 bool InlineModelGenerationView::ready() const { return m_impl->state.ready(); }
+bool InlineModelGenerationView::loading() const { return m_impl->state.loading(); }
 std::optional<WorkbenchOpenRequest> InlineModelGenerationView::displayed_artifact() const {
     return ready() ? std::optional<WorkbenchOpenRequest>(m_impl->state.artifact()->request) : std::nullopt;
 }

@@ -106,6 +106,858 @@ class MultiviewTests(unittest.TestCase):
         self.drain()
         return self.repository.load(group["id"]), plan
 
+    def scoped_plan(self, group, view=None, local_prompt="", **fields):
+        intent = {"version": 1, "scope": "all_inputs"} if view is None else {
+            "version": 1, "scope": "single_view", "target_view": view, "local_prompt": local_prompt}
+        return self.plan(group, "edit", **{**group["saved_draft"],
+            "design_request": intent, "target_views": [view] if view else ["front"],
+            "base_versions": {v: group["views"][v]["current_version_id"] for v in VIEWS}, **fields})
+
+    def test_full_input_scope_ignores_old_repaint_selection_for_text_and_image_subsets(self):
+        subsets = [None] + [
+            {view: png(("navy", "red", "green", "yellow")[i]) for i, view in enumerate(VIEWS)
+             if i == 0 or mask & (1 << (i - 1))} for mask in range(8)]
+        for provider in ("gpt", "yoyoclaw"):
+            for images in subsets:
+                with self.subTest(provider=provider, images=list(images or {})):
+                    group = self.create(images, design_provider=provider,
+                                        design_model=QWEN_IMAGE if provider == "yoyoclaw" else "")
+                    self.execute(self.plan(group)); self.drain()
+                    group = self.repository.load(group["id"])
+                    plan = self.scoped_plan(group)
+                    expected = list(images) if images else list(VIEWS)
+                    self.assertEqual(plan["targets"], expected)
+                    self.requests.clear()
+                    self.execute(plan); self.drain()
+                    self.assertEqual([r.view for r in self.requests], expected)
+
+    def test_local_edits_preserve_global_baseline_other_views_and_pending_work_for_both_image_providers(self):
+        for provider in ("gpt", "yoyoclaw"):
+            for view in VIEWS:
+                with self.subTest(provider=provider, view=view):
+                    group = self.create(design_provider=provider,
+                                        design_model=QWEN_IMAGE if provider == "yoyoclaw" else "")
+                    self.execute(self.plan(group)); self.drain()
+                    group = self.repository.load(group["id"])
+                    group = self.application.save_draft(group["id"], {
+                        "expected_group_revision": group["revision"],
+                        "draft": {**group["saved_draft"], "style": "cartoon", "prompt": "global blue"}})
+                    before = deepcopy(group)
+                    plan = self.scoped_plan(group, view, "local red")
+                    self.assertEqual(plan["targets"], [view])
+                    self.assertEqual(plan["dependency_views"], [])
+                    self.assertEqual(plan["max_new_image_calls"], 1)
+                    self.requests.clear()
+                    self.execute(plan); self.drain()
+                    current = self.repository.load(group["id"])
+                    self.assertEqual(len(self.requests), 1)
+                    request = self.requests[0]
+                    self.assertEqual(request.view, view)
+                    self.assertEqual(request.prompt, "global blue")
+                    self.assertEqual(request.local_prompt, "local red")
+                    self.assertEqual(request.references[0][0], view + "_design")
+                    self.assertEqual(request.style, "cartoon")
+                    for field in ("saved_draft", "latest_submitted_draft", "initial_input"):
+                        self.assertEqual(current[field], before[field])
+                    self.assertEqual(current["pending_views"], [v for v in VIEWS if v != view])
+                    for other in VIEWS:
+                        if other != view:
+                            self.assertEqual(current["views"][other], before["views"][other])
+                    operation = self.application.operation(group["id"], plan["id"])
+                    self.assertEqual(operation["design_request"], plan["design_request"])
+                    version = self.repository.version(group["id"], view, current["views"][view]["current_version_id"])
+                    self.assertEqual(version["operation_id"], operation["id"])
+
+    def test_empty_local_description_is_a_single_regeneration_and_does_not_rewrite_global_draft(self):
+        group, _ = self.initial()
+        before = deepcopy(group)
+        plan = self.scoped_plan(group, "right", "")
+        self.requests.clear(); self.execute(plan); self.drain()
+        self.assertEqual([r.view for r in self.requests], ["right"])
+        self.assertEqual(self.requests[0].local_prompt, "")
+        self.assertEqual(self.repository.load(group["id"])["latest_submitted_draft"], before["latest_submitted_draft"])
+
+    def test_local_plan_echo_preserves_whitespace_while_blank_requirements_remain_a_regeneration(self):
+        group, _ = self.initial()
+        for local in ("  a local change\n", " \n "):
+            with self.subTest(local=local):
+                plan = self.scoped_plan(group, "front", local)
+                self.assertEqual(plan["design_request"]["local_prompt"], local)
+                self.requests.clear(); self.execute(plan); self.drain()
+                self.assertEqual(len(self.requests), 1)
+                self.assertEqual(self.requests[0].local_prompt, local)
+                group = self.repository.load(group["id"])
+        with self.assertRaises(RequestError):
+            self.scoped_plan(group, "front", " " * 2001)
+
+    def test_local_description_has_its_own_utf8_byte_limit(self):
+        group, _ = self.initial()
+        for text in ("a" * 2000, "字" * 666 + "ab", "😀" * 500):
+            with self.subTest(bytes=len(text.encode("utf-8"))):
+                self.assertEqual(self.scoped_plan(group, "front", text)["design_request"]["local_prompt"], text)
+                with self.assertRaises(RequestError):
+                    self.scoped_plan(group, "front", text + "a")
+        self.assertEqual(self.queue, [])
+
+    def test_orphan_local_acceptance_recovery_preserves_global_baseline_without_buying_a_new_image(self):
+        for provider in ("gpt", "yoyoclaw"):
+            with self.subTest(provider=provider):
+                group = self.create(design_provider=provider,
+                                    design_model=QWEN_IMAGE if provider == "yoyoclaw" else "")
+                self.execute(self.plan(group)); self.drain()
+                group = self.repository.load(group["id"])
+                group = self.application.save_draft(group["id"], {
+                    "expected_group_revision": group["revision"],
+                    "draft": {**group["saved_draft"], "prompt": "unsubmitted global description"}})
+                before = deepcopy(group)
+                plan = self.scoped_plan(group, "right", "only this local description")
+                self.requests.clear()
+                with mock.patch.object(self.repository, "save", side_effect=RequestError("persistence_failed", "full", 503)):
+                    with self.assertRaises(RequestError):
+                        self.execute(plan)
+                self.assertEqual(self.queue, [])
+                self.workflow.recover_interrupted(group["id"], expected_operation=plan["id"])
+                restored = self.repository.load(group["id"])
+                for field in ("saved_draft", "latest_submitted_draft", "initial_input", "pending_views"):
+                    self.assertEqual(restored[field], before[field])
+                self.assertEqual(self.requests, [])
+                self.assertIsNone(restored["active_operation_id"])
+                operation = self.application.operation(group["id"], plan["id"])
+                self.assertEqual(operation["state"], "stopped")
+                self.assertEqual(list(operation["attempts"]), ["right"])
+                self.assertEqual(operation["design_request"], plan["design_request"])
+                for view in VIEWS:
+                    self.assertEqual(restored["views"][view]["current_version_id"], before["views"][view]["current_version_id"])
+
+    def test_invalid_design_scopes_and_local_target_mismatches_never_schedule_generation(self):
+        group, _ = self.initial()
+        for intent in (None, {}, {"version": True, "scope": "all_inputs"},
+                       {"version": 2, "scope": "all_inputs"}, {"version": 1, "scope": []},
+                       {"version": 1, "scope": "all_inputs", "local_prompt": ""},
+                       {"version": 1, "scope": "single_view", "target_view": "top", "local_prompt": ""},
+                       {"version": 1, "scope": "single_view", "target_view": "left", "local_prompt": 1}):
+            with self.subTest(intent=intent), self.assertRaises(RequestError):
+                self.scoped_plan(group, "left", design_request=intent)
+        for selected in ([], ["front"], ["left", "back"], ["left", "left"]):
+            with self.subTest(selected=selected), self.assertRaises(RequestError):
+                self.scoped_plan(group, "left", target_views=selected)
+        self.assertEqual(self.queue, [])
+
+    def test_local_generation_requires_initial_acceptance_card_state_and_resolved_receipts(self):
+        group = self.create()
+        with self.assertRaises(RequestError):
+            self.scoped_plan(group, "front")
+        group, _ = self.initial({"front": png(), "right": png("red")})
+        with self.assertRaises(RequestError) as error:
+            self.scoped_plan(group, "left")
+        self.assertEqual(error.exception.code, "missing_current_view")
+        def preserve_obtained_result(_request, output):
+            output.write_bytes(png("navy"))
+            raise ProviderGatewayError("interrupted", code="timeout", category="availability", ambiguous=True)
+
+        self.workflow.generate_image = preserve_obtained_result
+        self.execute(self.scoped_plan(group, "right")); self.drain()
+        group = self.repository.load(group["id"])
+        self.assertEqual(group["views"]["right"]["latest_attempt"]["state"], "result_pending")
+        with self.assertRaises(RequestError) as error:
+            self.scoped_plan(group, "front")
+        self.assertEqual(error.exception.code, "provider_task_ambiguous")
+        with self.assertRaises(RequestError) as error:
+            self.scoped_plan(group)
+        self.assertEqual(error.exception.code, "provider_task_ambiguous")
+
+    def test_local_edits_and_failed_cards_can_use_a_reference_outside_the_bulk_target_set(self):
+        self.failure["left"] = ProviderGatewayError("rejected", code="rejected", category="request")
+        group, _ = self.initial()
+        self.failure.clear()
+        group = self.application.update_inputs(group["id"], {
+            **group["saved_draft"], "expected_group_revision": group["revision"],
+        }, {"front": png("purple")})
+        for target, role in (("right", "right_design"), ("left", "front_upload")):
+            with self.subTest(target=target):
+                self.assertIsNone(group["uploads"][target])
+                self.assertEqual(self.scoped_plan(group)["targets"], ["front"])
+                plan = self.scoped_plan(group, target, "Improve only this direction")
+                self.assertEqual(plan["targets"], [target])
+                self.assertEqual(plan["dependency_views"], [])
+                self.assertEqual(plan["max_new_image_calls"], 1)
+                before = group
+                self.requests.clear()
+                self.execute(plan); self.drain()
+                self.assertEqual([request.view for request in self.requests], [target])
+                self.assertEqual(self.requests[0].references[0][0], role)
+                group = self.repository.load(group["id"])
+                self.assertNotEqual(group["views"][target]["current_version_id"], before["views"][target]["current_version_id"])
+                for view in VIEWS:
+                    if view != target:
+                        self.assertEqual(group["views"][view], before["views"][view])
+                self.assertEqual(group["pending_views"], before["pending_views"])
+                self.assertEqual(group["latest_submitted_draft"], before["latest_submitted_draft"])
+
+    def test_failed_text_card_can_retry_alone_with_no_main_anchor(self):
+        self.failure["front"] = ProviderGatewayError("rejected", code="rejected", category="request")
+        group, _ = self.initial()
+        self.failure.clear()
+        self.assertEqual(self.scoped_plan(group, "left")["targets"], ["left"])
+        group = self.application.save_draft(group["id"], {
+            "expected_group_revision": group["revision"], "draft": {**group["saved_draft"], "prompt": ""},
+        })
+        with self.assertRaises(RequestError) as error:
+            self.scoped_plan(group, "left")
+        self.assertEqual(error.exception.code, "empty_input")
+        plan = self.scoped_plan(group, "left", "Render the left profile")
+        self.assertEqual(plan["dependency_views"], [])
+        self.requests.clear(); self.execute(plan); self.drain()
+        self.assertEqual([r.view for r in self.requests], ["left"])
+        self.assertTrue(self.requests[0].initial)
+        self.assertEqual(self.requests[0].references, ())
+        group = self.repository.load(group["id"])
+        self.assertIsNone(group["views"]["front"]["current_version_id"])
+        self.assertIsNone(group["views"]["back"]["current_version_id"])
+        # Once a design exists, its base alone is sufficient for a one-view edit.
+        plan = self.scoped_plan(group, "left")
+        self.requests.clear(); self.execute(plan); self.drain()
+        self.assertEqual([r.view for r in self.requests], ["left"])
+        self.assertEqual(self.requests[0].references[0][0], "left_design")
+
+    def test_local_retry_inherits_scope_and_text_and_never_merges_other_pending_targets(self):
+        group, _ = self.initial()
+        group = self.application.save_draft(group["id"], {"expected_group_revision": group["revision"],
+            "draft": {**group["saved_draft"], "style": "cartoon"}})
+        self.failure["front"] = ProviderGatewayError("rejected", code="rejected", category="request")
+        plan = self.scoped_plan(group, "front", "only this")
+        self.execute(plan); self.drain()
+        self.failure.clear()
+        current = self.repository.load(group["id"])
+        retry = self.plan(current, "retry", operation_id=plan["id"], target_views=["front"])
+        self.assertEqual(retry["targets"], ["front"])
+        self.assertEqual(retry["design_request"], plan["design_request"])
+        self.requests.clear(); self.execute(retry); self.drain()
+        self.assertEqual([r.view for r in self.requests], ["front"])
+        self.assertEqual(self.requests[0].local_prompt, "only this")
+        self.assertEqual(self.repository.load(group["id"])["pending_views"], ["left", "back", "right"])
+
+    def test_local_prompt_precedence_is_explicit_without_changing_legacy_image_prompts(self):
+        from dataclasses import replace
+        from advanced_multiview_image_gateway import design_prompt
+        group, _ = self.initial()
+        self.execute(self.scoped_plan(group, "left", "make the blue coat red")); self.drain()
+        request = self.requests[-1]
+        local = design_prompt(request)
+        self.assertIn("make the blue coat red", local)
+        self.assertIn("take precedence", local)
+        self.assertIn("current left design", local)
+        legacy = design_prompt(replace(request, local_prompt=None))
+        self.assertNotIn("Local requirements:", legacy)
+        self.assertEqual(design_prompt(replace(request, local_prompt="")), legacy)
+
+    def test_local_plan_cannot_change_its_text_or_scope_after_confirmation(self):
+        group, _ = self.initial()
+        plan = self.scoped_plan(group, "left", "the confirmed local text")
+        changed = deepcopy(plan)
+        changed["design_request"]["local_prompt"] = "a different edit"
+        self.repository.write_record(group["id"], f"plans/{plan['id']}.json", changed)
+        with self.assertRaises(RequestError) as caught:
+            self.execute(plan)
+        self.assertEqual(caught.exception.code, "stale_confirmation")
+        self.assertEqual(self.queue, [])
+
+    def test_local_commands_replay_once_and_reject_reused_ids_with_different_intent(self):
+        for provider in ("gpt", "yoyoclaw"):
+            with self.subTest(provider=provider):
+                group = self.create(design_provider=provider,
+                                    design_model=QWEN_IMAGE if provider == "yoyoclaw" else "")
+                self.execute(self.plan(group)); self.drain()
+                group = self.repository.load(group["id"])
+                self.requests.clear()
+                command = new_id()
+                plan = self.scoped_plan(group, "left", "only the left detail", command_id=command)
+                self.assertEqual(self.scoped_plan(group, "left", "only the left detail",
+                                                  command_id=command), plan)
+                for view, text in (("left", "different text"), ("right", "only the left detail"),
+                                   (None, "")):
+                    with self.subTest(view=view, text=text), self.assertRaises(RequestError) as caught:
+                        self.scoped_plan(group, view, text, command_id=command)
+                    self.assertEqual(caught.exception.code, "idempotency_conflict")
+                first = self.execute(plan)
+                self.assertEqual(self.execute(plan), first)
+                self.assertEqual(len(self.queue), 1)
+                self.drain()
+                finished = self.application.operation(group["id"], command)
+                self.assertEqual(finished["state"], "succeeded")
+                self.assertEqual(finished["design_request"], plan["design_request"])
+                self.assertEqual(list(finished["attempts"]), ["left"])
+                self.assertEqual(finished["new_image_calls"], 1)
+                self.assertEqual(self.execute(plan), finished)
+                self.drain()
+                self.assertEqual([request.view for request in self.requests], ["left"])
+                self.assertEqual(self.requests[0].local_prompt, "only the left detail")
+
+    def test_local_stop_intent_blocks_late_acceptance_and_late_result_publication(self):
+        for provider in ("gpt", "yoyoclaw"):
+            for stage in ("before_acceptance", "queued", "result_obtained"):
+                with self.subTest(provider=provider, stage=stage):
+                    group = self.create(design_provider=provider,
+                                        design_model=QWEN_IMAGE if provider == "yoyoclaw" else "")
+                    self.execute(self.plan(group)); self.drain()
+                    group = self.repository.load(group["id"])
+                    before = deepcopy(group)
+                    self.requests.clear()
+                    plan = self.scoped_plan(group, "back", "stop this local edit")
+                    if stage == "before_acceptance":
+                        self.application.stop(group["id"], plan["id"])
+                        self.execute(plan)
+                    else:
+                        if stage == "result_obtained":
+                            self.after_image = lambda _: self.application.stop(group["id"], plan["id"])
+                        self.execute(plan)
+                        if stage == "queued":
+                            self.application.stop(group["id"], plan["id"])
+                    self.drain()
+                    self.after_image = None
+                    operation = self.application.operation(group["id"], plan["id"])
+                    current = self.repository.load(group["id"])
+                    self.assertEqual(operation["state"], "stopped")
+                    self.assertEqual(operation["design_request"], plan["design_request"])
+                    self.assertEqual(list(operation["attempts"]), ["back"])
+                    expected_calls = int(stage == "result_obtained")
+                    self.assertEqual(operation["new_image_calls"], expected_calls)
+                    self.assertEqual(len(self.requests), expected_calls)
+                    self.assertIsNone(current["active_operation_id"])
+                    for field in ("saved_draft", "latest_submitted_draft", "initial_input", "pending_views"):
+                        self.assertEqual(current[field], before[field])
+                    for view in VIEWS:
+                        self.assertEqual(current["views"][view]["current_version_id"],
+                                         before["views"][view]["current_version_id"])
+                        if view != "back":
+                            self.assertEqual(current["views"][view], before["views"][view])
+                    if stage == "result_obtained":
+                        candidate = operation["attempts"]["back"]["version_id"]
+                        self.assertTrue(candidate)
+                        self.assertIsNotNone(self.repository.version(group["id"], "back", candidate))
+                    self.assertEqual(self.execute(plan), operation)
+                    self.drain()
+                    self.assertEqual(len(self.requests), expected_calls)
+
+    def test_negative_local_reconciliation_rejects_the_delayed_original_post(self):
+        from advanced_multiview_runtime import AdvancedMultiviewRuntime
+        for provider in ("gpt", "yoyoclaw"):
+            with self.subTest(provider=provider):
+                group = self.create(design_provider=provider,
+                                    design_model=QWEN_IMAGE if provider == "yoyoclaw" else "")
+                self.execute(self.plan(group)); self.drain()
+                group = self.repository.load(group["id"])
+                self.requests.clear()
+                plan = self.scoped_plan(group, "right", "this exact local request")
+                runtime = AdvancedMultiviewRuntime.__new__(AdvancedMultiviewRuntime)
+                runtime.repository, runtime.workflow, runtime.application = self.repository, self.workflow, self.application
+                runtime.models = None
+                self.assertFalse(runtime.reconcile(group["id"], plan["id"])["accepted"])
+                with self.assertRaises(RequestError) as caught:
+                    self.execute(plan)
+                self.assertEqual(caught.exception.code, "submission_not_accepted")
+                self.assertEqual(self.repository.load(group["id"]), group)
+                self.assertEqual(self.queue, [])
+                self.assertEqual(self.requests, [])
+
+    def test_local_saved_result_recovers_only_its_target_without_resubmitting_or_advancing_global_baseline(self):
+        for provider in ("gpt", "yoyoclaw"):
+            with self.subTest(provider=provider):
+                group = self.create(design_provider=provider,
+                                    design_model=QWEN_IMAGE if provider == "yoyoclaw" else "")
+                self.execute(self.plan(group)); self.drain()
+                group = self.repository.load(group["id"])
+                group = self.application.save_draft(group["id"], {
+                    "expected_group_revision": group["revision"],
+                    "draft": {**group["saved_draft"], "style": "cartoon", "prompt": "unsubmitted global change"}})
+                before = deepcopy(group)
+                self.requests.clear()
+                plan = self.scoped_plan(group, "left", "recover this left detail")
+                self.execute(plan)
+                original_save = self.repository.save
+
+                def fail_pointer(value):
+                    if value["views"]["left"]["current_version_id"] != before["views"]["left"]["current_version_id"]:
+                        raise RequestError("persistence_failed", "full", 503)
+                    return original_save(value)
+
+                with mock.patch.object(self.repository, "save", side_effect=fail_pointer):
+                    self.drain()
+                operation = self.application.operation(group["id"], plan["id"])
+                self.assertEqual(operation["state"], "recovery_required")
+                self.assertEqual(operation["attempts"]["left"]["state"], "result_saved")
+                self.workflow.recover_interrupted(group["id"])
+                restored = AdvancedMultiviewRepository(self.repository.root.parent).load(group["id"])
+                operation = self.application.operation(group["id"], plan["id"])
+                self.assertEqual(operation["state"], "succeeded")
+                self.assertEqual(operation["design_request"], plan["design_request"])
+                self.assertEqual(operation["new_image_calls"], 1)
+                self.assertEqual([request.view for request in self.requests], ["left"])
+                self.assertEqual(restored["views"]["left"]["current_version_id"],
+                                 operation["attempts"]["left"]["version_id"])
+                self.assertEqual(restored["pending_views"], ["front", "back", "right"])
+                for field in ("saved_draft", "latest_submitted_draft", "initial_input"):
+                    self.assertEqual(restored[field], before[field])
+                for view in ("front", "back", "right"):
+                    self.assertEqual(restored["views"][view], before["views"][view])
+                self.assertEqual(self.queue, [])
+
+    def test_local_admission_failures_preserve_intent_and_require_explicit_recovery_or_retry(self):
+        for provider in ("gpt", "yoyoclaw"):
+            for boundary in ("plan", "operation", "attachment", "queue"):
+                with self.subTest(provider=provider, boundary=boundary):
+                    group = self.create(design_provider=provider,
+                                        design_model=QWEN_IMAGE if provider == "yoyoclaw" else "")
+                    self.execute(self.plan(group)); self.drain()
+                    group = self.repository.load(group["id"])
+                    before = deepcopy(group)
+                    self.requests.clear()
+                    command_id = new_id()
+                    intent = "preserve this left request"
+                    plan_path = f"plans/{command_id}.json"
+                    operation_path = f"operations/{command_id}/operation.json"
+                    original_write = self.repository.write_record
+                    original_save = self.repository.save
+                    hits = []
+
+                    def write_record(group_id, relative, value):
+                        if relative == (plan_path if boundary == "plan" else operation_path):
+                            if boundary in {"plan", "operation"}:
+                                hits.append(relative)
+                                raise RequestError("persistence_failed", "controlled write failure", 503)
+                        return original_write(group_id, relative, value)
+
+                    def save(value):
+                        if boundary == "attachment" and value["active_operation_id"] == command_id:
+                            hits.append("attachment")
+                            raise RequestError("persistence_failed", "controlled attachment failure", 503)
+                        return original_save(value)
+
+                    if boundary == "plan":
+                        with mock.patch.object(self.repository, "write_record", side_effect=write_record):
+                            with self.assertRaises(RequestError) as caught:
+                                self.scoped_plan(group, "left", intent, command_id=command_id)
+                        self.assertEqual(caught.exception.code, "persistence_failed")
+                        self.assertFalse(self.repository.path(group["id"], plan_path, must_exist=False).exists())
+                    plan = self.scoped_plan(group, "left", intent, command_id=command_id)
+                    if boundary in {"operation", "attachment"}:
+                        with mock.patch.object(self.repository, "write_record", side_effect=write_record), \
+                             mock.patch.object(self.repository, "save", side_effect=save):
+                            with self.assertRaises(RequestError) as caught:
+                                self.execute(plan)
+                        self.assertEqual(caught.exception.code, "persistence_failed")
+                        self.assertEqual(self.repository.load(group["id"]), before)
+                    elif boundary == "queue":
+                        with mock.patch.object(self.application, "submit", side_effect=RuntimeError("queue closed")):
+                            with self.assertRaises(RequestError) as caught:
+                                self.execute(plan)
+                        hits.append("queue")
+                        self.assertEqual(caught.exception.code, "executor_unavailable")
+                        accepted = self.application.operation(group["id"], command_id)
+                        self.assertEqual(accepted["state"], "recovery_required")
+                        self.assertEqual(accepted["new_image_calls"], 0)
+                        self.assertFalse(self.application.operation_running(command_id))
+                        self.workflow.recover_interrupted(group["id"])
+                        stopped = self.application.operation(group["id"], command_id)
+                        self.assertEqual(stopped["attempts"]["left"]["state"], "stopped")
+                        self.assertEqual(self.execute(plan), stopped)
+                        group = self.repository.load(group["id"])
+                        self.assertIsNone(group["active_operation_id"])
+                        plan = self.scoped_plan(group, "left", intent)
+                    self.assertTrue(hits)
+                    self.assertEqual(self.requests, [])
+                    self.assertEqual(self.queue, [])
+                    self.execute(plan); self.drain()
+                    operation = self.application.operation(group["id"], plan["id"])
+                    restored = AdvancedMultiviewRepository(self.repository.root.parent).load(group["id"])
+                    self.assertEqual(operation["state"], "succeeded")
+                    self.assertEqual(operation["targets"], ["left"])
+                    self.assertEqual(operation["design_request"]["local_prompt"], intent)
+                    self.assertEqual(operation["new_image_calls"], 1)
+                    self.assertEqual([request.view for request in self.requests], ["left"])
+                    for field in ("saved_draft", "latest_submitted_draft", "initial_input"):
+                        self.assertEqual(restored[field], before[field])
+                    for view in ("front", "back", "right"):
+                        self.assertEqual(restored["views"][view], before["views"][view])
+                    self.assertEqual(self.queue, [])
+
+    def test_local_publication_recovers_every_durable_boundary_without_another_image_call(self):
+        for provider in ("gpt", "yoyoclaw"):
+            for boundary in ("version", "candidate_receipt", "current", "completed_receipt"):
+                with self.subTest(provider=provider, boundary=boundary):
+                    group = self.create(design_provider=provider,
+                                        design_model=QWEN_IMAGE if provider == "yoyoclaw" else "")
+                    self.execute(self.plan(group)); self.drain()
+                    group = self.repository.load(group["id"])
+                    group = self.application.save_draft(group["id"], {
+                        "expected_group_revision": group["revision"],
+                        "draft": {**group["saved_draft"], "style": "cartoon", "prompt": "unsubmitted global change"}})
+                    before = deepcopy(group)
+                    self.requests.clear()
+                    plan = self.scoped_plan(group, "left", "recover only this left result")
+                    self.execute(plan)
+                    original_write = self.repository.write_record
+                    original_save = self.repository.save
+                    hits = []
+
+                    def write_record(group_id, relative, value):
+                        fail = boundary == "version" and relative.startswith("designs/left/")
+                        if relative == f"operations/{plan['id']}/operation.json":
+                            state = value["attempts"]["left"]["state"]
+                            fail = fail or (boundary == "candidate_receipt" and state == "result_saved")
+                            fail = fail or (boundary == "completed_receipt" and state == "succeeded")
+                        if fail:
+                            hits.append(relative)
+                            raise RequestError("persistence_failed", "controlled publication failure", 503)
+                        return original_write(group_id, relative, value)
+
+                    def save(value):
+                        if (boundary == "current" and value["views"]["left"]["current_version_id"] !=
+                                before["views"]["left"]["current_version_id"]):
+                            hits.append("current")
+                            raise RequestError("persistence_failed", "controlled current failure", 503)
+                        return original_save(value)
+
+                    with mock.patch.object(self.repository, "write_record", side_effect=write_record), \
+                         mock.patch.object(self.repository, "save", side_effect=save):
+                        self.drain()
+                    self.assertTrue(hits)
+                    interrupted = self.application.operation(group["id"], plan["id"])
+                    self.assertEqual(interrupted["state"], "recovery_required")
+                    self.assertEqual(interrupted["new_image_calls"], 1)
+                    self.assertEqual([request.view for request in self.requests], ["left"])
+                    durable = self.repository.load(group["id"])
+                    if boundary != "completed_receipt":
+                        self.assertEqual(durable["views"]["left"]["current_version_id"],
+                                         before["views"]["left"]["current_version_id"])
+                    self.workflow.recover_interrupted(group["id"])
+                    self.workflow.recover_interrupted(group["id"])
+                    restored = AdvancedMultiviewRepository(self.repository.root.parent).load(group["id"])
+                    operation = self.application.operation(group["id"], plan["id"])
+                    self.assertEqual(operation["state"], "succeeded")
+                    self.assertEqual(operation["targets"], ["left"])
+                    self.assertEqual(operation["design_request"], plan["design_request"])
+                    self.assertEqual(operation["new_image_calls"], 1)
+                    self.assertEqual([request.view for request in self.requests], ["left"])
+                    current = self.repository.version(group["id"], "left", restored["views"]["left"]["current_version_id"])
+                    self.assertEqual(current["operation_id"], plan["id"])
+                    self.assertEqual(current["attempt_id"], operation["attempts"]["left"]["id"])
+                    self.assertEqual(restored["pending_views"], ["front", "back", "right"])
+                    self.assertIsNone(restored["active_operation_id"])
+                    for field in ("saved_draft", "latest_submitted_draft", "initial_input"):
+                        self.assertEqual(restored[field], before[field])
+                    for view in ("front", "back", "right"):
+                        self.assertEqual(restored["views"][view], before["views"][view])
+                    self.assertEqual(self.queue, [])
+
+    def test_local_entry_does_not_create_an_unattempted_direction_after_upload_replacement(self):
+        group, _ = self.initial({"front": png(), "left": png("red")})
+        group = self.application.update_inputs(group["id"], {
+            **group["saved_draft"], "expected_group_revision": group["revision"]},
+            {"front": png(), "left": png("blue")})
+        with self.assertRaises(RequestError) as caught:
+            self.scoped_plan(group, "left", "local edit")
+        self.assertEqual(caught.exception.code, "missing_current_view")
+        self.assertEqual(self.queue, [])
+
+    def test_local_interrupted_submission_without_a_saved_response_stays_ambiguous_without_resubmission(self):
+        from advanced_multiview_image_gateway import AdvancedMultiviewImageGateway
+        for provider in ("gpt", "yoyoclaw"):
+            with self.subTest(provider=provider):
+                group = self.create(design_provider=provider,
+                                    design_model=QWEN_IMAGE if provider == "yoyoclaw" else "")
+                self.execute(self.plan(group)); self.drain()
+                group = self.repository.load(group["id"])
+                group = self.application.save_draft(group["id"], {
+                    "expected_group_revision": group["revision"],
+                    "draft": {**group["saved_draft"], "prompt": "unsubmitted global change", "style": "cartoon"}})
+                before = deepcopy(group)
+                plan = self.scoped_plan(group, "left", "only the left shoulder")
+                self.execute(plan); self.queue.clear(); self.requests.clear()
+                operation = self.application.operation(group["id"], plan["id"])
+                operation["attempts"]["left"]["state"] = "submitting"
+                operation["new_image_calls"] = 1
+                self.repository.write_record(group["id"], f"operations/{plan['id']}/operation.json", operation)
+                fake = _FakeYoYoImageGateway()
+                gateway = AdvancedMultiviewImageGateway(fake)
+                repository = AdvancedMultiviewRepository(Path(self.temporary.name))
+                generate = mock.Mock(side_effect=AssertionError("Recovery cannot create an image"))
+                workflow = AdvancedMultiviewDesignWorkflow(repository, generate, gateway.recover)
+                with mock.patch("openai_preprocessor._image_provider_request") as create:
+                    for _ in range(2):
+                        workflow.recover_interrupted(group["id"], expected_operation=plan["id"])
+                    create.assert_not_called()
+                restored = repository.load(group["id"])
+                recovered = self.application.operation(group["id"], plan["id"])
+                self.assertEqual(recovered["state"], "recovery_required")
+                self.assertEqual(list(recovered["attempts"]), ["left"])
+                self.assertEqual(recovered["attempts"]["left"]["state"], "ambiguous")
+                self.assertEqual(recovered["new_image_calls"], 1)
+                self.assertEqual(recovered["design_request"], plan["design_request"])
+                self.assertEqual(recovered["frozen"], plan["frozen"])
+                self.assertIsNone(restored["active_operation_id"])
+                for field in ("saved_draft", "latest_submitted_draft", "initial_input", "pending_views"):
+                    self.assertEqual(restored[field], before[field])
+                for view in VIEWS:
+                    self.assertEqual(restored["views"][view]["current_version_id"], before["views"][view]["current_version_id"])
+                    if view != "left": self.assertEqual(restored["views"][view], before["views"][view])
+                generate.assert_not_called()
+                self.assertEqual(fake.generate_calls, [])
+                self.assertEqual(fake.download_calls, [])
+                self.assertEqual(self.requests, [])
+                self.assertEqual(self.queue, [])
+
+    def test_local_saved_gateway_responses_resume_only_their_original_download_for_both_providers(self):
+        import base64
+        import openai_preprocessor as gpt
+        from advanced_multiview_image_gateway import AdvancedMultiviewImageGateway
+        for provider in ("gpt", "yoyoclaw"):
+            for state in ("submitting", "result_pending"):
+                with self.subTest(provider=provider, state=state):
+                    group = self.create(design_provider=provider,
+                                        design_model=QWEN_IMAGE if provider == "yoyoclaw" else "")
+                    self.execute(self.plan(group)); self.drain()
+                    group = self.repository.load(group["id"])
+                    group = self.application.save_draft(group["id"], {
+                        "expected_group_revision": group["revision"],
+                        "draft": {**group["saved_draft"], "prompt": "unsubmitted global change", "style": "cartoon"}})
+                    before = deepcopy(group)
+                    plan = self.scoped_plan(group, "right", "only the right shoulder")
+                    self.execute(plan); self.queue.clear(); self.requests.clear()
+                    fake = _FakeYoYoImageGateway()
+                    fake.download_error = ProviderGatewayError("download unavailable", code="result_download_failed",
+                        category="download", provider="yoyoclaw", retryable=True)
+                    gateway = AdvancedMultiviewImageGateway(fake)
+                    workflow = AdvancedMultiviewDesignWorkflow(self.repository, gateway.generate, gateway.recover)
+                    response = {"id": "original-local-response", "data": [{"b64_json": base64.b64encode(png("teal")).decode()}]}
+                    with mock.patch.object(gpt, "_image_config", return_value=mock.Mock(model="gpt-image-2")), \
+                         mock.patch.object(gpt, "_image_provider_request", return_value=response) as create, \
+                         mock.patch.object(gpt, "_save_provider_image", side_effect=gpt.OpenAIPreprocessorError(
+                             "download unavailable", code="result_download_failed", retryable=True)):
+                        workflow.run(group["id"], plan["id"])
+                        self.assertEqual(create.call_count, 1 if provider == "gpt" else 0)
+                    operation = self.application.operation(group["id"], plan["id"])
+                    self.assertEqual(operation["attempts"]["right"]["state"], "result_pending")
+                    self.assertEqual(operation["new_image_calls"], 1)
+                    if state == "submitting":
+                        # A crash can precede the attempt's download-failure checkpoint.
+                        operation["attempts"]["right"]["state"] = state
+                        self.repository.write_record(group["id"], f"operations/{plan['id']}/operation.json", operation)
+                    repository = AdvancedMultiviewRepository(Path(self.temporary.name))
+                    generate = mock.Mock(side_effect=AssertionError("Recovery cannot create an image"))
+                    restarted = AdvancedMultiviewDesignWorkflow(repository, generate, gateway.recover)
+                    with mock.patch.object(gpt, "_image_provider_request") as create, \
+                         mock.patch.object(gpt, "_save_provider_image", side_effect=gpt.OpenAIPreprocessorError(
+                             "download unavailable", code="result_download_failed", retryable=True)):
+                        restarted.recover_interrupted(group["id"], expected_operation=plan["id"])
+                        self.assertEqual(self.application.operation(group["id"], plan["id"])["attempts"]["right"]["state"],
+                                         "result_pending")
+                        create.assert_not_called()
+                    fake.download_error = None
+                    with mock.patch.object(gpt, "_image_provider_request") as create:
+                        for _ in range(2):
+                            restarted.recover_interrupted(group["id"], expected_operation=plan["id"])
+                        create.assert_not_called()
+                    restored = repository.load(group["id"])
+                    operation = self.application.operation(group["id"], plan["id"])
+                    self.assertEqual(operation["state"], "succeeded")
+                    self.assertEqual(list(operation["attempts"]), ["right"])
+                    self.assertEqual(operation["design_request"], plan["design_request"])
+                    self.assertEqual(operation["frozen"], plan["frozen"])
+                    self.assertEqual(operation["new_image_calls"], 1)
+                    self.assertEqual(operation["attempts"]["right"]["provider_request_id"],
+                                     "yoyo-request-1" if provider == "yoyoclaw" else "original-local-response")
+                    self.assertNotEqual(restored["views"]["right"]["current_version_id"], before["views"]["right"]["current_version_id"])
+                    self.assertEqual(restored["pending_views"], ["front", "left", "back"])
+                    for field in ("saved_draft", "latest_submitted_draft", "initial_input"):
+                        self.assertEqual(restored[field], before[field])
+                    for view in ("front", "left", "back"):
+                        self.assertEqual(restored["views"][view], before["views"][view])
+                    generate.assert_not_called()
+                    self.assertEqual(len(fake.generate_calls), 1 if provider == "yoyoclaw" else 0)
+                    self.assertEqual(len(fake.download_calls), 3 if provider == "yoyoclaw" else 0)
+                    self.assertEqual(self.requests, [])
+                    self.assertEqual(self.queue, [])
+
+    def test_recovered_local_upload_result_clears_only_its_invalidated_source_relationship(self):
+        for provider in ("gpt", "yoyoclaw"):
+            with self.subTest(provider=provider):
+                images = {"front": png(), "left": png("red")}
+                group = self.create(images, design_provider=provider,
+                                    design_model=QWEN_IMAGE if provider == "yoyoclaw" else "")
+                self.execute(self.plan(group)); self.drain()
+                group = self.repository.load(group["id"])
+                group = self.application.update_inputs(group["id"], {
+                    **group["saved_draft"], "expected_group_revision": group["revision"]},
+                    {"front": images["front"], "left": png("blue")})
+                self.failure["left"] = ProviderGatewayError("rejected", code="rejected", category="request")
+                self.execute(self.scoped_plan(group)); self.drain()
+                self.failure.clear()
+                before = self.repository.load(group["id"])
+                self.assertEqual(before["pending_views"], ["left"])
+                self.assertEqual(before["changed_upload_views"], ["left"])
+                self.assertIsNone(before["views"]["left"]["current_version_id"])
+                plan = self.scoped_plan(before, "left", "repair only this source")
+                self.requests.clear()
+                self.execute(plan)
+                original_save = self.repository.save
+
+                def fail_pointer(value):
+                    if value["views"]["left"]["current_version_id"]:
+                        raise RequestError("persistence_failed", "full", 503)
+                    return original_save(value)
+
+                with mock.patch.object(self.repository, "save", side_effect=fail_pointer):
+                    self.drain()
+                self.workflow.recover_interrupted(group["id"])
+                self.workflow.recover_interrupted(group["id"])
+                restored = self.repository.load(group["id"])
+                operation = self.application.operation(group["id"], plan["id"])
+                self.assertEqual(operation["state"], "succeeded")
+                self.assertEqual(operation["new_image_calls"], 1)
+                self.assertEqual([request.view for request in self.requests], ["left"])
+                self.assertEqual(restored["pending_views"], [])
+                self.assertEqual(restored["changed_upload_views"], [])
+                self.assertTrue(restored["views"]["left"]["current_version_id"])
+                self.assertEqual(restored["uploads"], before["uploads"])
+                for field in ("saved_draft", "latest_submitted_draft", "initial_input"):
+                    self.assertEqual(restored[field], before[field])
+                for view in ("front", "back", "right"):
+                    self.assertEqual(restored["views"][view], before["views"][view])
+
+    def test_missing_main_allows_only_unchanged_or_deleted_auxiliary_uploads_until_restored(self):
+        group, _ = self.initial({"front": png(), "left": png("red"), "back": png("green")})
+        before = deepcopy(group)
+        group = self.application.update_inputs(group["id"], {
+            **group["saved_draft"], "expected_group_revision": group["revision"]},
+            {"left": png("red"), "back": png("green")})
+        self.assertIsNone(group["views"]["front"]["current_version_id"])
+        self.assertEqual(group["views"]["left"], before["views"]["left"])
+        for images, replaced in (({"left": png("blue")}, []), ({"right": png()}, []),
+                                 ({"left": png("red")}, ["left"])):
+            with self.subTest(images=list(images), replaced=replaced), self.assertRaises(RequestError):
+                self.application.update_inputs(group["id"], {**group["saved_draft"],
+                    "expected_group_revision": group["revision"], "replaced_views": replaced}, images)
+            self.assertEqual(self.repository.load(group["id"]), group)
+        group = self.application.update_inputs(group["id"], {
+            **group["saved_draft"], "expected_group_revision": group["revision"]}, {"left": png("red")})
+        group = self.application.update_inputs(group["id"], {
+            **group["saved_draft"], "expected_group_revision": group["revision"]}, {"front": png(), "left": png("red")})
+        self.assertIsNotNone(group["uploads"]["front"])
+
+    def test_all_uploaded_direction_subsets_generate_only_their_own_targets_for_each_provider(self):
+        for provider in ("gpt", "yoyoclaw"):
+            for mask in range(8):
+                selected = ["front"] + [v for slot,v in enumerate(VIEWS[1:]) if mask & (1 << slot)]
+                with self.subTest(provider=provider,selected=selected):
+                    group = self.create({v:png(v == "front" and "red" or "green") for v in selected},
+                                        design_provider=provider,design_model=QWEN_IMAGE if provider == "yoyoclaw" else "")
+                    plan = self.plan(group)
+                    self.assertEqual(plan["targets"],selected)
+                    self.assertEqual(plan["frozen"]["design_targets"],selected)
+                    self.assertEqual(plan["max_new_image_calls"],len(selected))
+                    self.requests.clear(); self.execute(plan); self.drain()
+                    self.assertEqual([r.view for r in self.requests],selected)
+                    snapshot = self.repository.snapshot(group["id"])
+                    self.assertEqual(snapshot["design_targets"],selected)
+                    self.assertEqual([v for v in VIEWS if snapshot["views"][v]["current"]],selected)
+
+    def test_deleted_uploads_stay_empty_across_reload_and_style_changes_preserve_immutable_versions(self):
+        group,_ = self.initial({v:png() for v in VIEWS})
+        versions = {v:group["views"][v]["current_version_id"] for v in VIEWS}
+        inputs = {v:png() for v in ("front","back")}
+        updated = self.application.update_inputs(group["id"],
+            {"expected_group_revision":group["revision"],**group["saved_draft"]},inputs)
+        for view in ("left","right"):
+            self.assertIsNone(updated["views"][view]["current_version_id"])
+            self.assertIsNotNone(self.repository.version(group["id"],view,versions[view]))
+        reloaded = AdvancedMultiviewRepository(self.repository.root.parent).snapshot(group["id"])
+        for view in ("left","right"): self.assertIsNone(reloaded["views"][view]["current"])
+        updated = self.application.save_draft(group["id"],{"expected_group_revision":updated["revision"],
+            "draft":{**group["saved_draft"],"style":"cartoon"}})
+        plan = self.plan(updated,"edit",base_versions={v:versions[v] for v in ("front","back")},**updated["saved_draft"])
+        self.assertEqual(plan["targets"],["front","back"])
+        self.requests.clear(); self.execute(plan); self.drain()
+        self.assertEqual([r.view for r in self.requests],["front","back"])
+
+    def test_explicit_same_content_replacement_invalidates_design_and_failure_does_not_restore_it(self):
+        group,_ = self.initial({"front":png(),"right":png("red")})
+        previous = group["views"]["right"]["current_version_id"]
+        updated = self.application.update_inputs(group["id"],
+            {"expected_group_revision":group["revision"],**group["saved_draft"],"replaced_views":'["right"]'},
+            {"front":png(),"right":png("red")})
+        self.assertNotEqual(updated["input_epoch"],group["input_epoch"])
+        self.assertIsNone(updated["views"]["right"]["current_version_id"])
+        self.failure["right"] = ProviderGatewayError("rejected",code="rejected",category="request")
+        plan = self.plan(updated,"edit",target_views=["right"],base_versions={"right":None})
+        self.execute(plan); self.drain()
+        current = self.repository.snapshot(group["id"])
+        self.assertIsNone(current["views"]["right"]["current"])
+        self.assertIsNotNone(self.repository.version(group["id"],"right",previous))
+        self.assertIsNotNone(current["views"]["front"]["current"])
+
+    def test_incomplete_and_empty_input_drafts_save_without_authorizing_new_generation(self):
+        group,_ = self.initial({"front":png(),"right":png("red")})
+        for images,code in (({"right":png("red")},"missing_front"),({},"invalid_request")):
+            group = self.application.update_inputs(group["id"],
+                {"expected_group_revision":group["revision"],**group["saved_draft"],"prompt":""},images)
+            with self.subTest(code=code),self.assertRaises(RequestError) as caught: self.plan(group,"edit")
+            self.assertEqual(caught.exception.code,code)
+        self.assertTrue(all(self.repository.snapshot(group["id"])["views"][v]["current"] is None for v in VIEWS))
+
+    def test_removing_every_upload_restores_all_text_targets_only_on_explicit_generation(self):
+        for order in (VIEWS, tuple(reversed(VIEWS)), (None,)):
+            for prompt_when_removed in ("A small robot", ""):
+                for save_prompt_with_inputs in (False, True):
+                    with self.subTest(order=order, prompt=prompt_when_removed,
+                                      inputs=save_prompt_with_inputs):
+                        group, _ = self.initial({v: png() for v in VIEWS})
+                        versions = {v: group["views"][v]["current_version_id"] for v in VIEWS}
+                        self.requests.clear()
+                        remaining = {v: png() for v in VIEWS}
+                        for view in order:
+                            if view is None:
+                                remaining.clear()
+                            else:
+                                remaining.pop(view)
+                            group = self.application.update_inputs(group["id"],
+                                {"expected_group_revision": group["revision"],
+                                 **group["saved_draft"], "prompt": prompt_when_removed}, remaining)
+                            self.assertEqual(self.requests, [])
+                            self.assertEqual(self.queue, [])
+                        self.assertTrue(all(self.repository.snapshot(group["id"])["views"][v]["current"]
+                                            is None for v in VIEWS))
+                        if not prompt_when_removed:
+                            with self.assertRaises(RequestError):
+                                self.plan(group, "edit", target_views=["front"], base_versions={"front": None})
+                            draft = {**group["saved_draft"], "prompt": "A small robot"}
+                            if save_prompt_with_inputs:
+                                group = self.application.update_inputs(group["id"],
+                                    {"expected_group_revision": group["revision"], **draft}, {})
+                            else:
+                                group = self.application.save_draft(group["id"],
+                                    {"expected_group_revision": group["revision"], "draft": draft})
+                        group = self.repository.load(group["id"])
+                        self.assertEqual(group["pending_views"], list(VIEWS))
+                        # A stale local repaint selection cannot reduce the new text generation.
+                        plan = self.plan(group, "edit", target_views=["front"],
+                                         base_versions={"front": None}, **group["saved_draft"])
+                        self.assertEqual(plan["targets"], list(VIEWS))
+                        self.assertEqual(plan["max_new_image_calls"], 4)
+                        self.assertEqual(self.requests, [])
+                        self.execute(plan); self.drain()
+                        self.assertEqual([r.view for r in self.requests], list(VIEWS))
+                        for view in VIEWS:
+                            self.assertIsNotNone(self.repository.version(group["id"], view, versions[view]))
+
+    def test_replaced_direction_metadata_rejects_unknown_duplicate_or_unuploaded_directions(self):
+        group = self.create({"front":png()})
+        for replaced in ('not-json','["top"]','["front","front"]','["left"]'):
+            with self.subTest(replaced=replaced),self.assertRaises(RequestError):
+                self.application.update_inputs(group["id"],
+                    {"expected_group_revision":group["revision"],**group["saved_draft"],"replaced_views":replaced},
+                    {"front":png()})
+
     def test_empty_selection_and_explicit_all_share_effective_range(self):
         self.assertEqual(targets([]), VIEWS)
         self.assertEqual(targets(["right", "left"]), ("left", "right"))
@@ -219,15 +1071,16 @@ class MultiviewTests(unittest.TestCase):
             self.repository.load(group["id"])
         self.assertEqual(json.loads(path.read_text())["schema"], "future")
 
-    def test_first_generation_always_produces_four_named_views(self):
+    def test_first_generation_uses_uploaded_directions_or_four_text_views(self):
         cases = [()] + [("front",) + extra for count in range(4) for extra in combinations(VIEWS[1:], count)]
         for uploaded in cases:
             with self.subTest(uploaded=uploaded):
                 self.requests.clear()
                 images = {v: png() for v in uploaded}
                 group, _ = self.initial(images)
-                self.assertEqual([r.view for r in self.requests], list(VIEWS))
-                self.assertTrue(self.repository.snapshot(group["id"])["all_views_available"])
+                expected = list(uploaded or VIEWS)
+                self.assertEqual([r.view for r in self.requests], expected)
+                self.assertEqual(self.repository.snapshot(group["id"])["all_views_available"], len(expected) == 4)
                 self.assertEqual([role for role, _ in self.requests[0].references],
                                  ["front_upload"] if "front" in uploaded else [])
                 for request in self.requests:
@@ -243,12 +1096,28 @@ class MultiviewTests(unittest.TestCase):
         for request in self.requests:
             self.assertEqual([role for role, _ in request.references], [request.view + "_upload"])
 
-    def test_missing_view_uses_main_upload_and_design_without_other_view_context(self):
-        self.initial({"front": png(), "back": png()})
-        requests = {request.view: request for request in self.requests}
-        self.assertEqual([role for role, _ in requests["left"].references],
-                         ["front_upload", "front_design"])
-        self.assertEqual([role for role, _ in requests["back"].references], ["back_upload"])
+    def test_unuploaded_directions_never_create_extra_design_calls(self):
+        for auxiliary in ("back", "right"):
+            with self.subTest(auxiliary=auxiliary):
+                self.requests.clear()
+                group, _ = self.initial({"front": png(), auxiliary: png()})
+                requests = {request.view: request for request in self.requests}
+                self.assertEqual(set(requests), {"front", auxiliary})
+                self.assertEqual([role for role, _ in requests[auxiliary].references], [auxiliary + "_upload"])
+                self.requests.clear()
+                with self.assertRaises(RequestError) as rejected:
+                    self.plan(group, "edit", target_views=["left"], base_versions={"left": None})
+                self.assertEqual(rejected.exception.code, "invalid_request")
+                self.assertEqual(self.requests, [])
+                self.assertEqual(self.queue, [])
+                for selection in ([], ["front"]):
+                    bases = {view: group["views"][view]["current_version_id"]
+                             for view in (selection or ["front", auxiliary])}
+                    plan = self.plan(group, "edit", target_views=selection, base_versions=bases)
+                    self.assertEqual(plan["targets"], selection or ["front", auxiliary])
+                    self.assertEqual(plan["frozen"]["design_targets"], ["front", auxiliary])
+                self.assertEqual(self.requests, [])
+                self.assertEqual(self.queue, [])
 
     def test_confirmation_cancel_and_unavailable_capability_make_no_calls(self):
         group = self.create()
@@ -321,7 +1190,7 @@ class MultiviewTests(unittest.TestCase):
         self.assertEqual(self.queue, [])
 
     def test_edit_uses_current_design_and_only_updates_selected_views(self):
-        group, _ = self.initial({"front": png()})
+        group, _ = self.initial()
         before = {v: group["views"][v]["current_version_id"] for v in VIEWS}
         self.requests.clear()
         plan = self.plan(group, "edit", prompt="Change back accessory", target_views=["back"],
@@ -353,16 +1222,17 @@ class MultiviewTests(unittest.TestCase):
         self.assertEqual(updated["pending_views"], ["front"])
         self.assertEqual(updated["changed_upload_views"], ["front"])
         self.assertEqual(len(self.repository.list_groups()), 1)
-        self.assertEqual({view: updated["views"][view]["current_version_id"] for view in VIEWS}, before)
+        self.assertIsNone(updated["views"]["front"]["current_version_id"])
+        self.assertIsNotNone(self.repository.version(group["id"], "front", before["front"]))
 
         self.requests.clear()
         plan = self.plan(updated, "edit", prompt="Use the replacement", target_views=["front"],
-                         base_versions={"front": before["front"]})
+                         base_versions={"front": None})
         self.execute(plan)
         self.drain()
         self.assertEqual([request.view for request in self.requests], ["front"])
         self.assertEqual([role for role, _ in self.requests[0].references],
-                         ["front_upload", "front_design"])
+                         ["front_upload"])
         current = self.repository.load(group["id"])
         self.assertEqual(current["pending_views"], [])
         self.assertEqual(current["changed_upload_views"], [])
@@ -370,12 +1240,12 @@ class MultiviewTests(unittest.TestCase):
             self.assertEqual(current["views"][view]["current_version_id"], before[view])
 
     def test_added_upload_is_required_alongside_extra_user_selection(self):
-        group, _ = self.initial({"front": png("navy")})
+        group, _ = self.initial({"front": png("navy"), "right": png("yellow")})
         front = self.repository.path(group["id"], group["uploads"]["front"]["path"]).read_bytes()
         before = {view: group["views"][view]["current_version_id"] for view in VIEWS}
         updated = self.application.update_inputs(group["id"], {
             "expected_group_revision": group["revision"], **group["saved_draft"]},
-            {"front": front, "left": png("purple")})
+            {"front": front, "left": png("purple"), "right": png("yellow")})
         self.assertEqual(updated["pending_views"], ["left"])
 
         plan = self.plan(updated, "edit", prompt="Also refine right", target_views=["right"],
@@ -386,14 +1256,14 @@ class MultiviewTests(unittest.TestCase):
         self.drain()
         self.assertEqual([request.view for request in self.requests], ["left", "right"])
         self.assertEqual([role for role, _ in self.requests[0].references],
-                         ["left_upload", "left_design"])
+                         ["left_upload"])
 
     def test_replaced_main_upload_is_available_to_user_selected_side_views(self):
-        group, _ = self.initial({"front": png("navy")})
+        group, _ = self.initial({"front": png("navy"), "right": png("yellow")})
         before = {view: group["views"][view]["current_version_id"] for view in VIEWS}
         updated = self.application.update_inputs(group["id"], {
             "expected_group_revision": group["revision"], **group["saved_draft"]},
-            {"front": png("purple")})
+            {"front": png("purple"), "right": png("yellow")})
         plan = self.plan(updated, "edit", prompt="Align the right view", target_views=["right"],
                          base_versions={"right": before["right"]})
         self.assertEqual(plan["targets"], ["front", "right"])
@@ -402,29 +1272,29 @@ class MultiviewTests(unittest.TestCase):
         self.drain()
         requests = {request.view: request for request in self.requests}
         self.assertEqual([role for role, _ in requests["right"].references],
-                         ["right_design", "front_upload"])
+                         ["right_design", "right_upload", "front_upload"])
 
-    def test_style_change_marks_all_views_pending_without_creating_a_group(self):
+    def test_style_change_marks_only_effective_targets_pending(self):
         group, _ = self.initial({"front": png()})
         draft = {**group["saved_draft"], "style": "realistic"}
         updated = self.application.save_draft(group["id"], {
             "expected_group_revision": group["revision"], "draft": draft})
         self.assertEqual(updated["id"], group["id"])
-        self.assertEqual(updated["pending_views"], list(VIEWS))
+        self.assertEqual(updated["pending_views"], ["front"])
         self.assertEqual(updated["changed_upload_views"], [])
         self.assertEqual(len(self.repository.list_groups()), 1)
 
         before = {view: updated["views"][view]["current_version_id"] for view in VIEWS}
-        plan = self.plan(updated, "edit", **draft, target_views=["back"],
-                         base_versions={"back": before["back"]})
-        self.assertEqual(plan["targets"], list(VIEWS))
+        plan = self.plan(updated, "edit", **draft, target_views=["front"],
+                         base_versions={"front": before["front"]})
+        self.assertEqual(plan["targets"], ["front"])
         self.execute(plan)
         self.drain()
         self.assertEqual(self.repository.load(group["id"])["pending_views"], [])
 
     def test_failed_initial_view_retries_with_the_current_style_in_the_same_group(self):
         self.failure["left"] = ProviderGatewayError("rejected", code="rejected", category="request")
-        group, initial = self.initial({"front": png()})
+        group, initial = self.initial()
         self.assertIsNone(group["views"]["left"]["current_version_id"])
         self.failure.clear()
         style = "sculpture" if group["saved_draft"]["style"] != "sculpture" else "realistic"
@@ -446,17 +1316,18 @@ class MultiviewTests(unittest.TestCase):
         self.assertEqual([request.view for request in self.requests], ["left"])
         self.assertEqual(self.requests[0].style, style)
 
-    def test_input_update_keeps_required_front_and_durable_group_on_failure(self):
-        group, _ = self.initial({"front": png()})
+    def test_incomplete_input_draft_is_saved_but_generation_still_requires_front(self):
+        group, _ = self.initial({"front": png(), "left": png("purple")})
+        updated = self.application.update_inputs(group["id"], {
+            "expected_group_revision": group["revision"], **group["saved_draft"]}, {"left": png("purple")})
         with self.assertRaises(RequestError) as error:
-            self.application.update_inputs(group["id"], {
-                "expected_group_revision": group["revision"], **group["saved_draft"]},
-                {"left": png("purple")})
+            self.plan(updated, "edit")
         self.assertEqual(error.exception.code, "missing_front")
         current = self.repository.load(group["id"])
-        self.assertEqual(current["revision"], group["revision"])
-        self.assertIsNotNone(current["uploads"]["front"])
-        self.assertIsNone(current["uploads"]["left"])
+        self.assertGreater(current["revision"], group["revision"])
+        self.assertIsNone(current["uploads"]["front"])
+        self.assertIsNotNone(current["uploads"]["left"])
+        self.assertIsNone(current["views"]["front"]["current_version_id"])
 
     def test_partial_edit_keeps_failed_old_view_and_retries_it_alone(self):
         group, _ = self.initial()
@@ -480,7 +1351,7 @@ class MultiviewTests(unittest.TestCase):
 
     def test_missing_initial_view_retry_uses_frozen_original_inputs(self):
         self.failure["back"] = ProviderGatewayError("rejected", code="rejected", category="request")
-        group, plan = self.initial({"front": png()})
+        group, plan = self.initial()
         self.assertFalse(self.repository.snapshot(group["id"])["all_views_available"])
         self.failure.clear()
         self.requests.clear()
@@ -523,7 +1394,7 @@ class MultiviewTests(unittest.TestCase):
 
     def test_one_current_model_plan_mixes_edits_and_missing_views_without_extra_calls(self):
         self.failure["left"] = ProviderGatewayError("rejected", code="rejected", category="request")
-        group, _ = self.initial({"front": png()})
+        group, _ = self.initial()
         original = {v: group["views"][v]["current_version_id"] for v in VIEWS}
         self.failure.clear()
         plan = self.plan(group, "edit", design_provider="yoyoclaw", design_model=HY_IMAGE,
@@ -555,7 +1426,7 @@ class MultiviewTests(unittest.TestCase):
         self.assertEqual([role for role, _ in self.requests[-1].references], ["front_design"])
 
     def test_existing_upload_avoids_unnecessary_main_dependency_and_failed_anchor_spends_no_extra_call(self):
-        for images in ({"front": png()}, {}):
+        for images in ({"front": png(), "left": png("green")}, {}):
             with self.subTest(has_upload=bool(images)):
                 group = self.create(images)
                 plan = self.plan(group)
@@ -732,6 +1603,73 @@ class MultiviewTests(unittest.TestCase):
         for version in (first["views"]["left"]["current_version_id"], second["views"]["front"]["current_version_id"]):
             with self.subTest(version=version), self.assertRaises(RequestError):
                 self.plan(second, "edit", target_views=["left"], base_versions={"left": version})
+
+    def test_user_can_regenerate_after_terminal_transport_loss_without_overwriting_the_old_receipt(self):
+        from advanced_multiview_runtime import AdvancedMultiviewRuntime
+        for view in ("front", "left"):
+            with self.subTest(view=view):
+                group, _ = self.initial({"front": png("navy"), "left": png("green")})
+                group_id = group["id"]
+                old_version = group["views"][view]["current_version_id"]
+                old_plan = self.scoped_plan(group, view)
+                self.failure[view] = ProviderGatewayError("connection lost", code="image_connection_failed",
+                                                          category="availability", ambiguous=True)
+                self.execute(old_plan)
+                with self.assertRaises(RequestError) as error:
+                    self.scoped_plan(self.repository.load(group_id), view)
+                self.assertEqual(error.exception.code, "group_busy")
+                self.drain()
+                failed = self.repository.load(group_id)
+                self.assertIsNone(failed["active_operation_id"])
+                self.assertEqual(failed["views"][view]["current_version_id"], old_version)
+                receipt = self.application.operation(group_id, old_plan["id"])
+                self.assertEqual(receipt["attempts"][view]["state"], "ambiguous")
+                self.failure.clear()
+                count = len(self.requests)
+                retry = self.scoped_plan(failed, view if view == "front" else None)
+                self.assertEqual(len(self.requests), count)
+                self.assertEqual(retry["targets"], ["front"] if view == "front" else ["front", "left"])
+                self.execute(retry)
+                self.execute(retry)
+                self.drain()
+                self.assertEqual(len(self.requests) - count, len(retry["targets"]))
+                after = self.repository.load(group_id)
+                self.assertNotEqual(after["views"][view]["current_version_id"], old_version)
+                runtime = AdvancedMultiviewRuntime.__new__(AdvancedMultiviewRuntime)
+                runtime.repository, runtime.application, runtime.workflow = self.repository, self.application, self.workflow
+                with self.assertRaises(RequestError) as stale:
+                    runtime.recover(group_id, old_plan["id"])
+                self.assertEqual(stale.exception.code, "stale_result")
+                self.assertEqual(self.application.operation(group_id, old_plan["id"]), receipt)
+                self.assertEqual(self.repository.load(group_id), after)
+
+    def test_explicit_recovery_of_corrupt_results_releases_retry_without_creating_a_new_image(self):
+        from advanced_multiview_runtime import AdvancedMultiviewRuntime
+        group, _ = self.initial({"front": png("navy")})
+        old_version = group["views"]["front"]["current_version_id"]
+        plan = self.scoped_plan(group, "front")
+        calls = len(self.requests)
+
+        def corrupt(request, output):
+            self.requests.append(request)
+            output.write_bytes(b"invalid result")
+            return DesignImageResult()
+
+        self.workflow.generate_image = corrupt
+        self.execute(plan); self.drain()
+        pending = self.repository.load(group["id"])
+        with self.assertRaises(RequestError) as error:
+            self.scoped_plan(pending, "front")
+        self.assertEqual(error.exception.code, "provider_task_ambiguous")
+        runtime = AdvancedMultiviewRuntime.__new__(AdvancedMultiviewRuntime)
+        runtime.repository, runtime.application, runtime.workflow = self.repository, self.application, self.workflow
+        resolved = runtime.recover(group["id"], plan["id"])
+        self.assertEqual(resolved["attempts"]["front"]["state"], "failed")
+        self.assertEqual(len(self.requests), calls + 1)
+        released = self.repository.load(group["id"])
+        self.assertEqual(released["views"]["front"]["current_version_id"], old_version)
+        self.assertIsNone(released["active_operation_id"])
+        self.assertEqual(self.scoped_plan(released, "front")["targets"], ["front"])
 
     def test_later_user_generation_prevents_recovery_of_superseded_saved_receipts(self):
         from advanced_multiview_runtime import AdvancedMultiviewRuntime
@@ -1313,13 +2251,16 @@ class MultiviewTests(unittest.TestCase):
         rejected.rfile = BytesIO(body)
         rejected._require_native_client.return_value = True
         self.assertTrue(dispatch(rejected, runtime, "POST"))
-        rejected._model_error.assert_called_once()
-        self.assertEqual(rejected._model_error.call_args.args[1], "missing_front")
-        self.assertEqual(self.repository.load(group["id"])["revision"], updated["revision"])
+        self.assertEqual(rejected._model_error.call_args.args[:2], (400, "missing_front"))
+        rejected.send_json.assert_not_called()
+        current = self.repository.load(group["id"])
+        self.assertEqual(current["revision"], updated["revision"])
+        self.assertEqual(current["uploads"]["front"]["sha256"], updated["uploads"]["front"]["sha256"])
+        self.assertIsNone(current["uploads"]["left"])
 
     def test_saving_a_draft_returns_current_images_and_model_projection(self):
         from advanced_multiview_runtime import AdvancedMultiviewRuntime
-        group, _ = self.initial({"front": png()})
+        group, _ = self.initial()
         runtime = AdvancedMultiviewRuntime.__new__(AdvancedMultiviewRuntime)
         runtime.repository, runtime.application, runtime.models = self.repository, self.application, None
         handler = mock.Mock()
@@ -1340,7 +2281,7 @@ class MultiviewTests(unittest.TestCase):
 
     def test_renaming_a_group_returns_the_complete_unchanged_design_snapshot(self):
         from advanced_multiview_runtime import AdvancedMultiviewRuntime
-        group, _ = self.initial({"front": png()})
+        group, _ = self.initial()
         runtime = AdvancedMultiviewRuntime.__new__(AdvancedMultiviewRuntime)
         runtime.repository, runtime.application, runtime.models = self.repository, self.application, None
         handler = mock.Mock()

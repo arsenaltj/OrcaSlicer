@@ -11,6 +11,7 @@
 #include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
 #include "slic3r/GUI/Redesign/ImageDesignDraft.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/DesignGenerationAvailability.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/GenerationActionFeedback.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
 #include "slic3r/GUI/AIModelGenerationClient.hpp"
 #include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
@@ -21,6 +22,7 @@
 #include "slic3r/GUI/Redesign/RedesignPreviewPresentation.hpp"
 #include "slic3r/GUI/Redesign/RedesignWorkspaceNavigation.hpp"
 #include "slic3r/GUI/Redesign/ModelGenerationStarfield.hpp"
+#include "slic3r/GUI/Redesign/GenerationCompletionToast.hpp"
 #include "slic3r/GUI/Redesign/PrinterWorkspaceState.hpp"
 #include "slic3r/GUI/CanvasNotificationLayout.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportPresentation.hpp"
@@ -1180,6 +1182,93 @@ TEST_CASE("A retained model candidate permits a new design but active work and u
     input.custom_style = "clay";
     CHECK(design_generation_available(input, true, false, workbench, true));
     CHECK_FALSE(design_generation_available(input, true, false, workbench, false));
+}
+
+TEST_CASE("Smart input and configuration errors accept clicks while workbench activity still blocks them",
+          "[UiRedesign][GenerationClickFeedback]")
+{
+    ModelGenerationUIInput input;
+    PostGenerationUiState workbench;
+    REQUIRE(design_generation_clickable(false, workbench));
+    CHECK_FALSE(design_generation_available(input, false, false, workbench, true));
+    CHECK(design_generation_rejection(input, true, false, workbench, true) == "empty_input");
+    input.prompt.assign(2000, 'a');
+    REQUIRE(design_generation_available(input, true, false, workbench, true));
+    input.prompt += "猫";
+    CHECK(design_generation_rejection(input, true, false, workbench, true) == "prompt_too_long");
+    CHECK(design_generation_clickable(false, workbench));
+    input.prompt = "猫"; input.style = "custom";
+    CHECK(design_generation_rejection(input, true, false, workbench, true) == "custom_style_empty");
+    input.custom_style = "clay";
+    CHECK(design_generation_rejection(input, true, false, workbench, false) == "palette_unavailable");
+    CHECK(design_generation_available(input, true, false, workbench, true));
+    CHECK_FALSE(design_generation_clickable(true, workbench));
+    for (auto status : {PostGenerationUiState::Status::Loading, PostGenerationUiState::Status::Processing}) {
+        workbench.status = status;
+        CHECK_FALSE(design_generation_clickable(false, workbench));
+        CHECK_FALSE(design_generation_available(input, false, false, workbench, false));
+    }
+}
+
+TEST_CASE("Provider click feedback distinguishes cached configuration facts and hides raw diagnostics",
+          "[UiRedesign][GenerationClickFeedback]")
+{
+    AIModelGenerationClient::ProviderCatalog catalog {"image", "gpt", "not_configured", "", {}, "", "secret/private/path", false};
+    CHECK(generation_catalog_rejection(catalog, "") == "gpt_not_configured");
+    catalog.role = "geometry";
+    CHECK(generation_catalog_rejection(catalog, "") == "geometry_not_configured");
+    catalog.state = "checking";
+    CHECK(generation_catalog_rejection(catalog, "") == "provider_checking");
+    catalog.state = "empty";
+    CHECK(generation_catalog_rejection(catalog, "") == "provider_empty");
+    catalog.state = "error";
+    CHECK(generation_catalog_rejection(catalog, "") == "service_unavailable");
+    catalog.state = "ready"; catalog.models = {{"supported", "supported", true}};
+    CHECK(generation_catalog_rejection(catalog, "unsupported") == "geometry_model_unavailable");
+    CHECK(generation_catalog_rejection(catalog, "supported").empty());
+    const std::string fallback = generation_rejection_message("secret/private/path");
+    CHECK_FALSE(fallback.empty());
+    CHECK(fallback.find("secret") == std::string::npos);
+    auto state = ModelGenerationUIState();
+    auto changed = state; changed.can_click_generate_smart = true;
+    CHECK_FALSE(state.same_content(changed));
+    CHECK_FALSE(changed.can_generate_design);
+    CHECK_FALSE(changed.can_generate_model);
+}
+
+TEST_CASE("Replacing a toast restarts its full interval and dismissing cancels queued events",
+          "[UiRedesign][GenerationClickFeedback]")
+{
+    using namespace std::chrono;
+    GenerationToastTiming timing;
+    const GenerationToastTiming::Clock::time_point start {};
+    CHECK(timing.remaining_ms(start) == 0);
+    timing.restart(start);
+    CHECK(timing.remaining_ms(start) == 3000);
+    timing.restart(start + seconds(2));
+    // This is the old timer's deadline, one second into the new presentation.
+    CHECK(timing.remaining_ms(start + seconds(3)) == 2000);
+    CHECK(timing.remaining_ms(start + seconds(5) - nanoseconds(1)) == 1);
+    CHECK(timing.remaining_ms(start + seconds(5)) == 0);
+    timing.restart(start + seconds(6)); timing.cancel();
+    CHECK(timing.remaining_ms(start + seconds(7)) == 0);
+}
+
+TEST_CASE("Toast wrapping preserves complete Chinese and English text within narrow lines",
+          "[UiRedesign][GenerationClickFeedback]")
+{
+    const wxString message = wxString::FromUTF8("图片或风格已修改PleaseRegenerate对应设计图。");
+    const auto measure = [](const wxString& text) { return static_cast<int>(text.length()); };
+    const auto lines = generation_toast_lines(message,5,measure);
+    wxString restored;
+    REQUIRE(lines.size() > 1);
+    for (const auto& line : lines) {
+        CHECK_FALSE(line.empty()); CHECK(measure(line) <= 5); restored += line;
+    }
+    CHECK(restored == message);
+    const auto explicit_break = generation_toast_lines(wxString("one\r\ntwo"),20,measure);
+    REQUIRE(explicit_break.size() == 2);
+    CHECK(explicit_break[0] == "one"); CHECK(explicit_break[1] == "two");
 }
 
 TEST_CASE("An oversized UTF-8 draft disables design generation even with an image and recovers after editing", "[UiRedesign][ImageDesignDraft]")

@@ -10959,6 +10959,17 @@ msgstr "是否继续？"
 msgid "Language selection"
 msgstr "语言选择"
 
+# AI Translated
+msgid "Language saved. It will take effect on the next launch."
+msgstr "语言已保存，下次启动时生效。"
+
+# AI Translated
+msgid "Save the selected language? It will take effect on the next launch."
+msgstr "保存所选语言？下次启动时生效。"
+
+msgid "Could not save the language selection. Please try again."
+msgstr "无法保存语言选择，请重试。"
+
 msgid "Asia-Pacific"
 msgstr "亚太"
 

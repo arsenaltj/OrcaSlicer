@@ -53,7 +53,7 @@ wxString localized_advanced_service_error(const std::string& error)
     wxString message = code == "stale_plan" || code == "stale_confirmation" || code == "confirmation_changed" || code == "revision_conflict"
         ? _L("当前设计或确认计划已变化，请刷新状态后重新确认。")
         : code == "group_busy" || code == "model_busy" ? _L("当前组仍有任务处理中，请等待或停止当前任务。")
-        : code == "unsupported_multiview" ? _L("当前模型服务暂不支持四视角建模，请检查服务配置。")
+        : code == "unsupported_multiview" ? _L("当前模型服务暂不支持所选设计图数量，请检查服务配置。")
         : code == "provider_task_ambiguous" ? _L("本次请求的受理结果暂不明确，请核对本次请求，不要重复提交。")
         : code == "idempotency_conflict" || code == "snapshot_unavailable"
             ? _L("本次请求身份或记录暂时无法核对，请保留请求记录并查看诊断日志。")

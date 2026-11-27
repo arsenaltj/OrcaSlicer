@@ -271,6 +271,17 @@ ModelGenerationFeatureHost::ModelGenerationFeatureHost(wxWindow* parent, Plater*
     : m_impl(std::make_unique<Impl>(parent, plater, std::move(navigate_after_import), std::move(retry_service)))
 {}
 
+bool ModelGenerationFeatureHost::settings_printer_switch_blocked() const
+{
+    return m_impl->workbench && m_impl->workbench->settings_printer_switch_blocked();
+}
+
+void ModelGenerationFeatureHost::settings_printer_switch_applied()
+{
+    if (m_impl->workbench)
+        m_impl->workbench->synchronize_workbench_project_palette(false, true);
+}
+
 bool ModelGenerationFeatureHost::can_replace_asset() const
 { return m_impl->workbench && m_impl->workbench->library_asset_switch_allowed(); }
 
@@ -385,16 +396,16 @@ void ModelGenerationFeatureHost::set_state_listener(ModelGenerationUIStateListen
         m_impl->state_listener(m_impl->latest_state);
 }
 
-bool ModelGenerationFeatureHost::synchronize_input(const ModelGenerationUIInput& input)
+bool ModelGenerationFeatureHost::synchronize_input(const ModelGenerationUIInput& input, GenerationRejected rejected)
 {
     if (creation_editing_locked()) return m_impl->latest_state.input == input;
-    return m_impl->model_generation != nullptr && m_impl->model_generation->synchronize_ui_input(input);
+    return m_impl->model_generation != nullptr && m_impl->model_generation->synchronize_ui_input(input, std::move(rejected));
 }
 
-bool ModelGenerationFeatureHost::synchronize_options(const ModelGenerationUIOptions& options)
+bool ModelGenerationFeatureHost::synchronize_options(const ModelGenerationUIOptions& options, GenerationRejected rejected)
 {
     if (creation_editing_locked()) return m_impl->latest_state.options == options;
-    return m_impl->model_generation != nullptr && m_impl->model_generation->synchronize_ui_options(options);
+    return m_impl->model_generation != nullptr && m_impl->model_generation->synchronize_ui_options(options, std::move(rejected));
 }
 
 void ModelGenerationFeatureHost::get_provider_catalog(
@@ -409,8 +420,14 @@ void ModelGenerationFeatureHost::get_provider_catalog(
         on_error("Model generation panel is unavailable.");
 }
 
-bool ModelGenerationFeatureHost::request_generate_smart()
-{ return !creation_editing_locked() && can_replace_asset() && m_impl->model_generation && m_impl->model_generation->request_generate_smart(); }
+bool ModelGenerationFeatureHost::request_generate_smart(GenerationRejected rejected)
+{
+    if (creation_editing_locked() || !can_replace_asset() || !m_impl->model_generation) {
+        if (rejected) rejected(creation_editing_locked() ? "creation_read_only" : "workbench_guard");
+        return false;
+    }
+    return m_impl->model_generation->request_generate_smart(std::move(rejected));
+}
 
 ModelGenerationSubmissionResult ModelGenerationFeatureHost::request_generate_design()
 {

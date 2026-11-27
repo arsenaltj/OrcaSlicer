@@ -1216,17 +1216,6 @@ void ModelGenerationPanel::apply_workbench_snapshot()
     layout_changed = set_workbench_shown(m_workbench_footer, show_beauty_actions) || layout_changed;
     const bool history_was_shown = m_workbench_history_panel->IsShown();
     layout_changed = update_workbench_history_visibility() || layout_changed;
-    if (m_workbench_project_summary) {
-        const auto& filaments = snapshot.printer_filaments;
-        const wxString summary = wxString::FromUTF8(filaments.printer)+
-            wxString::Format(_L("\n%llu 个喷嘴 · %llu 个实体槽位"),static_cast<unsigned long long>(filaments.nozzles),
-                static_cast<unsigned long long>(filaments.physical_count)) +
-            (filaments.idle_nozzles ? wxString::Format(_L(" · %llu 个喷嘴空闲"), static_cast<unsigned long long>(filaments.idle_nozzles)) : wxString{}) +
-            (model_unavailable || snapshot.apply_filaments_reason.empty()
-                ? wxString{} : "\n" + wxString::FromUTF8(snapshot.apply_filaments_reason));
-        layout_changed = set_wrapped_workbench_text(m_workbench_project_summary, summary,
-            FromDIP(235), true) || layout_changed;
-    }
     set_workbench_enabled(m_workbench_configure_filaments, snapshot.can_edit_project_colors);
     set_workbench_enabled(m_workbench_add_filament, snapshot.can_edit_project_colors &&
         wxGetApp().preset_bundle && wxGetApp().preset_bundle->filament_presets.size() < 32 &&
@@ -1268,12 +1257,16 @@ void ModelGenerationPanel::apply_workbench_snapshot()
             : model_unavailable ? model_hint : wxString::FromUTF8(snapshot.apply_filaments_reason.empty()
                 ? "模型正在保存或处理，请稍候。" : snapshot.apply_filaments_reason));
     }
+    wxString suite_capacity_hint;
     if (m_workbench_printer_filament_trial) {
         const auto* honor_suite = m_model_preview ? m_model_preview->active_honor_filament_suite() : nullptr;
+        const auto* catalog_choice = m_model_preview ? m_model_preview->selected_honor_filament_suite_in_catalog() : nullptr;
+        const auto* capacity_suite = catalog_choice ? catalog_choice : honor_suite;
         const auto* bundle = wxGetApp().preset_bundle;
-        const auto suite_compatibility = honor_suite && bundle
-            ? PrinterFilamentConfig::honor_suite_compatibility(*bundle, *honor_suite)
+        const auto suite_compatibility = capacity_suite && bundle
+            ? PrinterFilamentConfig::honor_suite_compatibility(*bundle, *capacity_suite)
             : PrinterFilamentConfig::HonorSuiteCompatibility{};
+        const bool capacity_blocked = !model_unavailable && suite_compatibility.needs_more_physical_nozzles;
         const auto card = m_model_preview
             ? m_model_preview->model_color_pack_for_filament_import() : std::nullopt;
         const bool has_card = card && card->valid_for_workbench_import();
@@ -1281,23 +1274,40 @@ void ModelGenerationPanel::apply_workbench_snapshot()
         const bool can_trial = workbench_printer_trial_action_allowed(
             m_printer_filament_trial_active, m_apply_filaments_saving,
             snapshot.can_edit_project_colors, has_card) &&
-            (m_printer_filament_trial_active || suite_allowed);
+            (m_printer_filament_trial_active || (suite_allowed && !capacity_blocked));
         set_workbench_enabled(m_workbench_printer_filament_trial, can_trial);
         layout_changed = set_workbench_label(m_workbench_printer_filament_trial,
             m_printer_filament_trial_active ? _L("退出打印机耗材试色") : _L("将模型配色导入到耗材")) || layout_changed;
-        const wxString disabled_reason = model_unavailable ? model_hint : honor_suite && !suite_allowed
+        wxString disabled_reason = model_unavailable ? model_hint : capacity_blocked || (honor_suite && !suite_allowed)
             ? wxString::FromUTF8(suite_compatibility.reason.empty()
                 ? "当前打印机不支持六实体色荣耀耗材套装" : suite_compatibility.reason)
             : !has_card
             ? _L("当前没有 1 至 32 色的有效色卡，请先生成 AI配色或完成试色。")
             : !snapshot.can_edit_project_colors
                 ? _L("模型处理中或存在未接受候选，请先完成当前操作。") : wxString{};
+        if (capacity_blocked) {
+            disabled_reason += "\n" + _L("请在「设置 → 打印机」选择兼容机型。");
+            suite_capacity_hint = disabled_reason;
+        }
         set_workbench_tooltip(m_workbench_printer_filament_trial, m_printer_filament_trial_active
             ? _L("退出试色并恢复进入前的模型外观；已提交的耗材配置保留。")
             : can_trial ? honor_suite
                 ? _L("按套装顺序绑定六个真实实体耗材；不生成叠色配方。")
                 : _L("将模型配色直接生成实体耗材与叠色配方；成功后一次提交并进入试色。")
                         : disabled_reason);
+    }
+    if (m_workbench_project_summary) {
+        const auto& filaments = snapshot.printer_filaments;
+        wxString summary = wxString::FromUTF8(filaments.printer)+
+            wxString::Format(_L("\n%llu 个喷嘴 · %llu 个实体槽位"),static_cast<unsigned long long>(filaments.nozzles),
+                static_cast<unsigned long long>(filaments.physical_count)) +
+            (filaments.idle_nozzles ? wxString::Format(_L(" · %llu 个喷嘴空闲"), static_cast<unsigned long long>(filaments.idle_nozzles)) : wxString{}) +
+            (model_unavailable || snapshot.apply_filaments_reason.empty()
+                ? wxString{} : "\n" + wxString::FromUTF8(snapshot.apply_filaments_reason));
+        if (!suite_capacity_hint.empty())
+            summary += "\n" + suite_capacity_hint;
+        layout_changed = set_wrapped_workbench_text(m_workbench_project_summary, summary,
+            FromDIP(235), true) || layout_changed;
     }
     set_workbench_enabled(m_workbench_palette_details,
         state.can_edit && m_finishing_candidate.empty() && original_appearance_available &&

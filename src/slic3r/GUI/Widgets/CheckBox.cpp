@@ -29,7 +29,8 @@ CheckBox::CheckBox(wxWindow *parent, int id)
 		SetBackgroundColour(parent->GetBackgroundColour());
 	Bind(wxEVT_TOGGLEBUTTON, [this](auto& e) { m_half_checked = false; update(); e.Skip(); });
     Bind(wxEVT_PAINT, [this](wxPaintEvent& event) {
-        if (GetName() != "ai_content_color") { event.Skip(); return; }
+        const bool settings = GetName() == "redesign_settings_checkbox";
+        if (!settings && GetName() != "ai_content_color") { event.Skip(); return; }
         wxPaintDC paint(this);
         wxGCDC dc(paint);
         dc.SetBackground(wxBrush(GetBackgroundColour())); dc.Clear();
@@ -38,7 +39,8 @@ CheckBox::CheckBox(wxWindow *parent, int id)
         if (edge <= 0) return;
         const wxRect box((size.x-edge)/2, (size.y-edge)/2, edge, edge);
         const bool checked = GetValue() || m_half_checked;
-        const wxColour accent = IsEnabled() ? Slic3r::GUI::RedesignTheme::accent_colour() : wxColour(82,82,87);
+        const wxColour accent = IsEnabled() ? Slic3r::GUI::RedesignTheme::accent_colour() :
+            settings ? wxColour(143, 116, 53) : wxColour(82, 82, 87);
         dc.SetPen(wxPen(checked || HasFocus() ? accent : wxColour(82,82,87), FromDIP(1)));
         dc.SetBrush(wxBrush(checked ? accent : wxColour(25,25,27)));
         dc.DrawRoundedRectangle(box, FromDIP(2));

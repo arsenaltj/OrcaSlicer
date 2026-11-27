@@ -458,6 +458,16 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
     return state;
 }
 
+bool ModelGenerationPanel::settings_printer_switch_blocked() const
+{
+    return m_workbench_import_running || m_workbench_import_feedback || m_workbench_check_card_visible ||
+        m_apply_filaments_saving || m_beauty_restore_running || m_finishing_running ||
+        !m_finishing_candidate.empty() || m_portrait_draft_before || m_workbench_honor_semantic_active ||
+        m_honor_suite_partition_pending ||
+        (m_beauty_transactions && m_beauty_transactions->processing()) ||
+        (m_model_preview && m_model_preview->semantic_processing());
+}
+
 bool ModelGenerationPanel::can_replace_model_asset() const
 {
     if (m_asset_replace_guard && !m_asset_replace_guard()) return false;

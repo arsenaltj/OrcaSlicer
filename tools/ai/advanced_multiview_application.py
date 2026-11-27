@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 import time
 from typing import Any, Callable
 
 from advanced_multiview_contracts import (
     OPERATION_SCHEMA, PLAN_SCHEMA, VIEWS,
-    check_revision, display_name, draft_fields, fingerprint, identity, new_id, targets, view_contract_snapshot,
+    check_revision, design_request_fields, design_targets, display_name, draft_fields, fingerprint, identity, new_id, targets, view_contract_snapshot,
 )
 from advanced_multiview_repository import AdvancedMultiviewRepository
 from model_contracts import RequestError
@@ -58,21 +59,31 @@ class AdvancedMultiviewApplication:
                 raise RequestError("group_busy", "Finish the active operation before changing its draft.", 409)
             style_changed = (draft["style"], draft["custom_style"]) != (
                 group["saved_draft"]["style"], group["saved_draft"]["custom_style"])
+            text_targets_reset = group["source"] == "text" and not design_targets(group) and bool(draft["prompt"])
             group["saved_draft"] = draft
-            if style_changed:
+            if style_changed or text_targets_reset:
                 group["input_epoch"] = new_id()
-                group["pending_views"] = list(VIEWS)
+                group["pending_views"] = list(design_targets(group))
             return self.repository.save(group)
 
     def update_inputs(self, group_id: str, request: dict[str, Any],
                       images: dict[str, bytes]) -> dict[str, Any]:
         draft = draft_fields(request)
+        replaced = request.get("replaced_views", [])
+        if isinstance(replaced, str):
+            try:
+                replaced = json.loads(replaced)
+            except ValueError:
+                raise RequestError("invalid_request", "Replacement directions must be a named list.", 400) from None
+        replaced = targets(replaced, default_all=False)
+        if any(view not in images for view in replaced):
+            raise RequestError("invalid_request", "A replaced direction requires its uploaded image.", 400)
         with self.repository.transaction():
             group = self.repository.load(group_id)
             check_revision(group, request.get("expected_group_revision"))
             if group["active_operation_id"] or self.model_busy(group_id):
                 raise RequestError("group_busy", "Finish the active operation before changing its inputs.", 409)
-            return self.repository.replace_inputs(group, draft, images)
+            return self.repository.replace_inputs(group, draft, images, replaced)
 
     def rename_group(self, group_id: str, request: dict[str, Any]) -> dict[str, Any]:
         name = display_name(request.get("display_name", ""))
@@ -94,21 +105,60 @@ class AdvancedMultiviewApplication:
             check_revision(group, request.get("expected_group_revision"))
             if group["active_operation_id"] or self.model_busy(group_id):
                 raise RequestError("group_busy", "The group already has an active operation.", 409)
+            allowed = design_targets(group)
+            if group["source"] == "image" and "front" not in allowed:
+                raise RequestError("missing_front", "A front reference is required before generating.", 400)
+            intent = design_request_fields(request["design_request"]) if "design_request" in request else None
+            old = None
+            if kind == "retry":
+                old = self.operation(group_id, identity(request.get("operation_id"), "operation_id"))
+                old_intent = old.get("design_request")
+                if old_intent is not None:
+                    old_intent = design_request_fields(old_intent)
+                if intent is not None and intent != old_intent:
+                    raise RequestError("revision_conflict", "A retry must preserve its original design scope.", 409)
+                intent = old_intent
+            single = intent is not None and intent["scope"] == "single_view"
+            if not allowed and not single:
+                raise RequestError("invalid_request", "An image or description is required before generating.", 400)
+            if intent is not None:
+                # A terminal ambiguous attempt has no obtained result to resume.
+                # A new, explicit plan keeps that receipt, while known results
+                # must be recovered before creating another supplier request.
+                for state in group["views"].values():
+                    if (state.get("latest_attempt") or {}).get("state") in {"result_pending", "result_saved"}:
+                        raise RequestError("provider_task_ambiguous", "Resolve the outstanding image request first.", 409)
+            if single:
+                if not group["published"] or kind == "initial":
+                    raise RequestError("invalid_group_state", "Confirm the initial design operation first.", 409)
+                if targets(request.get("target_views"), default_all=False) != (intent["target_view"],):
+                    raise RequestError("invalid_request", "The local edit must target exactly its named direction.", 400)
+                state = group["views"][intent["target_view"]]
+                if not state["current_version_id"] and (state.get("latest_attempt") or {}).get("state") not in {
+                        "failed", "stopped", "blocked", "ambiguous"}:
+                    raise RequestError("missing_current_view", "Generate this direction through the full design operation first.", 409)
             retry_uses_current_input = False
             if kind == "initial":
                 if group["published"]:
                     raise RequestError("invalid_group_state", "This group already has an initial operation.", 409)
                 draft = deepcopy(group["saved_draft"])
-                selected = VIEWS
-                bases = dict.fromkeys(VIEWS)
+                selected = allowed
+                bases = dict.fromkeys(selected)
                 retry_of = None
                 initial = True
                 reusable = {}
             elif kind == "edit":
                 draft = draft_fields(request)
-                requested = targets(request.get("target_views"))
-                selected = tuple(view for view in VIEWS
-                                 if view in requested or view in group["pending_views"])
+                if single:
+                    # A local edit is authorized by its current card or failed attempt.
+                    # Uploaded directions still determine the bulk generation scope.
+                    requested = selected = (intent["target_view"],)
+                else:
+                    requested = (allowed if intent is not None and intent["scope"] == "all_inputs" else
+                                 targets(request.get("target_views"), default_all=False) or allowed)
+                    if any(view not in allowed for view in requested):
+                        raise RequestError("invalid_request", "A selected direction has no current reference.", 400)
+                    selected = tuple(view for view in allowed if view in requested or view in group["pending_views"])
                 supplied_bases = request.get("base_versions")
                 if (not isinstance(supplied_bases, dict)
                         or any(view not in supplied_bases for view in requested)
@@ -127,8 +177,9 @@ class AdvancedMultiviewApplication:
                 reusable = {}
             else:
                 retry_of = identity(request.get("operation_id"), "operation_id")
-                old = self.operation(group_id, retry_of)
                 selected = targets(request.get("target_views"), default_all=False)
+                if not single and any(view not in allowed for view in selected):
+                    raise RequestError("invalid_request", "A retry direction has no current reference.", 400)
                 if not selected or any(v not in old["attempts"] for v in selected):
                     raise RequestError("invalid_request", "Explicit failed targets are required for retry.", 400)
                 for view in selected:
@@ -145,8 +196,8 @@ class AdvancedMultiviewApplication:
                     # but it remains bound to the original paid provider/model.
                     draft["design_provider"] = old["draft"]["design_provider"]
                     draft["design_model"] = old["draft"]["design_model"]
-                if initial and "front" in selected and not group["views"]["front"]["current_version_id"]:
-                    selected = tuple(v for v in VIEWS if not group["views"][v]["current_version_id"])
+                if not single and initial and "front" in selected and not group["views"]["front"]["current_version_id"]:
+                    selected = tuple(v for v in allowed if v in old["attempts"] and not group["views"][v]["current_version_id"])
                 bases = {v: old["attempts"][v]["base_version_id"] for v in selected}
                 if any(group["views"][v]["current_version_id"] != bases[v] for v in selected):
                     raise RequestError("revision_conflict", "A retry base changed; prepare a new edit instead.", 409)
@@ -166,7 +217,13 @@ class AdvancedMultiviewApplication:
                 if version_id:
                     context[view] = self.repository.version(group_id, view, version_id)
             dependencies = []
-            if kind == "edit" and not group["uploads"].get("front") and not context.get("front"):
+            if kind == "edit" and single:
+                view = intent["target_view"]
+                has_reference = (bases[view] or group["uploads"].get(view) or
+                                 (view != "front" and (group["uploads"].get("front") or context.get("front"))))
+                if not has_reference and not (draft["prompt"].strip() or intent["local_prompt"].strip()):
+                    raise RequestError("empty_input", "Enter a description for this direction or provide a reference.", 400)
+            elif kind == "edit" and not group["uploads"].get("front") and not context.get("front"):
                 if any(not bases[v] and v != "front" and not group["uploads"].get(v) for v in selected):
                     if "front" not in selected:
                         dependencies.append("front")
@@ -177,7 +234,7 @@ class AdvancedMultiviewApplication:
                       "source": group["source"], "context": context,
                       "pending_views": list(group["pending_views"]),
                       "changed_upload_views": list(group["changed_upload_views"]),
-                      "view_contract": view_contract_snapshot()}
+                      "view_contract": view_contract_snapshot(), "design_targets": list(allowed)}
             if kind == "retry" and not retry_uses_current_input:
                 frozen = deepcopy(old["frozen"])
                 if initial:
@@ -191,6 +248,8 @@ class AdvancedMultiviewApplication:
                     "publication_bases": {v: group["views"][v]["current_version_id"] for v in selected},
                     "reusable_versions": reusable,
                     "max_new_image_calls": len(selected) - len(reusable), "max_new_model_tasks": 0}
+            if intent is not None:
+                plan["design_request"] = intent
         capability = self.capabilities(draft["design_provider"], draft["design_model"])
         self._check_capability(capability, modes.values(), group["source"])
         if capability.get("model"):
@@ -241,7 +300,14 @@ class AdvancedMultiviewApplication:
             raise RequestError("invalid_request", "The command and plan IDs must match.", 400)
         with self.repository.transaction():
             plan = self.repository.read_record(group_id, f"plans/{command_id}.json")
-            if plan.get("confirmation_fingerprint") != request.get("confirmation_fingerprint"):
+            intent = design_request_fields(plan["design_request"]) if "design_request" in plan else None
+            single = intent is not None and intent["scope"] == "single_view"
+            if single and (plan["targets"] != [intent["target_view"]] or plan.get("dependency_views")
+                           or not 0 <= plan["max_new_image_calls"] <= 1):
+                raise RequestError("stale_confirmation", "The single-direction plan is invalid.", 409)
+            if (plan.get("confirmation_fingerprint") != request.get("confirmation_fingerprint") or
+                    fingerprint({key: value for key, value in plan.items()
+                                 if key not in {"confirmation_fingerprint", "expires_at"}}) != plan["confirmation_fingerprint"]):
                 raise RequestError("stale_confirmation", "Confirm the current plan before generating.", 409)
             if self.repository.path(group_id, f"reconciled-submissions/design/{command_id}.json", must_exist=False).exists():
                 raise RequestError("submission_not_accepted", "This request was reconciled as not accepted. Confirm a new plan.", 409)
@@ -284,8 +350,9 @@ class AdvancedMultiviewApplication:
             group["active_operation_id"] = command_id
             group["published"] = True
             group["stop_intent"] = False
-            group["saved_draft"] = deepcopy(plan["draft"])
-            group["latest_submitted_draft"] = deepcopy(plan["draft"])
+            if not single:
+                group["saved_draft"] = deepcopy(plan["draft"])
+                group["latest_submitted_draft"] = deepcopy(plan["draft"])
             for view, attempt in operation["attempts"].items():
                 group["views"][view]["latest_attempt"] = {"operation_id": command_id,
                     "attempt_id": attempt["id"], "state": "queued", "error": None}
