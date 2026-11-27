@@ -26,6 +26,7 @@ namespace Slic3r {
 class GCodeWriter {
 public:
     GCodeConfig config;
+    bool honor_forge_physical_tools = false;
     bool multiple_extruders;
 
     GCodeWriter() :

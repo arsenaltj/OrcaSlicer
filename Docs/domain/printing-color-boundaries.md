@@ -53,3 +53,7 @@
 | 真实打印 | 身份/造型、表面缺陷、色差、强度和重复性是否符合约定标准 |
 
 前三层不能替代最后一层。当前仓库有结构/视觉/切片测试与报告，不据此宣称已有经硬件标定的全链路打印资格。
+
+## Mobile direct color SDK (2026-11-20)
+
+The std-only preview palette, Direct matcher, CIEDE2000 function and quality evaluation now share source under src/slic3r/AI/Color; existing desktop headers are compatibility includes. Model SDK direct profile excludes GUI/layered recipe execution, preserves the desktop 1..6 direct limits, and marks trial-only drafts as nonmanufacturing. Source/project/SDK and material/process identity must remain current. New Slicing color export returns explicit native part/instance identity and requires source-project rebind; flattening transformed colored objects into a single generic volume is not a completed project round trip.

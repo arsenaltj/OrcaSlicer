@@ -36,6 +36,7 @@ public:
     void        remember_motion_settings(const std::string &gcode);
 
 private:
+    unsigned int logical_tool(const char *first, const char *last) const;
 	CoolingBuffer& operator=(const CoolingBuffer&) = delete;
     std::vector<PerExtruderAdjustments> parse_layer_gcode(const std::string &gcode, std::vector<float> &current_pos);
     // The slowdown aims at time_scale times each minimum layer time, in the time at the feed rates.

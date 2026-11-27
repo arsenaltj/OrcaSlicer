@@ -34,7 +34,11 @@ public:
     // The last LayerResult must be LayerResult::make_nop_layer_result() because it always returns GCode for the previous layer.
     // When process_layer is called for the first layer, then LayerResult::make_nop_layer_result() is returned.
     LayerResult process_layer(LayerResult &&input);
+    void set_tool_routing(const PrintConfig &config,const std::vector<unsigned> &active,unsigned initial_logical);
 private:
+    bool m_honor_tools=false;
+    std::vector<int> m_tool_map;
+    std::vector<unsigned> m_active_materials;
 
     void process_layer(const std::string &gcode);
 

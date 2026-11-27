@@ -1,4 +1,5 @@
 #include "../GCode.hpp"
+#include "../HonorForgeToolRouting.hpp"
 #include "../LocalesUtils.hpp"
 #include "libslic3r/Extruder.hpp"
 #include "libslic3r/Point.hpp"
@@ -12,6 +13,7 @@
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/log/trivial.hpp>
 #include <cstddef>
+#include <cctype>
 #include <cstdlib>
 #include <cmath>
 #include <charconv>
@@ -39,6 +41,19 @@
 #include "libslic3r/PrintConfig.hpp"
 
 namespace Slic3r {
+
+unsigned int CoolingBuffer::logical_tool(const char *first,const char *last) const
+{
+    unsigned int raw=0;
+    const auto parsed=std::from_chars(first,last,raw);
+    const bool honor=HonorForgeToolRouting::enabled(m_config);
+    if(parsed.ec!=std::errc() || (honor && parsed.ptr!=last && *parsed.ptr!=';' && !std::isspace(static_cast<unsigned char>(*parsed.ptr)))) {
+        if(honor)throw std::runtime_error("HONOR_PHYSICAL_TOOL_INVALID");
+        return unsigned(-1);
+    }
+    if(honor)return HonorForgeToolRouting::logical_active(m_config.filament_map.values,raw,m_extruder_ids);
+    return std::find(m_extruder_ids.begin(),m_extruder_ids.end(),raw)!=m_extruder_ids.end()?raw:unsigned(-1);
+}
 
 CoolingBuffer::CoolingBuffer(GCode &gcodegen) : m_config(gcodegen.config()), m_gcodegen(gcodegen), m_toolchange_prefix(gcodegen.writer().toolchange_prefix()), m_current_extruder(0), m_current_nozzle(0),
     m_layer_timer_config(gcodegen.config())
@@ -472,7 +487,11 @@ void CoolingBuffer::remember_motion_settings(const std::string &gcode)
 
 std::string CoolingBuffer::timer_setup(unsigned int extruder, const std::vector<float> &position) const
 {
-    std::string setup = "T" + std::to_string(extruder) + '\n';
+    // The timer parses emitted firmware tools, just like the final preview.
+    // Honor's current_extruder is logical; convert exactly once at this boundary.
+    const unsigned int tool = HonorForgeToolRouting::enabled(m_config)
+        ? HonorForgeToolRouting::physical(m_config.filament_map.values, extruder) : extruder;
+    std::string setup = "T" + std::to_string(tool) + '\n';
     setup += m_config.use_relative_e_distances.value ? "M83\n" : "M82\n";
     std::vector<const std::pair<size_t, std::string> *> settings;
     for (const auto &[kind, setting] : m_motion_settings)
@@ -664,11 +683,10 @@ std::vector<PerExtruderAdjustments> CoolingBuffer::parse_layer_gcode(const std::
             line.type = CoolingLine::TYPE_EXTRUDE_END;
             active_speed_modifier = size_t(-1);
         } else if (boost::starts_with(sline, m_toolchange_prefix)) {
-            unsigned int new_extruder = 0;
-            auto ret = std::from_chars(sline.data() + m_toolchange_prefix.size(), sline.data() + sline.size(), new_extruder);
-            if (std::errc::invalid_argument != ret.ec) {
-                // Only change extruder in case the number is meaningful. User could provide an out-of-range index through custom gcodes -
-                // those shall be ignored.
+            const auto new_extruder=logical_tool(sline.data()+m_toolchange_prefix.size(),sline.data()+sline.size());
+            {
+                // Honor tools were strictly resolved above. Generic invalid or
+                // inactive custom tools retain the previous logical material.
                 if (new_extruder < map_extruder_to_per_extruder_adjustment.size()) {
                     if (new_extruder != current_extruder) {
                         // Switch the tool.
@@ -1151,9 +1169,8 @@ std::string CoolingBuffer::apply_layer_cooldown(
         if (line_start > pos)
             new_gcode.append(pos, line_start - pos);
         if (line->type & CoolingLine::TYPE_SET_TOOL) {
-            unsigned int new_extruder = 0;
-            auto ret = std::from_chars(line_start + m_toolchange_prefix.size(), line_end, new_extruder);
-            if (std::errc::invalid_argument != ret.ec) {
+            const auto new_extruder=logical_tool(line_start+m_toolchange_prefix.size(),line_end);
+            if (new_extruder!=unsigned(-1)) {
                 if (new_extruder != m_current_extruder) {
                     m_current_extruder = new_extruder;
                     change_extruder_set_fan(true);

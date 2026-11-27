@@ -1,3 +1,4 @@
+#include "PlateProcess.hpp"
 #include "../libslic3r.h"
 #include "../Exception.hpp"
 #include "../IMEXHelpers.hpp"
@@ -1321,6 +1322,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         //BBS: plater related structures
         bool m_is_bbl_3mf { false };
         bool m_parsing_slice_info { false };
+        bool m_invalid_reserved_plate_metadata { false };
+        std::vector<std::string> m_config_xml_path;
         PlateDataMaps m_plater_data;
         PlateData* m_curr_plater;
         CurrentInstance m_curr_instance;
@@ -1565,6 +1568,9 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
     bool _BBS_3MF_Importer::load_model_from_file(const std::string& filename, Model& model, PlateDataPtrs& plate_data_list, std::vector<Preset*>& project_presets, DynamicPrintConfig& config,
         ConfigSubstitutionContext& config_substitutions, LoadStrategy strategy, bool* is_bbl_3mf, bool* is_orca_3mf, Semver& file_version, Import3mfProgressFn proFn, BBLProject *project, int plate_id)
     {
+        m_invalid_reserved_plate_metadata = false;
+        m_parsing_slice_info = false;
+        m_config_xml_path.clear();
         m_version = 0;
         m_fdm_supports_painting_version = 0;
         m_seam_painting_version = 0;
@@ -1694,6 +1700,9 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
 
     bool _BBS_3MF_Importer::load_gcode_3mf_from_stream(std::istream &data, Model &model, PlateDataPtrs &plate_data_list, DynamicPrintConfig &config, Semver &file_version)
     {
+        m_invalid_reserved_plate_metadata = false;
+        m_parsing_slice_info = false;
+        m_config_xml_path.clear();
         mz_zip_archive archive;
         mz_zip_zero_struct(&archive);
         archive.m_pRead = mz_zip_read_istream;
@@ -1785,6 +1794,9 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                     //extract slice info from archive
                     _extract_xml_from_archive(archive, stat, _handle_start_config_xml_element, _handle_end_config_xml_element);
                     m_parsing_slice_info = false;
+                    // Ordinary statistics keep their existing nonfatal parse
+                    // behavior. Reserved process metadata cannot be ignored.
+                    if (m_invalid_reserved_plate_metadata) return false;
                 }
                 else if (boost::algorithm::iequals(name, FILAMENT_SEQUENCE_FILE)) {
                     _extract_filament_sequence_from_archive(archive, stat);
@@ -2249,6 +2261,9 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                     //extract slice info from archive
                     _extract_xml_from_archive(archive, stat, _handle_start_config_xml_element, _handle_end_config_xml_element);
                     m_parsing_slice_info = false;
+                    // Ordinary statistics keep their existing nonfatal parse
+                    // behavior. Reserved process metadata cannot be ignored.
+                    if (m_invalid_reserved_plate_metadata) return false;
                 }
                 else if (!dont_load_config && boost::algorithm::iequals(name, FILAMENT_SEQUENCE_FILE)) {
                     _extract_filament_sequence_from_archive(archive, stat);
@@ -3855,6 +3870,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         if (m_xml_parser == nullptr)
             return;
 
+        if (::strcmp(CONFIG_TAG, name) == 0) m_config_xml_path.clear();
+        m_config_xml_path.emplace_back(name);
         bool res = true;
         unsigned int num_attributes = (unsigned int)XML_GetSpecifiedAttributeCount(m_xml_parser);
 
@@ -3929,6 +3946,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         else if (::strcmp(ASSEMBLE_ITEM_TAG, name) == 0)
             res = _handle_end_assemble_item();
 
+        if (!m_config_xml_path.empty()) m_config_xml_path.pop_back();
         if (!res)
             _stop_xml_parser();
     }
@@ -4777,6 +4795,15 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         std::string value = bbs_get_attribute_value_string(attributes, num_attributes, VALUE_ATTR);
         if (key.empty())
             return true;
+        // Reserved process/session metadata belongs to direct plate metadata
+        // in ModelSettings, never statistics or an instance/object/part.
+        if (PlateProcess::reserved_key(key) &&
+            (m_parsing_slice_info || !m_curr_plater || m_config_xml_path.size() < 2 ||
+             m_config_xml_path[m_config_xml_path.size() - 2] != PLATE_TAG)) {
+            m_invalid_reserved_plate_metadata = true;
+            add_error("RESERVED_PLATE_METADATA_UNSUPPORTED_CONTEXT:" + key);
+            return false;
+        }
 
         auto get_vector_from_string = [](const std::string& str) -> std::vector<int> {
             std::stringstream stream(str);
@@ -4902,17 +4929,12 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                      key.rfind("orca_workbench_curve_", 0) == 0)) {
                 BOOST_LOG_TRIVIAL(warning) << "Ignoring workbench metadata with an unsupported version or size";
             }
-            else if (m_curr_plater != nullptr && key.compare(0, ORCA_PLATE_PROCESS_PREFIX.size(), ORCA_PLATE_PROCESS_PREFIX) == 0) {
-                const std::string option_key = key.substr(ORCA_PLATE_PROCESS_PREFIX.size());
-                if (std::find(ORCA_PLATE_PROCESS_KEYS.begin(), ORCA_PLATE_PROCESS_KEYS.end(), option_key) !=
-                        ORCA_PLATE_PROCESS_KEYS.end() && value.size() <= 1024) {
-                    try {
-                        DynamicPrintConfig parsed;
-                        parsed.set_deserialize_strict(option_key, value);
-                        m_curr_plater->config.apply(parsed);
-                    } catch (const BadOptionValueException&) {
-                        BOOST_LOG_TRIVIAL(warning) << "Invalid plate process override: " << option_key;
-                    }
+            else if (m_curr_plater && PlateProcess::has_prefix(key)) {
+                try {
+                    PlateProcess::apply(m_curr_plater->config, key.substr(PlateProcess::prefix.size()), value);
+                } catch (const std::exception& error) {
+                    add_error(error.what());
+                    return false;
                 }
             }
             else if (key == FILAMENT_MAP_MODE_ATTR)
@@ -5223,7 +5245,6 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             return false;
         }
 
-        //do nothing
         return true;
     }
 
@@ -5625,15 +5646,18 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             if (shared_volume || !volume->source.mesh_offset.isApprox(Vec3d::Zero()) || !hull || hull->empty())
                 volume->calculate_convex_hull();
 
-            //set transform from 3mf
-            Slic3r::Geometry::Transformation comp_transformatino(sub_comp.transform);
-            volume->set_transformation(comp_transformatino * volume->get_transformation());
             if (shared_volume) {
+                // The shared mesh was centered when its first volume was
+                // created. Restore that center in mesh-local coordinates,
+                // before applying this reference's component transformation.
                 const TriangleMesh& trangle_mesh = volume->mesh();
                 Vec3d shift = trangle_mesh.get_init_shift();
                 if (!shift.isApprox(Vec3d::Zero()))
                     volume->translate(shift);
             }
+            //set transform from 3mf
+            Slic3r::Geometry::Transformation comp_transformatino(sub_comp.transform);
+            volume->set_transformation(comp_transformatino * volume->get_transformation());
 
             // recreate custom supports, seam and mmu segmentation from previously loaded attribute
             {
@@ -8944,9 +8968,11 @@ bool _BBS_3MF_Exporter::_add_model_config_file_to_archive(mz_zip_archive& archiv
                         }
                     }
                 }
-                for (const auto key : ORCA_PLATE_PROCESS_KEYS) {
+                // Only serialize process options actually present on this plate.
+                for (const auto key : PlateProcess::keys) {
                     if (const auto* option = plate_data->config.option(std::string(key))) {
-                        stream << "    <" << METADATA_TAG << " " << KEY_ATTR << "=\"" << ORCA_PLATE_PROCESS_PREFIX << key
+                        PlateProcess::parse(std::string(key), option->serialize());
+                        stream << "    <" << METADATA_TAG << " " << KEY_ATTR << "=\"" << PlateProcess::prefix << key
                                << "\" " << VALUE_ATTR << "=\"" << xml_escape_double_quotes_attribute_value(option->serialize())
                                << "\"/>\n";
                     }

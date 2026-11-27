@@ -136,4 +136,5 @@ J glb_removed_deviation(Context&, const std::vector<V>&, const std::vector<T>&, 
 #endif
 J open_document(Context&, const J&);
 J manufacturing_bridge(Context&, const J&);
+J print_colors(Context&, const J&);
 } // namespace orca_model_detail

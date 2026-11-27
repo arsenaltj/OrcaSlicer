@@ -104,7 +104,7 @@ def read_metadata(path: Path) -> dict:
             match = re.search(r"=\s*(?:(\d+)d\s*)?(?:(\d+)h\s*)?(?:(\d+)m\s*)?([\d.]+)s", line)
             if match:
                 metadata["estimated_time"] = sum(float(n or 0) * scale for n, scale in zip(match.groups(), [86400, 3600, 60, 1]))
-        match = re.search(r"(?:total layer number|total_layer_count|LAYER_COUNT)\s*[:=]\s*(\d+)", line, re.I)
+        match = re.fullmatch(r"\s*;\s*(?:total layer number|total_layer_count|LAYER_COUNT)\s*[:=]\s*(\d+)\s*", line, re.I)
         if match:
             metadata["layer_count"] = int(match[1])
         match = re.search(r";\s*TIME:\s*([\d.]+)", line, re.I)

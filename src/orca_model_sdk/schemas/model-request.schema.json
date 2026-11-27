@@ -3,58 +3,556 @@
   "$id": "urn:orca:model-sdk:request:v1",
   "title": "Model SDK v1 request",
   "type": "object",
-  "required": ["schemaVersion", "operation"],
+  "required": [
+    "schemaVersion",
+    "operation"
+  ],
   "properties": {
-    "schemaVersion": { "const": 1 },
-    "operation": { "enum": ["capabilities", "inspect", "import", "importConverted", "create", "getScene", "transform", "paint", "assignMaterial", "undo", "redo", "save", "load", "pick", "analyze", "weldExact", "selectRegion", "prepareCandidate", "acceptCandidate", "discardCandidate", "exportManufacturing", "manufacturingSnapshot", "sliceDocument", "recommendDocument", "platformAI", "slicing", "inspectGlbArtifact", "repairGlbArtifact"] },
-    "policyVersion": { "enum": ["glb-safety-v1", "glb-repair-v2"] },
-    "sourcePath": { "type": "string", "minLength": 1 },
-    "outputDirectory": { "type": "string", "minLength": 1 },
-    "identity": {"type":"object","additionalProperties":false,"required":["accountId","jobId","assetId","assetVersion","sourceSha256","operationId"],"properties":{"accountId":{"type":"string","minLength":1,"maxLength":128},"jobId":{"type":"string","minLength":1,"maxLength":128},"assetId":{"type":"string","minLength":1,"maxLength":128},"assetVersion":{"type":"integer","minimum":1},"sourceSha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"operationId":{"type":"string","minLength":1,"maxLength":128}}},
-    "expectedRevision": { "type": "integer", "minimum": 1 },
-    "units": { "const": "mm" },
-    "inputPath": { "type": "string", "minLength": 1 },
-    "appearancePath": { "type": "string", "minLength": 1 },
-    "returnInlineScene": { "type": "boolean", "default": false },
-    "documentId": { "type": "string", "pattern": "^[0-9a-f]+$" },
-    "entityId": { "type": "string", "minLength": 1 },
-    "candidateId": { "type": "string", "minLength": 1 },
-    "translation": { "$ref": "#/$defs/vector3" },
-    "rotationDegrees": { "$ref": "#/$defs/vector3" },
-    "scale": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "number", "exclusiveMinimum": 0 } },
-    "origin": { "$ref": "#/$defs/vector3" },
-    "direction": { "$ref": "#/$defs/vector3" },
-    "vertices": { "type": "array", "minItems": 3, "maxItems": 7500000, "items": { "$ref": "#/$defs/vector3" } },
-    "triangles": { "type": "array", "minItems": 1, "maxItems": 2500000, "items": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "integer", "minimum": 0 } } },
-    "faces": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 0 } },
-    "faceColors": { "type": "array", "items": { "$ref": "#/$defs/rgba" } },
-    "color": { "$ref": "#/$defs/rgba" },
-    "materialIds": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 } },
-    "materialId": { "type": "integer", "minimum": 0, "maximum": 255 },
-    "format": { "enum": ["obj", "stl"] },
-    "acceptAppearanceLoss": { "type": "boolean" },
-    "outputPath": { "type": "string", "minLength": 1 },
-    "request": { "type": "object", "description": "Authoritative native Slicing schemaVersion 2 configuration; no provider parameters." },
-    "command": { "type": ["object", "string"] }
+    "schemaVersion": {
+      "const": 1
+    },
+    "operation": {
+      "enum": [
+        "capabilities",
+        "inspect",
+        "import",
+        "importConverted",
+        "create",
+        "getScene",
+        "transform",
+        "paint",
+        "assignMaterial",
+        "undo",
+        "redo",
+        "save",
+        "load",
+        "pick",
+        "analyze",
+        "weldExact",
+        "selectRegion",
+        "prepareCandidate",
+        "acceptCandidate",
+        "discardCandidate",
+        "exportManufacturing",
+        "manufacturingSnapshot",
+        "sliceDocument",
+        "recommendDocument",
+        "platformAI",
+        "slicing",
+        "inspectGlbArtifact",
+        "repairGlbArtifact",
+        "getPrintPalette",
+        "matchPrintColors",
+        "applyPrintColors",
+        "savePrintColorDraft"
+      ]
+    },
+    "policyVersion": {
+      "enum": [
+        "glb-safety-v1",
+        "glb-repair-v2"
+      ]
+    },
+    "sourcePath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "outputDirectory": {
+      "type": "string",
+      "minLength": 1
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accountId",
+        "jobId",
+        "assetId",
+        "assetVersion",
+        "sourceSha256",
+        "operationId"
+      ],
+      "properties": {
+        "accountId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "jobId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "assetId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "assetVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sourceSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "operationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "expectedRevision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "units": {
+      "const": "mm"
+    },
+    "inputPath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "appearancePath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "returnInlineScene": {
+      "type": "boolean",
+      "default": false
+    },
+    "documentId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]+$"
+    },
+    "entityId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "candidateId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "translation": {
+      "$ref": "#/$defs/vector3"
+    },
+    "rotationDegrees": {
+      "$ref": "#/$defs/vector3"
+    },
+    "scale": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      }
+    },
+    "origin": {
+      "$ref": "#/$defs/vector3"
+    },
+    "direction": {
+      "$ref": "#/$defs/vector3"
+    },
+    "vertices": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 7500000,
+      "items": {
+        "$ref": "#/$defs/vector3"
+      }
+    },
+    "triangles": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2500000,
+      "items": {
+        "type": "array",
+        "minItems": 3,
+        "maxItems": 3,
+        "items": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "faces": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "faceColors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/rgba"
+      }
+    },
+    "color": {
+      "$ref": "#/$defs/rgba"
+    },
+    "materialIds": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 255
+      }
+    },
+    "materialId": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 255
+    },
+    "format": {
+      "enum": [
+        "obj",
+        "stl"
+      ]
+    },
+    "acceptAppearanceLoss": {
+      "type": "boolean"
+    },
+    "outputPath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "request": {
+      "type": "object",
+      "description": "Authoritative native Slicing schemaVersion 2 configuration; no provider parameters."
+    },
+    "command": {
+      "type": [
+        "object",
+        "string"
+      ]
+    },
+    "requestedColorCount": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 6
+    },
+    "palette": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "required": [
+          "slot",
+          "materialId",
+          "color"
+        ],
+        "properties": {
+          "slot": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          },
+          "materialId": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          },
+          "color": {
+            "$ref": "#/$defs/vector3"
+          }
+        }
+      }
+    },
+    "materialFingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "processFingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "trialOnly": {
+      "type": "boolean"
+    },
+    "confirmMaterialMapping": {
+      "type": "boolean"
+    },
+    "acceptColorError": {
+      "type": "boolean"
+    }
   },
   "allOf": [
-    { "if": { "properties": { "operation": { "enum": ["import", "inspect", "importConverted"] } } }, "then": { "required": ["inputPath", "units"] } },
-    { "if": { "properties": { "operation": { "const": "importConverted" } } }, "then": { "required": ["appearancePath"] } },
-    { "if": { "properties": { "operation": { "const": "create" } } }, "then": { "required": ["vertices", "triangles"] } },
-    { "if": { "properties": { "operation": { "enum": ["transform", "paint", "assignMaterial", "undo", "redo", "save", "weldExact", "prepareCandidate", "acceptCandidate", "discardCandidate", "exportManufacturing", "manufacturingSnapshot", "sliceDocument", "recommendDocument"] } } }, "then": { "required": ["expectedRevision"] } },
-    { "if": { "properties": { "operation": { "enum": ["paint", "assignMaterial"] } } }, "then": { "required": ["faces"] } },
-    { "if": { "properties": { "operation": { "const": "load" } } }, "then": { "required": ["documentId"] } },
-    { "if": { "properties": { "operation": { "const": "pick" } } }, "then": { "required": ["origin", "direction"] } },
-    { "if": { "properties": { "operation": { "const": "acceptCandidate" } } }, "then": { "required": ["candidateId"] } },
-    { "if": { "properties": { "operation": { "const": "prepareCandidate" } } }, "then": { "required": ["command"], "properties": { "command": { "type": "object" } } } },
-    { "if": { "properties": { "operation": { "const": "platformAI" } } }, "then": { "required": ["command"], "properties": { "command": { "enum": ["capabilities", "models", "quote", "submit", "query", "cancel", "reconcile", "convertModel", "queryConversion"] } } } },
-    { "if": { "properties": { "operation": { "const": "slicing" } } }, "then": { "required": ["request"] } },
-    { "if": { "properties": { "operation": { "enum": ["inspectGlbArtifact","repairGlbArtifact"] } } }, "then": { "required": ["identity","sourcePath"] } },
-    { "if": { "properties": { "operation": { "const": "repairGlbArtifact" } } }, "then": { "required": ["outputDirectory"] } }
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "enum": [
+              "import",
+              "inspect",
+              "importConverted"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "inputPath",
+          "units"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "importConverted"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "appearancePath"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "create"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "vertices",
+          "triangles"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "enum": [
+              "transform",
+              "paint",
+              "assignMaterial",
+              "undo",
+              "redo",
+              "save",
+              "weldExact",
+              "prepareCandidate",
+              "acceptCandidate",
+              "discardCandidate",
+              "exportManufacturing",
+              "manufacturingSnapshot",
+              "sliceDocument",
+              "recommendDocument"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "expectedRevision"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "enum": [
+              "paint",
+              "assignMaterial"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "faces"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "load"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "documentId"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "pick"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "origin",
+          "direction"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "acceptCandidate"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "candidateId"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "prepareCandidate"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "command"
+        ],
+        "properties": {
+          "command": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "platformAI"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "command"
+        ],
+        "properties": {
+          "command": {
+            "enum": [
+              "capabilities",
+              "models",
+              "quote",
+              "submit",
+              "query",
+              "cancel",
+              "reconcile",
+              "convertModel",
+              "queryConversion"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "slicing"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "request"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "enum": [
+              "inspectGlbArtifact",
+              "repairGlbArtifact"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "identity",
+          "sourcePath"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "repairGlbArtifact"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "outputDirectory"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "enum": [
+              "getPrintPalette",
+              "matchPrintColors",
+              "applyPrintColors",
+              "savePrintColorDraft"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "documentId",
+          "expectedRevision"
+        ]
+      }
+    }
   ],
   "$defs": {
-    "vector3": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "number" } },
-    "rgba": { "type": "array", "minItems": 4, "maxItems": 4, "items": { "type": "number", "minimum": 0, "maximum": 1 } }
+    "vector3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "number"
+      }
+    },
+    "rgba": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      }
+    }
   },
   "additionalProperties": true
 }

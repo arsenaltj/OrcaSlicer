@@ -2,6 +2,8 @@
 
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <algorithm>
+#include <map>
 
 #include <map>
 
@@ -166,6 +168,127 @@ TEST_CASE("smart slice aggregates all plate meshes while preserving the single-m
     CHECK(combined.metrics.closed_mesh);
 }
 
+namespace {
+TriangleMeshSnapshot recommendation_cube()
+{
+    TriangleMeshSnapshot cube;
+    cube.vertices = {{0.,0.,0.},{10.,0.,0.},{10.,10.,0.},{0.,10.,0.},
+                     {0.,0.,10.},{10.,0.,10.},{10.,10.,10.},{0.,10.,10.}};
+    cube.triangles = {{{0,2,1}},{{0,3,2}},{{4,5,6}},{{4,6,7}},
+                      {{0,1,5}},{{0,5,4}},{{1,2,6}},{{1,6,5}},
+                      {{2,3,7}},{{2,7,6}},{{3,0,4}},{{3,4,7}}};
+    return cube;
+}
+}
+
+TEST_CASE("horizontal undersides above the bed require support in all three plans",
+          "[SmartSlice][SmartSlicingEngine][RecommendationParity]")
+{
+    auto cube = recommendation_cube();
+    const SmartSlicingEngine engine;
+    const auto contact = engine.AnalyzeAndPrecompute(cube, {}, {});
+    REQUIRE(contact.completed);
+    CHECK_THAT(contact.metrics.severe_overhang_area_ratio_60_deg, Catch::Matchers::WithinAbs(0., 1e-12));
+    for (const auto& plan : contact.recommendations) CHECK_FALSE(plan.enable_support);
+    for (auto& v : cube.vertices) v.z += 4.;
+    const auto floating = engine.AnalyzeAndPrecompute(cube, {}, {});
+    REQUIRE(floating.completed);
+    CHECK_THAT(floating.metrics.severe_overhang_area_ratio_60_deg, Catch::Matchers::WithinAbs(1./6., 1e-12));
+    for (const auto& plan : floating.recommendations) CHECK(plan.enable_support);
+    // A reflected transform reverses winding but must preserve physical risk.
+    for (auto& v : cube.vertices) v.x = -v.x;
+    const auto mirrored = engine.AnalyzeAndPrecompute(cube, {}, {});
+    REQUIRE(mirrored.completed);
+    CHECK_THAT(mirrored.metrics.severe_overhang_area_ratio_60_deg,
+               Catch::Matchers::WithinAbs(floating.metrics.severe_overhang_area_ratio_60_deg, 1e-12));
+}
+
+TEST_CASE("triangle subdivision does not turn a solid cube into a thin wall",
+          "[SmartSlice][SmartSlicingEngine][RecommendationParity]")
+{
+    auto dense = recommendation_cube();
+    const SmartSlicingEngine engine;
+    const auto contact = engine.AnalyzeAndPrecompute(dense, {}, {});
+    for (int round = 0; round < 5; ++round) {
+        std::map<std::pair<uint32_t, uint32_t>, uint32_t> midpoints;
+        const auto midpoint = [&](uint32_t a, uint32_t b) {
+            if (a > b) std::swap(a, b);
+            const auto [it, created] = midpoints.emplace(std::make_pair(a, b), uint32_t(dense.vertices.size()));
+            if (created) {
+                const auto p = dense.vertices[a], q = dense.vertices[b];
+                dense.vertices.push_back({(p.x+q.x)*.5, (p.y+q.y)*.5, (p.z+q.z)*.5});
+            }
+            return it->second;
+        };
+        auto old = std::move(dense.triangles);
+        dense.triangles.clear();
+        for (const auto& face : old) {
+            const auto [a,b,c] = face.vertex_indices;
+            const auto ab = midpoint(a,b), bc = midpoint(b,c), ca = midpoint(c,a);
+            dense.triangles.insert(dense.triangles.end(), {{{a,ab,ca}},{{b,bc,ab}},{{c,ca,bc}},{{ab,bc,ca}}});
+        }
+    }
+    const auto detailed = engine.AnalyzeAndPrecompute(dense, {}, {});
+    REQUIRE(detailed.completed);
+    CHECK(detailed.metrics.closed_mesh);
+    CHECK_THAT(detailed.metrics.thin_wall_feature_ratio,
+               Catch::Matchers::WithinAbs(contact.metrics.thin_wall_feature_ratio, 1e-12));
+    auto thin = recommendation_cube();
+    for (auto& v : thin.vertices) v.z *= .05;
+    const auto plate = engine.AnalyzeAndPrecompute(thin, {}, {});
+    REQUIRE(plate.completed);
+    CHECK_THAT(plate.metrics.thin_wall_feature_ratio, Catch::Matchers::WithinAbs(1., 1e-12));
+}
+
+TEST_CASE("recommendations reject empty layer ranges and preserve legal boundaries",
+          "[SmartSlice][SmartSlicingEngine][RecommendationParity]")
+{
+    const SmartSlicingEngine engine;
+    MachinePreset machine;
+    machine.minimum_layer_height_mm = .18;
+    machine.maximum_layer_height_mm = .21;
+    const auto legal = engine.AnalyzeAndPrecompute(recommendation_cube(), machine, {});
+    REQUIRE(legal.completed);
+    for (const auto& plan : legal.recommendations) {
+        CHECK(plan.layer_height_mm >= .18);
+        CHECK(plan.layer_height_mm <= .21);
+    }
+    machine.minimum_layer_height_mm = .23;
+    const auto empty = engine.AnalyzeAndPrecompute(recommendation_cube(), machine, {});
+    CHECK_FALSE(empty.completed);
+    CHECK(empty.diagnostic_code == "smart_slice_layer_height_no_common_range");
+    machine.minimum_layer_height_mm = .21;
+    const auto boundary = engine.AnalyzeAndPrecompute(recommendation_cube(), machine, {});
+    REQUIRE(boundary.completed);
+    for (const auto& plan : boundary.recommendations)
+        CHECK_THAT(plan.layer_height_mm, Catch::Matchers::WithinAbs(.21, 1e-12));
+    machine.minimum_layer_height_mm = .31;
+    machine.maximum_layer_height_mm = .35;
+    const auto nozzle_limited = engine.AnalyzeAndPrecompute(recommendation_cube(), machine, {});
+    CHECK_FALSE(nozzle_limited.completed);
+    CHECK(nozzle_limited.diagnostic_code == "smart_slice_layer_height_no_common_range");
+}
+
+TEST_CASE("separately captured reflected bodies preserve aggregate physical risk",
+          "[SmartSlice][SmartSlicingEngine][RecommendationParity]")
+{
+    const SmartSlicingEngine engine;
+    for (double first_z : {0.,4.}) for (double second_z : {0.,4.}) {
+        auto a=recommendation_cube(), b=recommendation_cube();
+        for(auto& v:a.vertices) v.z+=first_z;
+        for(auto& v:b.vertices) {v.x=30.-v.x;v.z+=second_z;}
+        const auto single_a=engine.AnalyzeAndPrecompute(a,{},{});
+        const auto single_b=engine.AnalyzeAndPrecompute(b,{},{});
+        const auto together=engine.AnalyzeAndPrecompute(std::vector<TriangleMeshSnapshot>{a,b},{},{});
+        REQUIRE(together.completed);
+        CHECK(together.metrics.closed_mesh);
+        CHECK_THAT(together.metrics.volume_mm3,Catch::Matchers::WithinAbs(2000.,1e-9));
+        CHECK_THAT(together.metrics.severe_overhang_area_ratio_60_deg,Catch::Matchers::WithinAbs(
+            .5*(single_a.metrics.severe_overhang_area_ratio_60_deg+single_b.metrics.severe_overhang_area_ratio_60_deg),1e-12));
+        for(const auto& plan:together.recommendations) CHECK(plan.enable_support==(first_z>0. || second_z>0.));
+    }
+}
+
 TEST_CASE("SmartSlice derives layer choices from actual slopes and nozzle limits", "[SmartSlice][SmartSliceModelGeometry]")
 {
     ModelMetrics flat;
@@ -201,55 +324,6 @@ TEST_CASE("SmartSlice derives layer choices from actual slopes and nozzle limits
     CHECK(blocked.diagnostic_code == "smart_slice_layer_height_no_common_range");
 }
 
-TEST_CASE("SmartSlice identifies horizontal undersides away from the bed", "[SmartSlice][SmartSliceModelGeometry]")
-{
-    TriangleMeshSnapshot cube;
-    cube.vertices = {{0.,0.,0.},{10.,0.,0.},{10.,10.,0.},{0.,10.,0.},
-                     {0.,0.,10.},{10.,0.,10.},{10.,10.,10.},{0.,10.,10.}};
-    cube.triangles = {{{0,2,1}},{{0,3,2}},{{4,5,6}},{{4,6,7}},
-                      {{0,1,5}},{{0,5,4}},{{1,2,6}},{{1,6,5}},
-                      {{2,3,7}},{{2,7,6}},{{3,0,4}},{{3,4,7}}};
-    const SmartSlicingEngine engine;
-    const auto contact = engine.AnalyzeAndPrecompute(cube, {}, {});
-    auto thin = cube;
-    for (auto& v : thin.vertices) v.z *= 0.05;
-    const auto thin_span = engine.AnalyzeAndPrecompute(thin, {}, {});
-    CHECK(thin_span.metrics.thin_wall_feature_ratio == 1.);
-    auto dense = cube;
-    for (int round = 0; round < 5; ++round) {
-        std::map<std::pair<uint32_t, uint32_t>, uint32_t> midpoints;
-        const auto midpoint = [&](uint32_t a, uint32_t b) {
-            if (a > b) std::swap(a, b);
-            const auto [it, created] = midpoints.emplace(std::make_pair(a, b), uint32_t(dense.vertices.size()));
-            if (created) {
-                const auto p = dense.vertices[a], q = dense.vertices[b];
-                dense.vertices.push_back({(p.x + q.x) * 0.5, (p.y + q.y) * 0.5, (p.z + q.z) * 0.5});
-            }
-            return it->second;
-        };
-        auto old = std::move(dense.triangles);
-        dense.triangles.clear();
-        for (const auto& face : old) {
-            const auto [a,b,c] = face.vertex_indices;
-            const auto ab = midpoint(a,b), bc = midpoint(b,c), ca = midpoint(c,a);
-            dense.triangles.insert(dense.triangles.end(), {{{a,ab,ca}},{{b,bc,ab}},{{c,ca,bc}},{{ab,bc,ca}}});
-        }
-    }
-    const auto detailed = engine.AnalyzeAndPrecompute(dense, {}, {});
-    CHECK(detailed.metrics.closed_mesh);
-    CHECK(detailed.metrics.thin_wall_feature_ratio == contact.metrics.thin_wall_feature_ratio);
-    for (auto& v : cube.vertices) v.z += 4.;
-    const auto floating = engine.AnalyzeAndPrecompute(cube, {}, {});
-    REQUIRE(contact.completed);
-    REQUIRE(floating.completed);
-    CHECK(contact.metrics.severe_overhang_area_ratio_60_deg == 0.);
-    CHECK(floating.metrics.severe_overhang_area_ratio_60_deg > 0.15);
-    CHECK_FALSE(contact.recommendations[0].enable_support);
-    CHECK(floating.recommendations[0].support_type == "normal(auto)");
-    for (auto& v : cube.vertices) v.x = -v.x;
-    const auto mirrored = engine.AnalyzeAndPrecompute(cube, {}, {});
-    CHECK(mirrored.metrics.severe_overhang_area_ratio_60_deg == floating.metrics.severe_overhang_area_ratio_60_deg);
-}
 
 TEST_CASE("SmartSlice ranks native time, geometry risk and total material together", "[SmartSlice][SmartSliceMeasuredChoice]")
 {
@@ -268,6 +342,7 @@ TEST_CASE("SmartSlice ranks native time, geometry risk and total material togeth
     options = {{}, {}};
     CHECK_FALSE(select_measured_slice_option(SliceMode::QUALITY, options));
 }
+
 
 TEST_CASE("local rules compute only the selected goal with the legacy rules unchanged", "[SmartSlice][SmartSlicingEngine]")
 {

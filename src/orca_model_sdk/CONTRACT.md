@@ -90,9 +90,15 @@ pixel decoder or a visual-print quality certificate. Limits remain 100 MiB input
 
 `glbSafetyV1.maxGeneratedFaceLimit` is currently 1,000,000: hosts must reject the
 unsupported 2M generation/local-processing combination before purchasing a
-generation, without silently substituting 1M. Input preflight estimates workspace
-as `inputBytes*4 + positionVertices*96 + triangles*448`, rejecting above 768 MiB;
-this is a bounded-admission estimate, not an OS RSS guarantee. A cooperative
+generation, without silently substituting 1M. In bounded RepairCore builds,
+`inspectionWorkspacePolicy:streamed-inspect-live-containers-v1` admits inspection
+using the maximum live-container phase plus allocator/library/JSON reserve after
+actual accessor streaming and exact dense-capacity reservation. The response
+reports `workspaceAdmission` phases and dense capacities. Limited v1 repair
+keeps `inputBytes*4 + positionVertices*96 + triangles*448` because its removal and
+publication storage differs; `repairWorkspacePolicy` states that boundary.
+Both reject above768MiB. These are bounded-admission estimates, not OS RSS
+guarantees. A cooperative
 120-second deadline is checked in controlled loops and at stage boundaries;
 the synchronous CGAL predicate can overrun before returning. Existing 2M model
 parameter support is unchanged elsewhere; expanding this local SDK combination
@@ -122,7 +128,11 @@ source/candidate SHA are reread before return. Raw originals are never replaced.
 
 Progress callbacks carry `schemaVersion:1,type:"glbSafetyProgress",identity`,
 monotonic per-call `sequence`, and actual `phase` (reading, structure, geometry,
-topology, repair, revalidation, publishing). No fabricated percentages. The host
+topology, repair, revalidation, publishing). No fabricated percentages.
+Strict predicate boundaries additionally report residualSoup, residualSurface,
+residualVertexLinks, residualIntersections and residualComplete. They preserve
+the same identity and monotonic sequence, and add cooperative cancellation
+points; they do not imply preemption inside the underlying CGAL call. The host
 owns queued/active scheduling. Cancellation is checked at stage boundaries and
 in parsing/mesh/distance loops; the synchronous CGAL predicate itself has no
 mid-call cancellation hook, so host worker termination must handle an imposed
@@ -381,3 +391,15 @@ not promote native-compatible output to strict manufacturing safety.
 ## Safe optional IO failure facts
 
 Only explicit IO_ERROR throws at actual file_open/file_read/temp_create/temp_write/temp_flush/output_publish sites may add error.ioDiagnostic with schemaVersion1 and a closed kind (unknown/access_denied/no_space/quota_exceeded/read_only/not_found/too_many_files/unsupported/cross_device/io_failure/interrupted). OS errors are captured immediately before cleanup. Stream calls clear errno before each operation; no error or successful short writes are unknown. No numeric code/path/system text or guessed candidate/receipt role is added. Public C ABI, SDK version, IO actions, retry/cleanup/EEXIST/atomic publication and successful proof are unchanged. Test controls exist only in separately compiled orca_model_io_test, not installed production SDK or ENV. Diagnostic instrumentation is not a fix or diagnosis of any device IO fault.
+
+## Direct print color workbench v1
+
+Operations getPrintPalette, matchPrintColors, applyPrintColors, savePrintColorDraft require documentId plus expectedRevision. Shared desktop Direct matching (1..6 target/physical colors) and CIEDE2000 quality are compiled without GUI/recipe dependencies. The face palette, manual protectedFaces, materialLocks and materialId/slot binding refer to the authoritative Model document face order, not preview LOD. Match stages a standard real scene descriptor candidate; apply requires the same candidate/materialFingerprint/processFingerprint, confirmMaterialMapping=true and explicit acceptColorError=true when over tolerance. IDs are integer logical materials, not preset IDs; routingVerified remains false until verified by Slicing/device configuration.
+
+trialOnly candidates cannot be applied; savePrintColorDraft commits trial colors while retaining original material IDs and marks a nonmanufacturing draft. Existing document save/load includes that state, save now returns documentPath. manufacturingSnapshot/sliceDocument/recommendDocument/exportManufacturing reject draft-only state; a real rematch and apply clears it. Generic acceptCandidate cannot bypass confirmation. Existing undo/redo remain revision-bound.
+
+Slicing exportColorDocument is a new schema2 operation on the replayed authoritative project; it writes double world-baked OBJ and appearance/part bindings, not a SC01 import. Unsupported native annotations/local process semantics are explicitly rejected; returned sourceProjectBinding requires rebind for round-trip into the original native structure. This source contract does not imply old Android Slicing binary support or physical printing qualification.
+
+Slicing prepareColorManufacturingConfig resolves the native device and versioned material catalog. Bindings contain explicit materialId (continuous logical index), slot (unique physical position, possibly sparse), tool (independent physical tool), materialPresetId, optional strictly checked materialPresetVersion, color and purpose. The SDK preserves native source print options, applies trusted native machine options and actual materials, then canonicalizes the complete config and returns the only authoritative fingerprints. applyColorDocument first verifies the unchanged source binding, then reruns this same helper before producing a native 3MF derivative. Support bindings configure support/interface routes without enabling support implicitly.
+
+Honor Forge/Klipper/non-SEMM physical tooling uses a narrowly identified native adapter with an exact source start template, hashed prepared macro and shared bijective material/tool mapping in emission and parsing. Actual G-code is reparsed before native usage/preview evidence is returned. Native material configuration and operator declarations do not verify physical loading: nativeMaterialConfigurationVerified=true, filamentConfirmationSource=operator, actualFilamentLoadingVerified=false. Single activity remains evidence version1 with the same receipt; multiple active materials use version2 with per-material logical/physical/tool/preset-version/family routes.

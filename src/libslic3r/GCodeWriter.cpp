@@ -7,6 +7,7 @@
 #include "Polygon.hpp"
 #include "PrintConfig.hpp"
 #include "IMEXHelpers.hpp"
+#include "HonorForgeToolRouting.hpp"
 #include "ClipperUtils.hpp"
 #include "Geometry/ArcWelder.hpp"
 #include "Line.hpp"
@@ -105,6 +106,7 @@ bool GCodeWriter::supports_separate_travel_acceleration(GCodeFlavor flavor)
 void GCodeWriter::apply_print_config(const PrintConfig &print_config)
 {
     this->config.apply(print_config, true);
+    honor_forge_physical_tools=HonorForgeToolRouting::enabled(print_config);
 
     // Some machine limits are stride-2 (normal, silent) pairs, here we extract the value that will be used,
     // which is always normal mode at the moment
@@ -359,7 +361,7 @@ std::string GCodeWriter::set_temperature(unsigned int temperature, GCodeFlavor f
 std::string GCodeWriter::set_temperature(unsigned int temperature, bool wait, int tool) const
 {
     // set tool to -1 to make sure we won't emit T parameter for single extruder or SEMM
-    if (!this->multiple_extruders || m_single_extruder_multi_material) {
+    if ((!this->multiple_extruders && !honor_forge_physical_tools) || m_single_extruder_multi_material) {
         tool = -1;
     } else {
         // Every caller of this overload addresses filaments by LOGICAL id, but M104/M109
@@ -367,7 +369,9 @@ std::string GCodeWriter::set_temperature(unsigned int temperature, bool wait, in
         // The static overload below is already physical-in (GCode.cpp:5952,
         // GCode/GCodeProcessor.cpp:1410) and must not be remapped, which is why the
         // translation lives here and not there.
-        tool = imex_physical_heater_for(this->config.is_imex.value, this->config.physical_extruder_map, tool);
+        tool = honor_forge_physical_tools && tool>=0 ?
+            int(HonorForgeToolRouting::physical(config.filament_map.values,unsigned(tool))) :
+            imex_physical_heater_for(this->config.is_imex.value, this->config.physical_extruder_map, tool);
     }
     return set_temperature(temperature, this->config.gcode_flavor, wait, tool);
 }
@@ -813,7 +817,7 @@ std::string GCodeWriter::toolchange(unsigned int filament_id, int nozzle_id)
     // if we are running a single-extruder setup, just set the extruder and return nothing
     std::ostringstream gcode;
     // Orca: also emit for non-BBL single-extruder multi-filament setups (MMU-style).
-    if (this->multiple_extruders || (this->config.filament_diameter.values.size() > 1 && !is_bbl_printers())) {
+    if (honor_forge_physical_tools || this->multiple_extruders || (this->config.filament_diameter.values.size() > 1 && !is_bbl_printers())) {
         // Orca: manual filament change keeps its tag line even on BBL machines, so the
         // M1020 form must not shadow it. nozzle_id is signed: the null-safe nozzle
         // lookup legitimately yields -1 ("no specific nozzle"), matching the literal
@@ -821,7 +825,8 @@ std::string GCodeWriter::toolchange(unsigned int filament_id, int nozzle_id)
         if (m_is_bbl_printers && !config.manual_filament_change)
             gcode << "M1020 S" << filament_id << " H" << nozzle_id;
         else
-            gcode << this->toolchange_prefix() << filament_id;
+            gcode << this->toolchange_prefix() << (honor_forge_physical_tools ?
+                HonorForgeToolRouting::physical(config.filament_map.values,filament_id) : filament_id);
         if (GCodeWriter::full_gcode_comment)
             gcode << " ; change extruder";
         gcode << "\n";

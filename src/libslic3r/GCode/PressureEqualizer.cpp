@@ -1,4 +1,5 @@
 #include <cassert>
+#include <charconv>
 #include <cstdlib>
 #include <boost/algorithm/string/predicate.hpp>
 #include <cctype>
@@ -15,6 +16,7 @@
 
 #include "../PrintConfig.hpp"
 #include "../GCode.hpp"
+#include "../HonorForgeToolRouting.hpp"
 
 #include "PressureEqualizer.hpp"
 #include "libslic3r/ExtrusionEntity.hpp"
@@ -24,6 +26,22 @@
 #include "libslic3r/Config.hpp"
 
 namespace Slic3r {
+
+void PressureEqualizer::set_tool_routing(const PrintConfig &config,const std::vector<unsigned> &active,unsigned initial_logical)
+{
+    m_honor_tools=HonorForgeToolRouting::enabled(config);
+    if(!m_honor_tools)return;
+    m_tool_map=config.filament_map.values;
+    m_active_materials=active;
+    HonorForgeToolRouting::validate(m_tool_map);
+    for(const auto logical:active)
+        if(logical>=m_tool_map.size() || logical>=m_filament_crossections.size())
+            throw std::runtime_error("HONOR_LOGICAL_MATERIAL_UNMAPPED");
+    if(std::find(active.begin(),active.end(),initial_logical)==active.end())
+        throw std::runtime_error("HONOR_LOGICAL_MATERIAL_INACTIVE");
+    // The planner already supplies a logical ID. Never invert it a second time.
+    m_current_extruder=initial_logical;
+}
 
 static const std::string EXTRUSION_ROLE_TAG = ";_EXTRUSION_ROLE:";
 static const std::string EXTRUDE_END_TAG = ";_EXTRUDE_END";
@@ -379,6 +397,7 @@ bool PressureEqualizer::process_line(const char *line, const char *line_end, GCo
                         diff[i] = new_pos[i] - m_current_pos[i];
                     // volumetric extrusion rate = A_filament * F_xyz * L_e / L_xyz [mm^3/min]
                     float len2 = diff[0]*diff[0]+diff[1]*diff[1]+diff[2]*diff[2];
+                    if(m_current_extruder>=m_filament_crossections.size())throw std::runtime_error("PRESSURE_EQUALIZER_TOOL_OUT_OF_RANGE");
                     float rate = m_filament_crossections[m_current_extruder] * new_pos[4] * sqrt((diff[3]*diff[3])/len2);
                     buf.volumetric_extrusion_rate       = rate;
                     buf.volumetric_extrusion_rate_start = rate;
@@ -452,14 +471,25 @@ bool PressureEqualizer::process_line(const char *line, const char *line_end, GCo
     {
         // Activate an extruder head.
         int new_extruder = -1;
-        try {
-            new_extruder = parse_int(line);
-        } catch (Slic3r::InvalidArgument &) {
+        const char *token=line;
+        eatws(token);
+        if(!m_honor_tools && *token=='+')++token;
+        const auto parsed=std::from_chars(token,line_end,new_extruder);
+        if(parsed.ec!=std::errc() || new_extruder<0 || (parsed.ptr!=line_end && !is_ws_or_eol(*parsed.ptr))) {
+            if(m_honor_tools)throw std::runtime_error("HONOR_PHYSICAL_TOOL_INVALID");
             // Ignore invalid GCodes starting with T.
             eatws(line);
             break;
         }
-        assert(new_extruder != -1);
+        line=parsed.ptr;
+        if(m_honor_tools) {
+            if(new_extruder<0)throw std::runtime_error("HONOR_PHYSICAL_TOOL_INVALID");
+            new_extruder=int(HonorForgeToolRouting::logical_active(m_tool_map,unsigned(new_extruder),m_active_materials));
+        }
+        if(new_extruder<0 || size_t(new_extruder)>=m_filament_crossections.size()) {
+            if(m_honor_tools)throw std::runtime_error("HONOR_LOGICAL_MATERIAL_UNMAPPED");
+            break;
+        }
 
         if (new_extruder != int(m_current_extruder)) {
             m_current_extruder = new_extruder;
