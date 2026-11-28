@@ -1271,6 +1271,26 @@ TEST_CASE("Toast wrapping preserves complete Chinese and English text within nar
     CHECK(explicit_break[0] == "one"); CHECK(explicit_break[1] == "two");
 }
 
+TEST_CASE("Smart creator keeps rejected edits through workbench status changes and admits explicit restores",
+          "[UiRedesign][ImageDesignDraft][CreationInputRegression]")
+{
+    ModelGenerationUIState current;
+    current.job_id = "previous-task";
+    current.model_generation_session = 12;
+    current.revision = 5;
+    auto incoming = current;
+    incoming.revision++;
+    CHECK(image_design_preserves_edit(incoming, current, true, false));
+    CHECK_FALSE(image_design_preserves_edit(incoming, current, false, false));
+    CHECK(image_design_preserves_edit(incoming, current, false, true));
+    incoming.busy = true;
+    CHECK(image_design_preserves_edit(incoming, current, true, false));
+    CHECK_FALSE(image_design_preserves_edit(incoming, current, false, true));
+    incoming.model_generation_session++;
+    CHECK_FALSE(image_design_preserves_edit(incoming, current, true, false));
+    CHECK(image_design_restores_input(incoming, current));
+}
+
 TEST_CASE("An oversized UTF-8 draft disables design generation even with an image and recovers after editing", "[UiRedesign][ImageDesignDraft]")
 {
     ModelGenerationUIInput input;

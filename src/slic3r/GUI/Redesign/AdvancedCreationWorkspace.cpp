@@ -11,7 +11,8 @@
 #include "../AI/ModelGeneration/ModelGenerationPresentation.hpp"
 #include "../AI/ModelGeneration/ModelGenerationFeatureHost.hpp"
 #include "../AI/ModelGeneration/ModelGenerationStatusText.hpp"
-#include "../AI/Text/AITextClient.hpp"
+#include "../AI/Text/AITextFeatureHost.hpp"
+#include "../AI/Text/AITextPolishState.hpp"
 #include "../AISidecarClient.hpp"
 #include "../GUI_App.hpp"
 #include "../wxExtensions.hpp"
@@ -843,13 +844,6 @@ private:
     std::array<UploadSlot*, 4> m_slots {};
     wxSize m_layout_size;
     double m_layout_dpi {0};
-};
-
-// The text endpoint accepts PNG/JPEG. Keep an advanced-only decoded PNG alive
-// until the asynchronous request finishes, including cancellation callbacks.
-struct PolishReference {
-    wxString path;
-    ~PolishReference() { if (!path.empty()) wxRemoveFile(path); }
 };
 
 class DesignIconButton final : public wxControl {
@@ -1791,10 +1785,11 @@ struct AdvancedCreationWorkspace::Impl {
     std::uint64_t local_sequence {0};
     UploadAreaPanel* uploads {nullptr};
     ModelGenerationFeatureHost& model_host;
-    std::unique_ptr<AITextClient> text_client;
+    AITextFeatureHost* text_feature {nullptr};
     std::shared_ptr<AITextClient::RequestHandle> polish_request;
+    AITextPolishState polish_state;
     wxPanel* creation {nullptr};
-    bool polish_pending {false}, closing {false};
+    bool text_polish_available {false}, closing {false};
     // Worker callbacks carry this token without touching wx tracker lists.
     std::shared_ptr<int> lifetime {std::make_shared<int>(0)};
     std::function<void(const ModelGenerationUIState&)> model_state_changed;
@@ -1902,11 +1897,7 @@ struct AdvancedCreationWorkspace::Impl {
     void on_page_show(bool shown) {
         if (closing) return;
         if (shown) switch_stage(false, true);
-        else if (polish_request) {
-            polish_request->cancel();
-            polish_request.reset();
-            polish_pending = false;
-        }
+        else cancel_polish();
         set_presented(shown);
     }
     void on_input_size(wxSizeEvent& event) {
@@ -1940,10 +1931,10 @@ struct AdvancedCreationWorkspace::Impl {
     } image_status, geometry_status;
 
     Impl(AdvancedCreationWorkspace& owner, AdvancedCreationFeatureHost& feature, std::function<void()> show_smart,
-         ModelGenerationFeatureHost& shared_models,
+         ModelGenerationFeatureHost& shared_models, AITextFeatureHost* shared_text,
          std::function<void(const ModelGenerationUIState&)> model_state,
          std::function<void(const ModelJobEvent&)> job_event)
-        : page(owner), host(feature), model_host(shared_models),
+        : page(owner), host(feature), model_host(shared_models), text_feature(shared_text),
           model_state_changed(std::move(model_state)), model_job_event(std::move(job_event)), click_timer(&owner) {
         activity_owner = wxGetTopLevelParent(&page);
         refresh.configure([this] {
@@ -1958,8 +1949,7 @@ struct AdvancedCreationWorkspace::Impl {
         auto* root = new wxBoxSizer(wxVERTICAL); page.SetSizer(root);
         creation = new wxPanel(&page); creation->SetBackgroundColour(background_colour());
         auto* outer = new wxBoxSizer(wxHORIZONTAL); creation->SetSizer(outer); root->Add(creation, 1, wxEXPAND);
-        text_client = std::make_unique<AITextClient>(AISidecarClient::default_endpoint());
-        host.set_start_guard([this] { return !polish_pending && !model_host.creation_editing_locked() && model_host.can_replace_asset(); });
+        host.set_start_guard([this] { return !polish_state.active() && !model_host.creation_editing_locked() && model_host.can_replace_asset(); });
         host.set_generation_guard([this] {
             return !model_tab || !generation_view || !generation_view->loading();
         });
@@ -2019,8 +2009,7 @@ struct AdvancedCreationWorkspace::Impl {
         fresh->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
             if (model_host.creation_editing_locked()) return;
             click_timer.Stop();
-            if (polish_request) { polish_request->cancel(); polish_request.reset(); }
-            polish_pending = false;
+            cancel_polish();
             host.new_creation();
             reset_preview();
             switch_stage(false, true);
@@ -2456,7 +2445,7 @@ struct AdvancedCreationWorkspace::Impl {
         if (local_popover && local_popover->IsShown()) local_popover->Hide();
         sync_image_activity();
         if (generation_view) generation_view->shutdown();
-        if (polish_request) polish_request->cancel();
+        cancel_polish();
         host.set_library_commit_listener({});
         host.set_model_state_listener({});
         host.set_start_guard({}); host.set_generation_guard({}); host.set_editing_guard({}); host.set_model_job_listener({}); host.set_listener({});
@@ -2560,6 +2549,7 @@ struct AdvancedCreationWorkspace::Impl {
     }
     void set_service_available(bool available) {
         service_available = available;
+        if (!available) cancel_polish();
 
         image_status.provider.clear(); image_status.state.clear(); ++image_status.sequence;
         geometry_status.provider.clear(); geometry_status.state.clear(); ++geometry_status.sequence;
@@ -2655,60 +2645,78 @@ struct AdvancedCreationWorkspace::Impl {
         if (new_generation) generation_view->generation_started();
         update_model_presentation();
     }
+    void cancel_polish() {
+        polish_state.cancel(true);
+        if (polish_request) polish_request->cancel();
+        polish_request.reset();
+    }
+    void set_text_polish_available(bool available) {
+        text_polish_available = available;
+        render();
+    }
     void polish_prompt() {
-        if (!input_editable() || polish_pending) return;
+        if (!input_editable() || !text_feature || !text_polish_available) return;
         const auto context = host.session().command_context();
         AITextClient::PolishRequest request;
         request.user_description = host.session().draft().design.prompt;
-        auto reference = std::make_shared<PolishReference>();
+        if (!AITextClient::valid_description(request.user_description)) return;
         const auto& upload = host.session().draft().uploads[0];
         if (!upload.empty()) {
-            wxImage image(wxString(boost::filesystem::path(upload).wstring()));
-            if (image.IsOk()) {
-                const double scale = std::min(1.0, 2048.0 / std::max(image.GetWidth(), image.GetHeight()));
-                if (scale < 1.0) image.Rescale(std::max(1, int(image.GetWidth() * scale)), std::max(1, int(image.GetHeight() * scale)), wxIMAGE_QUALITY_HIGH);
-                reference->path = wxFileName::CreateTempFileName("orca-advanced-polish-");
-            }
-            if (!image.IsOk() || reference->path.empty() || !image.SaveFile(reference->path, wxBITMAP_TYPE_PNG)) {
-                show_redesign_details(&page, t("参考图暂时无法读取，原图和描述已保留。"), t("AI 润色暂不可用")); return;
-            }
-            request.reference_image_path = boost::filesystem::path(reference->path.ToStdWstring());
+            request.reference_image_path = boost::filesystem::path(upload);
             request.has_reference_image = true;
         }
-        polish_pending = true; render();
+        const auto sequence = polish_state.begin();
+        render();
         auto* target = &page;
         const auto alive = std::weak_ptr<int>(lifetime);
-        polish_request = text_client->polish_image_prompt(request,
-            [target, alive, context, reference](AITextClient::PolishResult result) {
-                wxGetApp().CallAfter([target, alive, context, result] {
-                    if (alive.expired() || target->m_impl->closing || !target->IsShownOnScreen()) return;
+        polish_request = text_feature->polish_image_prompt(request,
+            [target, alive, context, sequence](AITextClient::PolishResult result) {
+                wxGetApp().CallAfter([target, alive, context, sequence, result = std::move(result)] {
+                    if (alive.expired() || target->m_impl->closing) return;
                     auto& self = *target->m_impl;
-                    if (!self.host.session().matches(context.callback)) return;
-                    self.polish_pending = false;
-                    if (self.host.session().matches_command(context, false)) {
-                        if (!result.optimized_prompt.empty() &&
-                            show_generation_confirmation(target, t(result.optimized_prompt.c_str()), t("使用润色后的描述？")) == wxID_YES) {
-                            if (!self.model_host.creation_editing_locked() && self.host.session().matches_command(context, false)) {
-                                auto draft = self.host.session().draft().design; draft.prompt = result.optimized_prompt;
-                                self.host.session().set_design_draft(std::move(draft)); self.host.changed();
-                            }
-                        } else if (result.optimized_prompt.empty()) {
-                            wxString feedback;
-                            for (const auto& warning : result.warnings) { if (!feedback.empty()) feedback += "\n"; feedback += t(warning.c_str()); }
-                            if (feedback.empty()) feedback = result.status == "needs_input" ? t("请补充描述内容。") : t("描述存在歧义，请补充后重试。");
-                            show_redesign_details(target, feedback, t("请补充润色描述"));
-                        }
+                    if (!self.polish_state.matches(sequence)) return;
+                    self.polish_request.reset();
+                    if (!target->IsShownOnScreen() || !self.host.session().matches_command(context, false)) {
+                        self.polish_state.fail(sequence);
+                        self.render();
+                        return;
                     }
+                    if (result.status == "success") {
+                        const bool accepted = show_generation_confirmation(target, t(result.optimized_prompt.c_str()),
+                            t("使用润色后的描述？")) == wxID_YES;
+                        if (alive.expired()) return;
+                        if (accepted && self.polish_state.matches(sequence) &&
+                            !self.model_host.creation_editing_locked() && self.host.session().matches_command(context, false)) {
+                            auto draft = self.host.session().draft().design;
+                            draft.prompt = result.optimized_prompt;
+                            self.host.session().set_design_draft(std::move(draft));
+                            self.host.changed();
+                        }
+                    } else {
+                        wxString feedback;
+                        for (const auto& warning : result.warnings) {
+                            if (!feedback.empty()) feedback += "\n";
+                            feedback += t(warning.c_str());
+                        }
+                        if (feedback.empty()) feedback = result.status == "needs_input" ? t("请补充描述内容。") : t("描述存在歧义，请补充后重试。");
+                        show_redesign_details(target, feedback, t("请补充润色描述"));
+                    }
+                    if (alive.expired()) return;
+                    self.polish_state.fail(sequence);
                     self.render();
                 });
-            }, [target, alive, context, reference](AITextClient::Error error) {
-                wxGetApp().CallAfter([target, alive, context, error] {
-                    if (alive.expired() || target->m_impl->closing || !target->IsShownOnScreen()) return;
-                    if (!target->m_impl->host.session().matches(context.callback)) return;
-                    target->m_impl->polish_pending = false;
-                    const auto message = error.code == "description_too_long" ? t("描述超过 2000 字符，请精简后再润色。") :
-                        error.code == "result_too_long" ? t("润色结果超过 2000 字符，已保留原描述。") : t(error.message.c_str());
-                    show_redesign_details(target, message, t("AI 润色暂不可用")); target->render();
+            }, [target, alive, context, sequence](AITextClient::Error error) {
+                wxGetApp().CallAfter([target, alive, context, sequence, error = std::move(error)] {
+                    if (alive.expired() || target->m_impl->closing) return;
+                    auto& self = *target->m_impl;
+                    if (!self.polish_state.fail(sequence)) return;
+                    self.polish_request.reset();
+                    if (target->IsShownOnScreen() && self.host.session().matches_command(context, false)) {
+                        const auto message = error.code == "description_too_long" ? t("描述超过 2000 字符，请精简后再润色。") :
+                            error.code == "result_too_long" ? t("润色结果超过 2000 字符，已保留原描述。") : t(error.message.c_str());
+                        show_redesign_details(target, message, t("AI 润色暂不可用"));
+                    }
+                    if (!alive.expired()) self.render();
                 });
             });
     }
@@ -2949,8 +2957,10 @@ struct AdvancedCreationWorkspace::Impl {
         },[this,alive](const std::string& reason) { if (!alive.expired() && generation_feedback) generation_feedback(reason); });
     }
     bool input_editable() const {
-        return !model_host.creation_editing_locked() && !polish_pending && model_host.can_replace_asset() && !host.draft_editing_locked() && !host.has_pending_receipt() && (!host.session().group() ||
-               (host.session().group()->active_operation_id.empty() && !host.session().group()->model_busy));
+        const auto& group = host.session().group();
+        // The start guard protects workbench replacement independently of draft edits.
+        return !polish_state.active() && !host.draft_editing_locked() && !host.has_pending_receipt() &&
+               (!group || (group->active_operation_id.empty() && !group->model_busy));
     }
     void choose(ViewId view) {
         if (!input_editable()) return;
@@ -3305,8 +3315,9 @@ struct AdvancedCreationWorkspace::Impl {
         label(texture_quality_value, draft.geometry.texture_quality == "extreme" ? t("极致") :
                                         draft.geometry.texture_quality == "detailed" ? t("精细") : t("标准"));
         label(output_format_value, t(draft.geometry.output_format == "obj" ? "OBJ" : "GLB"));
-        enable(polish, input_editable() && draft.design.prompt.size() <= 2000 && (!draft.design.prompt.empty() || !draft.uploads[0].empty()));
-        label(polish, polish_pending ? t("正在润色…") : t("AI润色"));
+        enable(polish, input_editable() && text_feature && text_polish_available &&
+            AITextClient::valid_description(draft.design.prompt));
+        label(polish, polish_state.active() ? t("正在润色…") : t("AI润色"));
         provider->set_selection(draft.design.provider == "yoyoclaw" ? 1 : 0, false);
         refresh_styles(); refresh_provider_status(false); refresh_provider_status(true);
         const bool over_limit = draft.design.prompt.size() > 2000;
@@ -3386,11 +3397,12 @@ struct AdvancedCreationWorkspace::Impl {
 
 AdvancedCreationWorkspace::AdvancedCreationWorkspace(wxWindow* parent, AdvancedCreationFeatureHost& host,
                                                      std::function<void()> show_smart, ModelGenerationFeatureHost& shared_models,
+                                                     AITextFeatureHost* text_feature,
                                                      std::function<void(const ModelGenerationUIState&)> model_state_changed,
                                                      std::function<void(const AdvancedCreation::ModelJobEvent&)> model_job_event,
                                                      std::function<void()> open_workbench, std::function<void()> completed,
                                                      std::function<void(const std::string&)> generation_feedback)
-    : wxPanel(parent), m_impl(std::make_unique<Impl>(*this, host, std::move(show_smart), shared_models, std::move(model_state_changed), std::move(model_job_event)))
+    : wxPanel(parent), m_impl(std::make_unique<Impl>(*this, host, std::move(show_smart), shared_models, text_feature, std::move(model_state_changed), std::move(model_job_event)))
 {
     m_impl->open_workbench = std::move(open_workbench);
     m_impl->completed = std::move(completed);
@@ -3406,6 +3418,7 @@ AdvancedCreationWorkspace::~AdvancedCreationWorkspace()
 void AdvancedCreationWorkspace::render() { m_impl->render(); }
 void AdvancedCreationWorkspace::set_presented(bool visible) { m_impl->set_presented(visible); }
 void AdvancedCreationWorkspace::set_service_available(bool available) { m_impl->set_service_available(available); }
+void AdvancedCreationWorkspace::set_text_polish_available(bool available) { m_impl->set_text_polish_available(available); }
 bool AdvancedCreationWorkspace::navigation_allowed() { return m_impl->navigation_allowed(); }
 void AdvancedCreationWorkspace::set_creation_return_handler(std::function<void()> action, std::function<bool()> allowed) {
     m_impl->return_creation = std::move(action); m_impl->can_return = std::move(allowed);

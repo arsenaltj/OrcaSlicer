@@ -126,12 +126,8 @@ void RedesignShell::open_creation_artifact(CreationSource source)
     // Existing edits belong to the workbench. Reopening the same generated
     // asset restores that editing session rather than reloading its original.
     if (current.asset_id == request->entry.job_id && !current.model_path.empty()) {
-        if (source == CreationSource::Smart) {
-            m_saved_creation_input = current_generation_input();
-            m_saved_creation_options = current_generation_options();
-        }
-        m_model_generation_host->commit_current_creation(*request);
-        open_model_workbench();
+        if (m_model_generation_host->commit_current_creation(*request))
+            open_model_workbench();
     } else m_model_generation_host->request_open_workbench_artifact(*request);
 }
 

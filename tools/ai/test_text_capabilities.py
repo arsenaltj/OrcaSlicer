@@ -478,6 +478,88 @@ class TextCapabilityApplicationTests(unittest.TestCase):
         self.assertIn("参考图片是当前画面事实的主要依据", SYSTEM_PROMPT)
         self.assertNotIn("用于后续生成3D模型时", SYSTEM_PROMPT)
 
+    def test_static_webp_and_lossless_png_share_provider_normalization(self):
+        answer = json.dumps({"status": "success", "optimized_prompt": "Add a scarf", "warnings": []})
+        request = _request("Add a scarf")
+        request["has_reference_image"] = True
+        source = Image.new("RGBA", (3000, 1000), (50, 120, 180, 128))
+        normalized = []
+        for fmt in ("PNG", "WEBP", "JPEG"):
+            with self.subTest(format=fmt):
+                output = BytesIO()
+                if fmt == "WEBP":
+                    source.save(output, fmt, lossless=True)
+                elif fmt == "JPEG":
+                    source.convert("RGB").save(output, fmt)
+                else:
+                    source.save(output, fmt)
+                application, client = self.application(answer, image_capable=True)
+                image = output.getvalue()
+                result = application.execute("image_prompt_polish", request, image=image)
+                self.assertEqual(result["status"], "success")
+                data_url = client.calls[1][2][1]["content"][1]["image_url"]["url"]
+                encoded = base64.b64decode(data_url.split(",", 1)[1])
+                with Image.open(BytesIO(encoded)) as decoded:
+                    self.assertEqual(decoded.format, "JPEG")
+                    self.assertEqual(decoded.size[0], 2048)
+                    self.assertEqual(decoded.mode, "RGB")
+                normalized.append(encoded)
+        self.assertEqual(normalized[0], normalized[1])
+
+    def test_reference_orientation_and_transparency_remain_consistent(self):
+        request = _request("Add a scarf")
+        request["has_reference_image"] = True
+        answer = json.dumps({"status": "success", "optimized_prompt": "Add a scarf", "warnings": []})
+        exif = Image.Exif()
+        exif[274] = 6
+        for fmt in ("PNG", "JPEG", "WEBP"):
+            with self.subTest(format=fmt):
+                source = Image.new("RGBA", (96, 64), (40, 100, 160, 128))
+                if fmt == "JPEG":
+                    source = source.convert("RGB")
+                output = BytesIO()
+                options = {"lossless": True} if fmt == "WEBP" else {}
+                source.save(output, fmt, exif=exif, **options)
+                application, client = self.application(answer, image_capable=True)
+                result = application.execute("image_prompt_polish", request, image=output.getvalue())
+                self.assertEqual(result["status"], "success")
+                url = client.calls[1][2][1]["content"][1]["image_url"]["url"]
+                with Image.open(BytesIO(base64.b64decode(url.split(",", 1)[1]))) as normalized:
+                    self.assertEqual(normalized.size, (64, 96))
+                    self.assertEqual(normalized.mode, "RGB")
+                    if fmt != "JPEG":
+                        # Half-transparent RGB over the specified white background.
+                        self.assertTrue(all(abs(got - want) <= 3 for got, want in zip(
+                            normalized.getpixel((20, 20)), (147, 177, 207))))
+
+    def test_reference_size_limit_rejects_before_gateway(self):
+        request = _request()
+        request["has_reference_image"] = True
+        answer = json.dumps({"status": "success", "optimized_prompt": "x", "warnings": []})
+        application, client = self.application(answer, image_capable=True)
+        for image in (b"", b"x" * (20 * 1024 * 1024 + 1)):
+            with self.assertRaises(TextCapabilityError) as failed:
+                application.execute("image_prompt_polish", request, image=image)
+            self.assertEqual(failed.exception.code, "invalid_reference_image")
+        self.assertEqual(client.calls, [])
+
+    def test_animation_and_damaged_webp_fail_before_text_gateway(self):
+        answer = json.dumps({"status": "success", "optimized_prompt": "x", "warnings": []})
+        request = _request()
+        request["has_reference_image"] = True
+        output = BytesIO()
+        Image.new("RGB", (96, 96), "red").save(output, "WEBP", save_all=True,
+            append_images=[Image.new("RGB", (96, 96), "blue")], duration=100, loop=0)
+        second = BytesIO()
+        Image.new("RGB", (96, 96), "red").save(second, "WEBP", lossless=True)
+        for image, code in ((output.getvalue(), "unsupported_reference_image"),
+                            (second.getvalue()[:-8], "invalid_reference_image")):
+            application, client = self.application(answer, image_capable=True)
+            with self.assertRaises(TextCapabilityError) as failed:
+                application.execute("image_prompt_polish", request, image=image)
+            self.assertEqual(failed.exception.code, code)
+            self.assertEqual(client.calls, [])
+
     def test_image_mode_rejects_missing_extra_or_unsupported_reference_images_locally(self):
         answer = json.dumps({"status": "success", "optimized_prompt": "x", "warnings": []})
         application, client = self.application(answer, image_capable=True)

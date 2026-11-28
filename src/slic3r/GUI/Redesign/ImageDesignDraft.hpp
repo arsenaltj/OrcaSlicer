@@ -20,6 +20,16 @@ inline bool image_design_restores_input(const ModelGenerationUIState& state,
     return state.model_generation_session > current.model_generation_session;
 }
 
+// Rejected local edits stay visible until acknowledged or an explicit new
+// creation context replaces them. Submission snapshots protect the same draft.
+inline bool image_design_preserves_edit(const ModelGenerationUIState& state,
+                                        const ModelGenerationUIState& current,
+                                        bool rejected, bool submitting)
+{
+    return state.model_generation_session == current.model_generation_session &&
+        state.job_id == current.job_id && (rejected || (submitting && !state.busy));
+}
+
 inline bool image_design_refreshes_history(const ModelGenerationUIState& state,
                                           const ModelGenerationUIState& current)
 {

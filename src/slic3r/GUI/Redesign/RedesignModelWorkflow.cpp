@@ -1597,31 +1597,17 @@ bool RedesignShell::return_to_image_design()
     if (return_advanced != m_page_coordinator.advanced()) return false;
 
     const bool view_only = m_image_page_view_only;
-    const auto saved_input = m_saved_creation_input;
-    const auto saved_options = m_saved_creation_options;
-    if (!return_advanced) {
-        m_saved_creation_input.reset();
-        m_saved_creation_options.reset();
-    }
     m_image_page_view_only = false;
     if (!navigate_to(Page::Image)) {
         m_image_page_view_only = view_only;
-        m_saved_creation_input = saved_input;
-        m_saved_creation_options = saved_options;
         return false;
     }
     if (m_model_generation_host) m_model_generation_host->restore_creation_editing();
-    if (saved_input && saved_options && m_model_generation_host) {
-        // Existing-asset navigation never replaces the creation draft. Returning
-        // synchronizes editable inputs only; it does not submit or restart a job.
-        restore_image_input(*saved_input);
-        m_model_generation_host->synchronize_input(*saved_input);
-        m_model_generation_host->synchronize_options(*saved_options);
-        apply_model_generation_state(m_model_generation_host->snapshot());
-    }
+    // The creator retains its own draft while the independent workbench is
+    // displayed. Restoring editing does not replay input or option commands.
     // A missing historical style becomes a valid default only when the user
     // explicitly returns to editing. This never restarts or submits a task.
-    if (current_generation_input().style != m_model_generation_state.input.style)
+    if (!return_advanced && current_generation_input().style != m_model_generation_state.input.style)
         synchronize_generation_input();
     apply_model_generation_state(m_model_generation_state);
     return true;

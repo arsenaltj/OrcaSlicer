@@ -417,6 +417,8 @@ Eligibility AdvancedCreationFeatureHost::eligibility() const
         result.generate_design = result.generate_model = result.retry = result.recover = false;
         result.design_reason = result.model_reason = "creation_read_only";
     }
+    if (m_command_state == CommandState::OpeningHistory)
+        result.recover = false;
     if (m_model_request && m_model_request->phase == ModelJobEvent::Phase::Requested && m_stopping_model_job.empty())
         result.stop = true;
     if (model_stop_pending()) {
@@ -464,11 +466,12 @@ void AdvancedCreationFeatureHost::refresh_history()
 }
 
 void AdvancedCreationFeatureHost::ingest(Json group, CallbackContext context, bool restore, std::function<void()> done,
-                                        std::optional<InputDraft> saved_input, AdvancedMultiviewClient::Error failed)
+                                        std::optional<InputDraft> saved_input, AdvancedMultiviewClient::Error failed,
+                                        std::string history_target)
 {
     auto parsed = AdvancedMultiviewClient::parse_group(group, m_cache);
     if (!m_session.matches(context)) return;
-    if (!parsed) { m_poll_pending = false; m_command_state = CommandState::Idle;
+    if (!parsed || (!history_target.empty() && !m_session.can_open_snapshot(*parsed, history_target))) { m_poll_pending = false; m_command_state = CommandState::Idle;
         m_message = "高级服务返回的数据不完整，当前输入与结果已保留。";
         if (failed) failed("invalid_response"); publish(); return; }
     struct Asset { std::string id, hash; };
@@ -492,11 +495,24 @@ void AdvancedCreationFeatureHost::ingest(Json group, CallbackContext context, bo
         design.usable = false;
         design.asset_pending = !design.canonical_version_id.empty();
     }
+    if (!history_target.empty()) {
+        // All target metadata has been parsed and admitted while the old
+        // session is still intact. Commit its identity and draft together.
+        m_stopping_model_job.clear();
+        m_model_request.reset();
+        m_confirmed_model_visual.reset();
+        m_candidate_plan.reset();
+        ++m_candidate_plan_sequence;
+        m_preparing_candidate = false;
+        m_model_monitor.reset();
+        context = m_session.begin_open(history_target);
+    }
     if (!m_session.apply_snapshot(std::move(*parsed), context, restore, saved_input ? &*saved_input : nullptr)) {
         m_poll_pending = false; m_command_state = CommandState::Idle;
         if (failed) failed("draft_changed"); publish(); return;
     }
     if (restore) restore_local_draft(context.group_id);
+    if (!history_target.empty()) m_command_state = CommandState::Idle;
     if (m_session.group() && !m_session.group()->model_job_id.empty())
         observe_model_job(m_session.group()->model_job_id, false);
     m_poll_pending = true;
@@ -584,16 +600,16 @@ void AdvancedCreationFeatureHost::ingest(Json group, CallbackContext context, bo
     if (!accepted) finish({});
 }
 
-void AdvancedCreationFeatureHost::poll(bool restore)
+void AdvancedCreationFeatureHost::poll()
 {
     if (!m_service_available || m_shutdown || m_poll_pending || command_pending()) return;
     auto context = m_session.context();
     if (context.group_id.empty()) return;
     m_poll_pending = true;
-    m_client.request("GET", "/groups/" + context.group_id, {}, complete([this, context, restore](Json value) {
+    m_client.request("GET", "/groups/" + context.group_id, {}, complete([this, context](Json value) {
         if (!m_session.matches(context)) return;
         if (!value.contains("group")) { m_poll_pending = false; return; }
-        ingest(std::move(value["group"]), context, restore, [this] {
+        ingest(std::move(value["group"]), context, false, [this] {
             const auto& group = m_session.group();
             if (group && group->active_operation_id.empty() && !group->model_busy) refresh_history();
         });
@@ -609,7 +625,8 @@ void AdvancedCreationFeatureHost::save_draft(std::function<void()> done, Advance
     const auto context = m_session.context();
     const auto input = m_session.draft();
     const auto draft = input.design;
-    m_command_state = done ? CommandState::Exclusive : CommandState::BackgroundDraftSave;
+    if (m_command_state != CommandState::OpeningHistory)
+        m_command_state = done ? CommandState::Exclusive : CommandState::BackgroundDraftSave;
     const auto saved = complete([this, context, input, draft, done, failed](Json value) {
         try {
             ingest(std::move(value.at("group")), context, false, [this, draft, done] {
@@ -641,19 +658,26 @@ void AdvancedCreationFeatureHost::open_group(const std::string& id)
 {
     if (m_editing_guard && !m_editing_guard()) return;
     if (command_pending() || m_poll_pending || has_pending_receipt() || (m_start_guard && !m_start_guard()) || !AdvancedMultiviewClient::valid_id(id)) return;
-    m_command_state = CommandState::Exclusive;
+    m_command_state = CommandState::OpeningHistory;
+    // The save timer defers during a command. Keep its scheduled write so a
+    // failed pre-save leaves the original draft eligible to save again.
+    m_message.clear();
+    publish();
     save_draft([this, id] {
-        // Stop suppression belongs to the observation being left. Its durable
-        // receipt remains independent of this new presentation context.
-        m_stopping_model_job.clear(); m_model_request.reset(); m_confirmed_model_visual.reset();
-        m_candidate_plan.reset(); ++m_candidate_plan_sequence; m_preparing_candidate = false;
-        m_command_state = CommandState::Idle; m_model_monitor.reset(); m_session.begin_open(id);
-        // The previous snapshot is still installed while this GET is pending.
-        // For a same-group reopen, restore its checkpoint before publish can
-        // persist the temporary reset of model preferences or invalidations.
-        if (m_session.group() && m_session.group()->id == id) restore_local_draft(id);
-        m_message.clear(); poll(true); publish();
-    });
+        // History owns the editor lock until the target is admitted or the
+        // request fails. Ordinary polling remains suspended in the meantime.
+        const auto context = m_session.context();
+        m_client.request("GET", "/groups/" + id, {}, complete([this, id, context](Json value) {
+            if (!value.contains("group")) {
+                m_command_state = CommandState::Idle;
+                m_message = "历史套图数据不完整，当前创作已保留。";
+                publish();
+                return;
+            }
+            ingest(std::move(value["group"]), context, true, [this] { refresh_history(); }, {}, {}, id);
+        }), error());
+        publish();
+    }, error());
 }
 
 void AdvancedCreationFeatureHost::rename_group(const std::string& id, std::uint64_t revision, std::string display_name)
@@ -1014,14 +1038,14 @@ bool AdvancedCreationFeatureHost::model_stop_pending() const
         (state.job_id != m_stopping_model_job || state.stage != ModelGenerationUIStage::Stopped);
 }
 
-AdvancedMultiviewClient::Error AdvancedCreationFeatureHost::model_request_error(const ModelJobEvent& request)
+AdvancedMultiviewClient::Error AdvancedCreationFeatureHost::model_request_error(const ModelJobEvent& request, bool release_command)
 {
     auto* weak = this;
     const auto alive = std::weak_ptr<int>(m_lifetime);
-    return [weak, alive, request](std::string message) {
-        Presentation::post_gui([weak, alive, request, message = std::move(message)] {
+    return [weak, alive, request, release_command](std::string message) {
+        Presentation::post_gui([weak, alive, request, release_command, message = std::move(message)] {
             if (alive.expired() || weak->m_shutdown || !weak->model_request_is_current(request)) return;
-            weak->m_command_state = CommandState::Idle;
+            if (release_command) weak->m_command_state = CommandState::Idle;
             weak->m_message = ModelGenerationStatusText::localized_advanced_service_error(message).ToUTF8().data();
             if (weak->m_stopping_model_job == request.job_id) weak->settle_receipt(request.job_id, false);
             weak->publish();
@@ -1352,6 +1376,8 @@ void AdvancedCreationFeatureHost::retry(ViewId view, Confirm confirm)
 
 void AdvancedCreationFeatureHost::stop()
 {
+    // A stop can still target the visible group while history is being read.
+    const bool owns_command = m_command_state != CommandState::OpeningHistory;
     if (m_model_monitor.snapshot().stage == ModelGenerationUIStage::LoadingModel &&
         m_session.matches(m_model_context)) {
         m_stopping_model_job = m_model_monitor.snapshot().job_id;
@@ -1365,27 +1391,34 @@ void AdvancedCreationFeatureHost::stop()
             m_stopping_model_job = operation;
             auto stopped = receipt->second; stopped["stop_intent"] = true;
             save_pending_receipt(std::move(stopped));
-            m_command_state = CommandState::Idle; m_message = "正在停止生成…";
+            if (owns_command) m_command_state = CommandState::Idle;
+            m_message = "正在停止生成…";
             settle_receipt(operation, false); publish(); return;
         }
     }
     if (!eligibility().stop || !m_session.group()) return;
-    const auto& group = *m_session.group(); m_command_state = CommandState::Exclusive;
+    const auto& group = *m_session.group();
+    if (owns_command) m_command_state = CommandState::Exclusive;
+    const auto stopped = [this, owns_command] {
+        if (owns_command) m_command_state = CommandState::Idle;
+        poll();
+        publish();
+    };
     const auto model_job = model_stop_pending() ? m_stopping_model_job : group.model_busy ? group.model_job_id : std::string();
     if (!model_job.empty()) {
         m_stopping_model_job = model_job;
         m_model_monitor.request_stop();
         const auto request = m_model_request;
         m_client.request("POST", "/groups/" + group.id + "/model-jobs/" + model_job + "/stop", Json::object(),
-            complete([this, request](Json) {
+            complete([this, request, stopped](Json) {
                 if (!request || !model_request_is_current(*request)) return;
-                m_command_state = CommandState::Idle; poll(); publish();
-            }), request ? model_request_error(*request) : error());
+                stopped();
+            }, owns_command), request ? model_request_error(*request, owns_command) : error(owns_command));
         return;
     }
     const auto route = "/operations/" + group.active_operation_id;
     m_client.request("POST", "/groups/" + group.id + route + "/stop", Json::object(),
-        complete([this](Json) { m_command_state = CommandState::Idle; poll(); publish(); }), error());
+        complete([stopped](Json) { stopped(); }, owns_command), error(owns_command));
 }
 
 void AdvancedCreationFeatureHost::recover(ViewId view)

@@ -1678,7 +1678,7 @@ void RedesignShell::switch_creation_mode(bool advanced)
     if (advanced && !m_advanced_host) {
         m_advanced_host = std::make_unique<AdvancedCreationFeatureHost>(this);
         m_advanced_workspace = new AdvancedCreationWorkspace(m_content_host, *m_advanced_host,
-            [this] { switch_creation_mode(false); }, *m_model_generation_host,
+            [this] { switch_creation_mode(false); }, *m_model_generation_host, m_text_feature_host,
             [this](const ModelGenerationUIState& state) {
                 apply_advanced_model_state(state);
             }, [this](const AdvancedCreation::ModelJobEvent& event) {
@@ -1686,6 +1686,7 @@ void RedesignShell::switch_creation_mode(bool advanced)
             }, [this] { open_creation_artifact(CreationSource::Advanced); },
             [this] { show_generation_completion(); },
             [this](const std::string& reason) { show_generation_error(reason); });
+        m_advanced_workspace->set_text_polish_available(m_prompt_polish_available);
         m_advanced_workspace->set_creation_return_handler([this] { return_to_image_design(); },
             [this] { return can_return_to_image_design(); });
         m_content_host->GetSizer()->Add(m_advanced_workspace, 1, wxEXPAND);
@@ -2420,11 +2421,9 @@ void RedesignShell::connect_model_generation_host()
     sync_smart_model_history();
     m_model_generation_host->set_history_navigation_handler([weak](bool design) {
         if (!weak || !weak->m_model_generation_host) return;
-        if (!design && weak->m_smart_creation && !weak->m_page_coordinator.advanced() && weak->m_page_coordinator.page() == Page::Image && !weak->m_saved_creation_input) {
+        if (!design && weak->m_smart_creation && !weak->m_page_coordinator.advanced() &&
+            weak->m_page_coordinator.page() == Page::Image)
             weak->cancel_prompt_polish(true);
-            weak->m_saved_creation_input = weak->current_generation_input();
-            weak->m_saved_creation_options = weak->current_generation_options();
-        }
         if (design) weak->navigate_to_image_view();
         if (!design) weak->show_model_view(ModelView::Workbench);
     });
@@ -2432,11 +2431,9 @@ void RedesignShell::connect_model_generation_host()
         if (!weak || !weak->m_model_generation_host) return false;
         if (event.phase == ModelHistoryOpenEvent::Phase::Begin) {
             if (weak->m_history_open_request || weak->m_page_coordinator.transition().active()) return false;
-            if (weak->m_smart_creation && !weak->m_page_coordinator.advanced() && weak->m_page_coordinator.page() == Page::Image && !weak->m_saved_creation_input) {
+            if (weak->m_smart_creation && !weak->m_page_coordinator.advanced() &&
+                weak->m_page_coordinator.page() == Page::Image)
                 weak->cancel_prompt_polish(true);
-                weak->m_saved_creation_input = weak->current_generation_input();
-                weak->m_saved_creation_options = weak->current_generation_options();
-            }
             weak->m_history_open_request = event.request;
             weak->m_history_open_asset = event.asset;
             if (weak->begin_workbench_presentation(true)) return true;
@@ -2511,12 +2508,14 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     const auto route_action = model_generation_route_action(state, m_model_generation_state);
     if (route_action == RedesignModelRouteAction::Ignore)
         return;
-    const bool preserve_creation_draft = m_smart_creation && m_saved_creation_input.has_value();
-    const auto& displayed_input = preserve_creation_draft ? *m_saved_creation_input : state.input;
-    const bool restore_input = !preserve_creation_draft && image_design_restores_input(state, m_model_generation_state);
-    const bool same_draft = !restore_input && !state.busy && state.job_id == m_model_generation_state.job_id;
-    const bool keep_input = m_smart_creation && same_draft && (m_generation_input_rejected || m_submit_in_progress);
-    const bool keep_options = m_smart_creation && same_draft && (m_generation_options_rejected || m_submit_in_progress);
+    // Workbench assets have a separate host. The retained creator is the
+    // authoritative source even after a history visit or a workbench handoff.
+    const auto& displayed_input = state.input;
+    const bool restore_input = image_design_restores_input(state, m_model_generation_state);
+    const bool keep_input = m_smart_creation && image_design_preserves_edit(
+        state, m_model_generation_state, m_generation_input_rejected, m_submit_in_progress);
+    const bool keep_options = m_smart_creation && image_design_preserves_edit(
+        state, m_model_generation_state, m_generation_options_rejected, m_submit_in_progress);
     if (restore_input && state.job_id != m_model_generation_state.job_id &&
         (!m_model_generation_state.job_id.empty() || !(current_generation_input() == state.input)))
         cancel_prompt_polish(true);
@@ -2558,7 +2557,7 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     if (m_custom_style != nullptr && !keep_input && m_custom_style->GetValue().ToStdString(wxConvUTF8) != displayed_input.custom_style)
         m_custom_style->ChangeValue(wxString::FromUTF8(displayed_input.custom_style));
     m_generation_geometry_mode = m_smart_creation || redesign_primary_action(state, image_stage) == RedesignPrimaryAction::Model;
-    if (!keep_options) apply_generation_options(preserve_creation_draft ? *m_saved_creation_options : state.options);
+    if (!keep_options) apply_generation_options(state.options);
     m_applying_model_generation_state = false;
     m_input_sync_ok = m_model_generation_host != nullptr && current_generation_input() == state.input;
     m_option_sync_ok = m_model_generation_host != nullptr && current_generation_options() == state.options;
@@ -3171,6 +3170,7 @@ void RedesignShell::refresh_text_capability(bool sidecar_compatible)
     }
     if (!sidecar_compatible || m_text_feature_host == nullptr) {
         m_prompt_polish_available = false;
+        if (m_advanced_workspace) m_advanced_workspace->set_text_polish_available(false);
         m_prompt_polish_unavailable_reason = "sidecar_unavailable";
         cancel_prompt_polish(true);
         refresh_prompt_polish_controls();
@@ -3178,6 +3178,7 @@ void RedesignShell::refresh_text_capability(bool sidecar_compatible)
     }
 
     m_prompt_polish_available = false;
+    if (m_advanced_workspace) m_advanced_workspace->set_text_polish_available(false);
     m_prompt_polish_unavailable_reason = "checking";
     refresh_prompt_polish_controls();
     wxWeakRef<RedesignShell> weak(this);
@@ -3190,6 +3191,7 @@ void RedesignShell::refresh_text_capability(bool sidecar_compatible)
                     return;
                 weak->m_text_availability_request.reset();
                 weak->m_prompt_polish_available = availability.available;
+                if (weak->m_advanced_workspace) weak->m_advanced_workspace->set_text_polish_available(availability.available);
                 weak->m_prompt_polish_unavailable_reason = availability.reason;
                 weak->refresh_prompt_polish_controls();
             });
@@ -3216,13 +3218,9 @@ void RedesignShell::request_prompt_polish()
         return;
     const wxScopedCharBuffer encoded = m_prompt->GetValue().ToUTF8();
     const std::string prompt = encoded ? std::string(encoded.data(), encoded.length()) : std::string();
-    if (prompt.find_first_not_of(" \t\r\n") == std::string::npos) {
-        m_prompt_polish_status->SetLabel(text("请先填写描述内容。"));
-        refresh_prompt_polish_controls();
-        return;
-    }
-    if (prompt.size() > ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES) {
-        m_prompt_polish_status->SetLabel(text("描述超过 2000 字符，请精简后再润色。"));
+    if (!AITextClient::valid_description(prompt)) {
+        m_prompt_polish_status->SetLabel(prompt.size() > AITextClient::MAX_TEXT_BYTES ?
+            text("描述超过 2000 字符，请精简后再润色。") : text("请先填写描述内容。"));
         refresh_prompt_polish_controls();
         return;
     }
@@ -3389,8 +3387,7 @@ void RedesignShell::refresh_prompt_polish_controls()
     const bool editable = generation_input_editable();
     const wxScopedCharBuffer encoded = m_prompt->GetValue().ToUTF8();
     const std::string value = encoded ? std::string(encoded.data(), encoded.length()) : std::string();
-    const bool valid_prompt = value.size() <= ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES &&
-        value.find_first_not_of(" \t\r\n") != std::string::npos;
+    const bool valid_prompt = AITextClient::valid_description(value);
 
     m_prompt_polish_button->SetLabel(active ? text("润色中...") : text("AI润色"));
     m_prompt_polish_button->Enable(!active && editable && m_image_state != ImageState::Loading &&

@@ -705,6 +705,20 @@ Http& Http::form_add(const std::string &name, const std::string &contents)
 	return *this;
 }
 
+Http& Http::form_add_bytes(const std::string& name, const std::string& contents, const std::string& filename)
+{
+    if (p) {
+        ::curl_formadd(&p->form, &p->form_end,
+            CURLFORM_COPYNAME, name.c_str(),
+            CURLFORM_COPYCONTENTS, contents.data(),
+            CURLFORM_CONTENTSLENGTH, static_cast<long>(contents.size()),
+            CURLFORM_FILENAME, filename.c_str(),
+            CURLFORM_CONTENTTYPE, "application/octet-stream",
+            CURLFORM_END);
+    }
+    return *this;
+}
+
 Http& Http::form_add_file(const std::string &name, const fs::path &path, boost::filesystem::ifstream::off_type offset, size_t length)
 {
 	if (p) { p->form_add_file(name.c_str(), path.c_str(), nullptr, offset, length); }

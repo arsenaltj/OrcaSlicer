@@ -9,12 +9,14 @@
 
 namespace Slic3r::GUI {
 class AdvancedCreationFeatureHost;
+class AITextFeatureHost;
 struct ModelGenerationUIState;
 class ModelGenerationFeatureHost;
 class AdvancedCreationWorkspace final : public wxPanel {
 public:
     AdvancedCreationWorkspace(wxWindow* parent, AdvancedCreationFeatureHost& host,
                               std::function<void()> show_smart, ModelGenerationFeatureHost& shared_models,
+                              AITextFeatureHost* text_feature,
                               std::function<void(const ModelGenerationUIState&)> model_state_changed,
                               std::function<void(const AdvancedCreation::ModelJobEvent&)> model_job_event,
                               std::function<void()> open_workbench, std::function<void()> completed,
@@ -23,6 +25,7 @@ public:
     void render();
     void set_presented(bool visible);
     void set_service_available(bool available);
+    void set_text_polish_available(bool available);
     bool navigation_allowed();
     void set_creation_return_handler(std::function<void()> action, std::function<bool()> allowed);
     void shutdown();

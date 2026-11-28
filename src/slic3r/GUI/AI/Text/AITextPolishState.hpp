@@ -15,6 +15,8 @@ public:
         return ++m_sequence;
     }
 
+    bool matches(std::uint64_t sequence) const { return m_active && sequence == m_sequence; }
+
     bool finish(std::uint64_t sequence, const std::string& original)
     {
         if (!m_active || sequence != m_sequence)

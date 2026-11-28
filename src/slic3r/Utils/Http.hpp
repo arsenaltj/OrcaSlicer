@@ -134,6 +134,8 @@ public:
 	Http& form_clear();
 	// Add a HTTP multipart form field
 	Http& form_add(const std::string &name, const std::string &contents);
+    // Copies a bounded binary multipart part, including embedded NUL bytes.
+    Http& form_add_bytes(const std::string& name, const std::string& contents, const std::string& filename);
 	// Add a HTTP multipart form file data contents, `name` is the name of the part
 	Http& form_add_file(const std::string &name, const boost::filesystem::path &path, boost::filesystem::ifstream::off_type offset = 0, size_t length = 0);
 	// Add a HTTP mime form field
