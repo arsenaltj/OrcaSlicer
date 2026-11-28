@@ -1682,6 +1682,110 @@ TEST_CASE("Advanced history commits only a validated target and protects editing
     }
 }
 
+namespace {
+// A valid group reply with no cached assets to fetch after admission.
+nlohmann::json advanced_history_draft_response(const GroupSnapshot& group)
+{
+    using Json = nlohmann::json;
+    Json snapshot {{"schema", "advanced-multiview-group-v1"}, {"workflow_kind", "advanced_multiview_v1"},
+        {"id", group.id}, {"input_epoch", group.input_epoch}, {"revision", group.revision},
+        {"initial_input", AdvancedMultiviewClient::design_json(group.initial_input)},
+        {"saved_draft", AdvancedMultiviewClient::design_json(group.saved_draft)},
+        {"latest_submitted_draft", AdvancedMultiviewClient::design_json(group.initial_input)},
+        {"active_operation_id", nullptr}, {"stop_intent", false}, {"published", true},
+        {"uploads", Json::object()}, {"views", Json::object()}};
+    for (const auto view : AllViews) {
+        snapshot["uploads"][view_name(view)] = nullptr;
+        snapshot["views"][view_name(view)] = {{"current_version_id", nullptr}, {"current", nullptr}, {"latest_attempt", nullptr}};
+    }
+    return {{"group", std::move(snapshot)}};
+}
+}
+
+TEST_CASE("Stopping an old design operation cannot release a pending history open",
+          "[AdvancedCreation][AdvancedStopNavigation][CreationInputRegression][AdvancedHistoryConcurrency]")
+{
+    const bool stop_failed = GENERATE(false, true);
+    CAPTURE(stop_failed);
+    wxInitializer init; REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-history-stop-ownership"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.path().string());
+    AdvancedHttpProbe probe;
+    std::size_t notifications = 0;
+    Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr, probe.endpoint());
+    auto current = host_test_group(91);
+    current.active_operation_id = host_test_group(92).id;
+    current.execution_state = "running";
+    const auto target = host_test_group(93);
+    const auto third = host_test_group(94);
+    REQUIRE(host.session().apply_snapshot(current, host.session().begin_open(current.id), true));
+    const auto source_context = host.session().context();
+    host.set_listener([&] { ++notifications; });
+    const auto target_route = "/groups/" + target.id;
+    const auto third_route = "/groups/" + third.id;
+    const auto stop_route = "/groups/" + current.id + "/operations/" + current.active_operation_id + "/stop";
+    probe.held_suffixes = {target_route, third_route};
+    host.open_group(target.id);
+    REQUIRE(probe.until([&] { return probe.count(target_route) == 1; }));
+    CHECK(host.draft_editing_locked());
+    REQUIRE(host.eligibility().stop);
+    host.stop();
+    REQUIRE(probe.until([&] { return probe.count(stop_route) == 1; }));
+    const auto before_reply = notifications;
+    probe.reply(probe.at(stop_route), nlohmann::json::object(), stop_failed);
+    REQUIRE(probe.until([&] { return notifications > before_reply; }));
+    CHECK(host.session().matches(source_context));
+    CHECK(host.command_pending());
+    CHECK(host.draft_editing_locked());
+    host.open_group(third.id);
+    probe.drain();
+    CHECK(probe.count(third_route) == 0);
+    probe.reply(probe.at(target_route), advanced_history_draft_response(target));
+    REQUIRE(probe.until([&] { return !host.command_pending() && host.session().context().group_id == target.id; }));
+    CHECK_FALSE(host.draft_editing_locked());
+    host.shutdown();
+}
+
+TEST_CASE("A failed history pre-save retains the scheduled autosave on the original group",
+          "[AdvancedCreation][AdvancedDraftInput][CreationInputRegression][AdvancedHistoryConcurrency]")
+{
+    wxInitializer init; REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-history-autosave"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.path().string());
+    AdvancedHttpProbe probe;
+    Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr, probe.endpoint());
+    auto original = host_test_group(95);
+    REQUIRE(host.session().apply_snapshot(original, host.session().begin_open(original.id), true));
+    const auto context = host.session().context();
+    const auto target = host_test_group(96).id;
+    const auto draft_route = "/groups/" + original.id + "/draft";
+    const auto history_route = "/groups/" + target;
+    probe.held_suffixes = {draft_route, history_route};
+    auto draft = host.session().draft().design;
+    draft.prompt = "Latest description before opening history";
+    REQUIRE(host.session().set_design_draft(draft));
+    host.changed();
+    host.open_group(target);
+    REQUIRE(probe.until([&] { return probe.count(draft_route) == 1; }));
+    CHECK(host.draft_editing_locked());
+    probe.reply(probe.at(draft_route), nlohmann::json::object(), true);
+    REQUIRE(probe.until([&] { return !host.draft_editing_locked(); }));
+    CHECK(host.session().matches(context));
+    CHECK(host.session().draft_dirty());
+    CHECK(host.session().draft().design == draft);
+    CHECK(probe.count(history_route) == 0);
+    REQUIRE(probe.until([&] { return probe.count(draft_route) == 2; }));
+    CHECK(probe.requests[probe.at(draft_route, 1)].payload == probe.requests[probe.at(draft_route)].payload);
+    original.saved_draft = draft;
+    ++original.revision;
+    probe.reply(probe.at(draft_route, 1), advanced_history_draft_response(original));
+    REQUIRE(probe.until([&] { return !host.command_pending() && !host.session().draft_dirty(); }));
+    CHECK(host.session().matches(context));
+    CHECK(host.session().draft().design == draft);
+    CHECK(probe.count(history_route) == 0);
+    host.shutdown();
+}
+
 TEST_CASE("Advanced auto-save leaves editing available while explicit commands retain their lock",
           "[AdvancedCreation][AdvancedDraftInput]")
 {

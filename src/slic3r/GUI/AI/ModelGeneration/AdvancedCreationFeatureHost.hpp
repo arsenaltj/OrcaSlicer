@@ -31,7 +31,11 @@ public:
     const std::string& message() const { return m_message; }
     const Json& history() const { return m_history; }
     bool command_pending() const { return m_command_state != CommandState::Idle; }
-    bool draft_editing_locked() const { return (m_editing_guard && !m_editing_guard()) || m_command_state == CommandState::Exclusive || model_stop_pending(); }
+    bool draft_editing_locked() const
+    {
+        return (m_editing_guard && !m_editing_guard()) || m_command_state == CommandState::Exclusive ||
+            m_command_state == CommandState::OpeningHistory || model_stop_pending();
+    }
     bool has_pending_receipt() const;
     const ProviderCatalog& image_catalog() const { return m_image_catalog; }
     void reconcile_submission();
@@ -107,7 +111,7 @@ private:
     AdvancedCreation::ModelJobEvent begin_model_request(const std::string& job);
     bool model_request_is_current(const AdvancedCreation::ModelJobEvent& request) const;
     bool model_stop_pending() const;
-    AdvancedMultiviewClient::Error model_request_error(const AdvancedCreation::ModelJobEvent& request);
+    AdvancedMultiviewClient::Error model_request_error(const AdvancedCreation::ModelJobEvent& request, bool release_command = true);
     bool accept_model_job(const Json& job, const AdvancedCreation::ModelJobEvent& request);
     AdvancedCreation::Capabilities capabilities() const;
     wxWeakRef<wxWindow> m_owner;
@@ -156,7 +160,7 @@ private:
     std::string m_message;
     bool m_service_available {false};
     // Auto-save serializes requests without disabling the editor or its IME.
-    enum class CommandState { Idle, BackgroundDraftSave, Exclusive };
+    enum class CommandState { Idle, BackgroundDraftSave, Exclusive, OpeningHistory };
     CommandState m_command_state {CommandState::Idle};
     bool m_poll_pending {false};
     bool m_shutdown {false};

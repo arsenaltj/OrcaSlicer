@@ -12,7 +12,7 @@
 
 智能的 `Role::SmartCreation` ModelGenerationPanel 持有创作输入和生成选项，`Role::WorkbenchAssets` 独立管理已完成资产与编辑场景。完成资产历史浏览和工作台交接只传递资产请求。Shell 使用创作宿主的当前投影，并保护同一创作上下文内的暂未同步编辑。显式返回创作消费公共 CreationWorkbenchContext 的编辑资格，原草稿随独立创作宿主保留。这消除了旧 Shell 草稿副本和工作台返回时的重复业务同步。
 
-高级草稿由 AdvancedCreationSession 管理。FeatureHost 的独占历史命令先保存原组，在原会话身份下读取并校验目标组及修订，目标有效后才建立新 context、应用元数据和本地草稿，随后恢复编辑。图片缓存继续异步核验。普通后台保存及轮询允许继续编辑，旧身份回调受现有 epoch 守卫限制。
+高级草稿由 AdvancedCreationSession 管理。FeatureHost 的独占历史命令先保存原组，在原会话身份下读取并校验目标组及修订，目标有效后才建立新 context、应用元数据和本地草稿，随后恢复编辑。历史读取期间仍可停止当前套图的生成，停止回执保留历史命令持有的编辑锁。切换前保存失败时，保留当前草稿及已排队的自动保存。图片缓存继续异步核验。普通后台保存及轮询允许继续编辑，旧身份回调受现有 epoch 守卫限制。
 
 智能及高级全局描述共用 AIDesktopFeatureHost 提供的 AITextFeatureHost、AITextClient 输入校验及请求数据准备、同一可用性查询和 AITextPolishState 请求序号机制。原始参考图以 20 MB 内的二进制快照发送，Sidecar 文本能力应用识别 PNG/JPEG/静态 WebP，并负责方向、2048 px 缩放、透明合成及 JPEG 归一化。智能自动采用与恢复原文、高级确认采用由各自草稿消费者完成。局部设计图重生成仍走高级现有生成计划。
 
