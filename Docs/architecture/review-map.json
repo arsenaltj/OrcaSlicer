@@ -193,12 +193,14 @@
     {
       "id": "text_capability_host",
       "path": "src/slic3r/GUI/AI/Text/AITextFeatureHost.hpp",
-      "needle": "class AITextFeatureHost final"
+      "needle": "class AITextFeatureHost final",
+      "detail": "智能与高级使用同一桌面文本能力宿主和 AITextClient，客户端共用有效描述校验、二进制参考图快照及请求序号。两模式按各自草稿身份采用结果。"
     },
     {
       "id": "text_capability_application",
       "path": "tools/ai/text_capability_application.py",
-      "needle": "class TextCapabilityApplication:"
+      "needle": "class TextCapabilityApplication:",
+      "detail": "公共多模态润色应用接受 PNG/JPEG/静态 WebP，按实际文件格式校验和完整解码，统一方向、缩放、透明合成及 JPEG 编码后调用文本供应商。"
     },
     {
       "id": "text_capability_transport",
@@ -619,7 +621,7 @@
       "id": "advanced_creation_session",
       "path": "src/slic3r/GUI/AI/ModelGeneration/AdvancedCreationSession.hpp",
       "needle": "class Session {",
-      "detail": "高级Session拥有2D重绘选择、独立3D选择偏好及一次性引导；按受理目标和输入epoch等待全部可用，新建重置、主动返回关闭引导。上传删除／替换立即失效并防旧回填；Host持久化本地草稿与偏好，保存仅确认捕获的上传修订。同方向恢复不重置人工选择，可用主图必选；原任务身份、缓存及供应商模型守卫保持。"
+      "detail": "高级Session拥有2D重绘选择、独立3D选择偏好及一次性引导；按受理目标和输入epoch等待全部可用，新建重置、主动返回关闭引导。上传删除／替换立即失效并防旧回填；Host持久化本地草稿与偏好，保存仅确认捕获的上传修订。同方向恢复不重置人工选择，可用主图必选；原任务身份、缓存及供应商模型守卫保持。 历史打开先校验目标组、输入 epoch 及修订。"
     },
     {
       "id": "advanced_multiview_application",
@@ -763,19 +765,19 @@
       "id": "advanced_creation_host",
       "path": "src/slic3r/GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.cpp",
       "needle": "void AdvancedCreationFeatureHost::generate_model(Confirm confirm, GenerationRejected rejected)",
-      "detail": "高级每次基于当前所选1～4个可见版本新plan／job，绑定3D选择修订、版本摘要及输入epoch；本地草稿与失效标记在服务保存前持久化，旧回执不确认较新编辑。先登记真实任务再通知，模型状态刷新不导航；停止、幂等和组／会话／请求隔离保持。"
+      "detail": "高级每次基于当前所选1～4个可见版本新plan／job，绑定3D选择修订、版本摘要及输入epoch；本地草稿与失效标记在服务保存前持久化，旧回执不确认较新编辑。先登记真实任务再通知，模型状态刷新不导航；停止、幂等和组／会话／请求隔离保持。 历史独占命令在原 context 下读取目标，提交目标草稿后解锁，图片缓存继续异步。"
     },
     {
       "id": "advanced_creation_workspace",
       "path": "src/slic3r/GUI/Redesign/AdvancedCreationWorkspace.cpp",
       "needle": "struct AdvancedCreationWorkspace::Impl {",
-      "detail": "原四槽卡片按Tab与显式操作上下文展示2D／3D选择；首次建模前在3D选图，已有内容后返回2D明确改选，普通切页不覆盖偏好，3D主图不能取消。原布局／边框／对勾／双击保持；原图删除／替换清空预览，普通局部重绘保留旧图。Session消费一次性导航，Shell仍独占唯一工作台。"
+      "detail": "原四槽卡片按Tab与显式操作上下文展示2D／3D选择；首次建模前在3D选图，已有内容后返回2D明确改选，普通切页不覆盖偏好，3D主图不能取消。原布局／边框／对勾／双击保持；原图删除／替换清空预览，普通局部重绘保留旧图。Session消费一次性导航，Shell仍独占唯一工作台。 全局描述复用公共文本能力和请求序号，确认后按当前草稿身份采用。"
     },
     {
       "id": "workbench_asset_handoff",
       "path": "src/slic3r/GUI/AI/ModelGeneration/WorkbenchAssetHandoff.cpp",
       "needle": "void ModelGenerationPanel::initialize_workbench_assets()",
-      "detail": "应用宿主唯一初始化编辑会话；创作只交接实际资产、预览摘要和返回上下文，不恢复或清理智能任务。"
+      "detail": "应用宿主唯一初始化编辑会话；创作只交接实际资产、预览摘要和返回上下文，不恢复或清理智能任务。 智能创作输入由独立创作 Panel 保留，返回不再重放草稿。"
     },
     {
       "id": "advanced_multiview_models",
@@ -2125,7 +2127,7 @@
           "tests/slic3rutils/test_model_generation*",
           "tools/ai/test_atomic_capabilities.py"
         ],
-        "state_owner": "ModelGenerationUIState 投影本地任务",
+        "state_owner": "SmartCreation Panel 持有智能输入，AdvancedCreationSession 持有高级草稿，AITextFeatureHost 提供公共润色",
         "contract": "确认后创建任务；完成产物显式交接",
         "note": "与后处理共享 Panel，属于主要耦合点。",
         "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"

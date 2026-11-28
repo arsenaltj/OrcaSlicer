@@ -34,6 +34,7 @@ public:
     bool consume_initial_design_guidance();
     void dismiss_initial_design_guidance() { m_initial_design_guidance = InitialDesignGuidance::Consumed; }
 
+    bool can_open_snapshot(const GroupSnapshot& snapshot, const std::string& target) const;
     CallbackContext begin_open(std::string group_id);
     CallbackContext new_creation();
     CallbackContext context() const { return {m_epoch, m_opening_id}; }

@@ -68,6 +68,8 @@ public:
     std::shared_ptr<RequestHandle> polish_image_prompt(
         const PolishRequest& request, ResultFn on_complete, ErrorFn on_error) const;
 
+    static constexpr std::size_t MAX_TEXT_BYTES = 2000;
+    static bool valid_description(const std::string& description);
     static bool parse_availability(const std::string& body, Availability& result);
     static bool parse_polish_result(const std::string& body, PolishResult& result);
     static Error parse_error(const std::string& body, const std::string& transport_error, unsigned status);

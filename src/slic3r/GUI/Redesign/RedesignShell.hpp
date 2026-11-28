@@ -494,8 +494,6 @@ private:
     ModelGenerationUIState m_model_generation_state;
     ModelGenerationUIState m_advanced_model_state;
     ImageDesignDraft m_image_design_draft;
-    std::optional<ModelGenerationUIInput> m_saved_creation_input;
-    std::optional<ModelGenerationUIOptions> m_saved_creation_options;
     ModelGenerationUIOptions m_generation_options;
     AIModelGenerationClient::ProviderCatalog m_provider_catalog;
     std::uint64_t m_provider_catalog_sequence { 0 };

@@ -82,3 +82,28 @@ TEST_CASE("Prompt polish cancellation rejects stale responses and can clear rest
     CHECK_FALSE(state.can_restore());
     CHECK_FALSE(state.active());
 }
+
+TEST_CASE("Both text polish consumers validate the same UTF-8 input limit", "[AIText][CreationInputRegression]")
+{
+    CHECK_FALSE(AITextClient::valid_description(""));
+    CHECK_FALSE(AITextClient::valid_description(" \t\r\n\f\v"));
+    CHECK(AITextClient::valid_description("A small cat"));
+    std::string chinese;
+    for (int i = 0; i < 666; ++i) chinese += "\xe7\x8c\xab";
+    CHECK(AITextClient::valid_description(chinese + "ab"));
+    CHECK_FALSE(AITextClient::valid_description(chinese + "abc"));
+}
+
+TEST_CASE("A canceled polish cannot finish or unlock its replacement", "[AIText][CreationInputRegression]")
+{
+    AITextPolishState state;
+    const auto old = state.begin();
+    state.cancel(true);
+    const auto current = state.begin();
+    CHECK_FALSE(state.matches(old));
+    CHECK_FALSE(state.fail(old));
+    CHECK_FALSE(state.finish(old, "old prompt"));
+    REQUIRE(state.matches(current));
+    CHECK(state.fail(current));
+    CHECK_FALSE(state.active());
+}

@@ -184,6 +184,12 @@ bool Session::inputs_match_results() const
            m_draft.design == *m_group->latest_submitted_draft;
 }
 
+bool Session::can_open_snapshot(const GroupSnapshot& snapshot, const std::string& target) const
+{
+    return !target.empty() && snapshot.id == target && !snapshot.input_epoch.empty() &&
+        (!m_group || m_group->id != target || snapshot.revision >= m_group->revision);
+}
+
 CallbackContext Session::begin_open(std::string group_id)
 {
     ++m_epoch;

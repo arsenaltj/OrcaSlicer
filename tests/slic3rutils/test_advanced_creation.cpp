@@ -4,6 +4,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/AdvancedCreationSession.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/AdvancedMultiviewClient.hpp"
+#include "slic3r/GUI/AI/Text/AITextFeatureHost.hpp"
 #include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
 #include "slic3r/GUI/Redesign/GenerationParticleImage.hpp"
 #include "slic3r/GUI/Redesign/AdvancedPreviewGesture.hpp"
@@ -27,6 +28,7 @@
 #include <windows.h>
 #endif
 #include <chrono>
+#include <atomic>
 
 using Slic3r::GUI::AdvancedMultiviewClient;
 using namespace Slic3r::GUI::AdvancedCreation;
@@ -1548,11 +1550,11 @@ TEST_CASE("Reopening a creation preserves its local model preferences before his
             return nlohmann::json::parse(input);
         };
         const auto before = read_checkpoint();
-        // No service is enabled: opening publishes the loading state without any
-        // network response. That state must not overwrite the durable checkpoint.
+        // Opening retains the installed context and its checkpoint until the
+        // requested group is actually admitted.
         const std::string opened = same_group ? group.id : "22222222-2222-4222-8222-222222222222";
         host.open_group(opened);
-        REQUIRE(host.session().context().group_id == opened);
+        REQUIRE(host.session().context().group_id == group.id);
         CHECK(read_checkpoint() == before);
         if (same_group) {
             CHECK(host.session().local_draft().model_selected == checkpoint.model_selected);
@@ -1560,6 +1562,123 @@ TEST_CASE("Reopening a creation preserves its local model preferences before his
         }
         host.shutdown();
         CHECK(read_checkpoint() == before);
+    }
+}
+
+TEST_CASE("Shared text client snapshots binary input and reports missing originals locally",
+          "[AIText][CreationInputRegression]")
+{
+    wxInitializer init;
+    REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-text-snapshot"};
+    AdvancedHttpProbe probe;
+    const std::string route = "/text-capabilities/image_prompt_polish";
+    probe.held_suffixes = {route};
+    Slic3r::GUI::AITextFeatureHost text(probe.endpoint());
+    using Client = Slic3r::GUI::AITextClient;
+    const auto image = temporary.path() / "original.webp";
+    const std::string original {"RIFF\x04\0\0\0WEBP\0\xff", 14};
+    {
+        boost::filesystem::ofstream file(image, std::ios::binary);
+        file.write(original.data(), original.size());
+    }
+    std::atomic<bool> completed {false};
+    std::atomic<bool> failed {false};
+    std::string error;
+    auto request = text.polish_image_prompt({true, image, "A small sculpture"},
+        [&](Client::PolishResult) { completed = true; },
+        [&](Client::Error failure) { error = failure.code; failed = true; });
+    REQUIRE(request);
+    {
+        boost::filesystem::ofstream file(image, std::ios::binary | std::ios::trunc);
+        file << "replacement";
+    }
+    REQUIRE(probe.until([&] { return probe.count(route) == 1; }));
+    const auto& payload = probe.requests.at(probe.at(route)).payload;
+    REQUIRE(payload.is_string());
+    const auto bytes = payload.get<std::string>();
+    CHECK(bytes.find(original) != std::string::npos);
+    CHECK(bytes.find("replacement") == std::string::npos);
+    probe.reply(probe.at(route), {{"status", "success"}, {"optimized_prompt", "A small sculpture"},
+        {"warnings", nlohmann::json::array()}, {"diagnostic_id", "test-diagnostic"}});
+    REQUIRE(probe.until([&] { return completed.load() || failed.load(); }));
+    CHECK(completed.load());
+    CHECK(error.empty());
+    request = text.polish_image_prompt({true, temporary.path() / "missing.png", "A small sculpture"},
+        [&](Client::PolishResult) { FAIL("Missing image was accepted"); },
+        [&](Client::Error failure) { error = failure.code; });
+    CHECK_FALSE(request);
+    CHECK(error == "invalid_reference_image");
+}
+
+TEST_CASE("Advanced history commits only a validated target and protects editing until then",
+          "[AdvancedCreation][AdvancedDraftInput][CreationInputRegression]")
+{
+    wxInitializer init;
+    REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-advanced-history-admission"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.path().string());
+    using Json = nlohmann::json;
+    const std::string original_id = "11111111-1111-4111-8111-111111111111";
+    const std::string target_id = "22222222-2222-4222-8222-222222222222";
+    for (const std::string outcome : {"success", "http_error", "empty", "invalid", "wrong_id", "stale", "superseded"}) {
+        CAPTURE(outcome);
+        AdvancedHttpProbe probe;
+        Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr, probe.endpoint());
+        auto original = complete_group();
+        original.id = original_id;
+        original.input_epoch = "33333333-3333-4333-8333-333333333333";
+        original.saved_draft.prompt = "Preserve previous description";
+        REQUIRE(host.session().apply_snapshot(original, host.session().begin_open(original.id), true));
+        const auto previous = host.session().context();
+        const auto initial = host.session().draft();
+        const auto target = outcome == "stale" ? original_id : target_id;
+        const auto route = "/groups/" + target;
+        probe.held_suffixes = {route};
+        host.open_group(target);
+        REQUIRE(probe.until([&] { return probe.count(route) == 1; }));
+        CHECK(host.session().matches(previous));
+        CHECK(host.session().draft().design == initial.design);
+        CHECK(host.draft_editing_locked());
+        host.open_group(target);
+        CHECK(probe.count(route) == 1);
+        auto draft = original.saved_draft;
+        draft.prompt = "Target description";
+        const auto metadata = AdvancedMultiviewClient::design_json(draft);
+        Json snapshot {{"schema", "advanced-multiview-group-v1"}, {"workflow_kind", "advanced_multiview_v1"},
+            {"id", outcome == "wrong_id" ? original_id : target}, {"input_epoch", "44444444-4444-4444-8444-444444444444"},
+            {"revision", outcome == "stale" ? original.revision - 1 : original.revision + 1},
+            {"initial_input", metadata}, {"saved_draft", metadata}, {"latest_submitted_draft", metadata},
+            {"active_operation_id", nullptr}, {"stop_intent", false}, {"published", true},
+            {"uploads", Json::object()}, {"views", Json::object()}};
+        for (const auto view : AllViews) {
+            snapshot["uploads"][view_name(view)] = nullptr;
+            snapshot["views"][view_name(view)] = {{"current_version_id", nullptr}, {"current", nullptr}, {"latest_attempt", nullptr}};
+        }
+        if (outcome == "superseded") {
+            host.new_creation();
+            auto next = host.session().draft().design;
+            next.prompt = "New creation after cancellation";
+            REQUIRE(host.session().set_design_draft(next));
+        }
+        if (outcome == "http_error") probe.reply(probe.at(route), {{"error", "history unavailable"}}, true);
+        else if (outcome == "empty") probe.reply(probe.at(route), Json::object());
+        else if (outcome == "invalid") probe.reply(probe.at(route), {{"group", Json::object()}});
+        else probe.reply(probe.at(route), {{"group", snapshot}});
+        REQUIRE(probe.until([&] { return !host.command_pending(); }));
+        CHECK_FALSE(host.draft_editing_locked());
+        if (outcome == "success") {
+            CHECK(host.session().context().group_id == target);
+            CHECK(host.session().draft().design.prompt == draft.prompt);
+        } else if (outcome == "superseded") {
+            probe.drain();
+            CHECK_FALSE(host.session().group());
+            CHECK(host.session().draft().design.prompt == "New creation after cancellation");
+        } else {
+            CHECK(host.session().matches(previous));
+            CHECK(host.session().draft().design == initial.design);
+        }
+        host.shutdown();
     }
 }
 
@@ -2722,6 +2841,7 @@ TEST_CASE("Opening history or starting a creation releases the previous model st
     Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr, endpoint);
     auto group = complete_group();
     group.id = "11111111-1111-4111-8111-111111111111";
+    group.input_epoch = "33333333-3333-4333-8333-333333333333";
     group.model_job_id = "22222222-2222-4222-8222-222222222222";
     group.model_state = "running";
     group.model_busy = true;
@@ -2758,7 +2878,37 @@ TEST_CASE("Opening history or starting a creation releases the previous model st
     REQUIRE(host.draft_editing_locked());
     const auto previous = host.session().context();
     if (fresh) host.new_creation();
-    else host.open_group(group.id);
+    else {
+        host.open_group(group.id);
+        CHECK(host.session().matches(previous));
+        REQUIRE(host.command_pending());
+        connection.reset();
+        REQUIRE(until([&] {
+            if (!connection) connection.reset(server.Accept(false));
+            return bool(connection);
+        }));
+        using Json = nlohmann::json;
+        const auto draft = AdvancedMultiviewClient::design_json(group.saved_draft);
+        Json snapshot {{"schema", "advanced-multiview-group-v1"}, {"workflow_kind", "advanced_multiview_v1"},
+            {"id", group.id}, {"input_epoch", group.input_epoch}, {"revision", group.revision},
+            {"initial_input", draft}, {"saved_draft", draft}, {"latest_submitted_draft", draft},
+            {"active_operation_id", nullptr}, {"stop_intent", false}, {"published", true},
+            {"uploads", Json::object()}, {"views", Json::object()}};
+        for (const auto view : AllViews) {
+            snapshot["uploads"][view_name(view)] = nullptr;
+            snapshot["views"][view_name(view)] = {{"current_version_id", nullptr}, {"current", nullptr}, {"latest_attempt", nullptr}};
+        }
+        const auto body = Json({{"group", snapshot}}).dump();
+        const auto reply = std::string("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ") +
+            std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
+        connection->Write(reply.data(), reply.size());
+        REQUIRE(connection->LastCount() == reply.size());
+        connection->Close();
+        REQUIRE(until([&] { return !host.command_pending(); }));
+        // Business restoration commits before asynchronous cache verification.
+        // Generation eligibility remains guarded until verification completes.
+        REQUIRE(until([&] { return host.eligibility().design_reason == "service_unavailable"; }));
+    }
     CHECK_FALSE(host.session().matches(previous));
     CHECK_FALSE(host.command_pending());
     CHECK_FALSE(host.draft_editing_locked());
@@ -3406,6 +3556,7 @@ TEST_CASE("The shared workflow lock rejects advanced draft replacement until exp
     host.session().click(ViewId::Left, 100, 500);
     bool unlocked = false;
     host.set_editing_guard([&] { return unlocked; });
+    host.set_start_guard([] { return false; });
     CHECK(host.draft_editing_locked());
     CHECK_FALSE(host.eligibility().generate_design);
     CHECK_FALSE(host.eligibility().generate_model);
@@ -3427,7 +3578,14 @@ TEST_CASE("The shared workflow lock rejects advanced draft replacement until exp
     CHECK(host.session().matches(context));
     CHECK_FALSE(host.command_pending());
     unlocked = true;
-    CHECK_FALSE(host.draft_editing_locked());
+    REQUIRE_FALSE(host.draft_editing_locked());
+    auto edited = original.design;
+    edited.prompt = "Retain the workbench model and edit the creation draft";
+    REQUIRE(host.session().set_design_draft(edited));
+    CHECK(host.session().matches(context));
+    CHECK(host.session().draft().design == edited);
+    CHECK_FALSE(host.eligibility().click_generate_design);
+    CHECK_FALSE(host.eligibility().click_generate_model);
     host.new_creation();
     CHECK_FALSE(host.session().matches(context));
     host.shutdown();

@@ -11,6 +11,8 @@ from io import BytesIO
 from typing import Any
 
 from ai_diagnostics import event as diagnostic_event
+from model_job_support import image_type
+from model_contracts import MAX_TEXTURE_PIXELS
 from yoyoclaw_client import YoYoClawError
 from yoyoclaw_text_gateway import YoYoClawTextGateway
 
@@ -120,8 +122,15 @@ def _reference_image_data_url(image: bytes) -> str:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(BytesIO(image)) as source:
-                if source.format not in {"PNG", "JPEG"}:
-                    raise TextCapabilityError("unsupported_reference_image", "参考图必须是 PNG 或 JPEG。", 415)
+                expected = {"image/png": "PNG", "image/jpeg": "JPEG", "image/webp": "WEBP"}.get(image_type(image[:16]))
+                if expected is None or source.format != expected:
+                    raise TextCapabilityError("unsupported_reference_image", "参考图必须是 PNG、JPEG 或静态 WebP。", 415)
+                if source.format == "WEBP":
+                    if getattr(source, "is_animated", False):
+                        raise TextCapabilityError("unsupported_reference_image", "动画 WebP 请先导出为静态图片。", 415)
+                    width, height = source.size
+                    if width * height > MAX_TEXTURE_PIXELS:
+                        raise TextCapabilityError("invalid_reference_image", "参考图尺寸过大。", 400)
                 source.load()
                 oriented = ImageOps.exif_transpose(source).convert("RGBA")
         oriented.thumbnail((MAX_REFERENCE_IMAGE_EDGE, MAX_REFERENCE_IMAGE_EDGE), Image.Resampling.LANCZOS)

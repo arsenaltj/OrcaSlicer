@@ -85,10 +85,10 @@ private:
     AdvancedMultiviewClient::Error error(bool release_command = true, bool release_poll = false);
     void publish();
     void observe_model_job(const std::string& job, bool new_generation, bool restart = false);
-    void poll(bool restore = false);
+    void poll();
     void ingest(Json group, AdvancedCreation::CallbackContext context, bool restore,
                 std::function<void()> done = {}, std::optional<AdvancedCreation::InputDraft> saved_input = {},
-                AdvancedMultiviewClient::Error failed = {});
+                AdvancedMultiviewClient::Error failed = {}, std::string history_target = {});
     void save_draft(std::function<void()> done, AdvancedMultiviewClient::Error failed = {});
     bool save_local_draft(const AdvancedCreation::LocalDraft* candidate = nullptr);
     void restore_local_draft(const std::string& group);
