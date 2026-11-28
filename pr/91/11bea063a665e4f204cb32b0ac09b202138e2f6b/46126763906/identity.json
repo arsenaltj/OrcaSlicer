@@ -1,0 +1,27 @@
+{
+  "pr": 91,
+  "run": 46126763906,
+  "head": "11bea063a665e4f204cb32b0ac09b202138e2f6b",
+  "base": "765b5e7a5636949e1016516d67472bac63c0bf1c",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "修复 AI 创作草稿丢失及静态 WebP 润色失败",
+  "path": "pr/91/11bea063a665e4f204cb32b0ac09b202138e2f6b/46126763906",
+  "created": "2026-11-28T08:42:26+00:00",
+  "files": {
+    "index.html": "83b8d2d57bc705f047048b7da28157abf52af68b89a76bb4e515a3cb8128fafc",
+    "details.html": "a63fdc47809e561bfbc476eeed7bb26e4cbbb30b9061fd0945cc79d9199cd8ec",
+    "report.json": "119b6f9ffe50313f95cad5d6457086950d5722b4400534adc905458eba68cde7",
+    "summary.md": "54125757450cab9a4e6d088a009bb7d4e003d5c4d8939199df5965be102b17d4",
+    "archify-receipts.json": "cfcb8ff968c9ec3fb71bd0a5132f9d14aab670e8764115264b385ca9413c6eab",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l0-platform.html": "99935095d905d448319e796148e04715478224ba9576c63820c2d1ba37e75aa2",
+    "l0-platform.json": "cf11ddcc6ebffc6bb2ab8f18b82871e1b72d147778df05af8f63b1c196dcaefa",
+    "l1-modules.html": "b2c4d3816628400aac477b979db50e82fed0a3a95b96776340c38b1ccc2f55e1",
+    "l1-modules.json": "771ae829e2959cd9add903ced26e384660e633f8925466d1acbd5a4718ef479b",
+    "l2-generation.html": "5ab5558ef137d23eda721ae0ddaa25f82afe2839900e0e142691cb8020e85350",
+    "l2-generation.json": "9d870a02f238a819088346855f3b6c4f912a733fb48dec971a7ab4e6ed8caea5",
+    "l2-slicing.html": "d90d8be9e8d358423e04a3e12617d88a0796cd9e9740d2339cbfeeb1b5277a0d",
+    "l2-slicing.json": "5137fddbf8b9b2e17bd079e501454a6cdb667e6e12f11f40f49207ca165d243c"
+  }
+}
